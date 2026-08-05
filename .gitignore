@@ -1,0 +1,7 @@
+.DS_Store
+build/
+Temp/
+iCloud重复Swift备份/
+*.xcuserstate
+**/xcuserdata/**/*.xcbkptlist
+**/*冲突副本*

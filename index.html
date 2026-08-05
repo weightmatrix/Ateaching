@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>李知本授课管理 - 产品介绍与技术支持</title>
+    <style>
+        :root {
+            --bg: #101312;
+            --panel: #171b1a;
+            --panel-strong: #1f2523;
+            --line: rgba(255, 255, 255, 0.12);
+            --text: #f5f6f2;
+            --muted: #a9b0aa;
+            --soft: #d9dfd5;
+            --green: #42d392;
+            --cyan: #58d7e8;
+            --gold: #f5c85b;
+            --orange: #ff9f43;
+            --blue: #6aa7ff;
+            --red: #ff6b6b;
+            --shadow: 0 22px 70px rgba(0, 0, 0, 0.35);
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            margin: 0;
+            color: var(--text);
+            background:
+                radial-gradient(circle at 15% 8%, rgba(66, 211, 146, 0.18), transparent 28rem),
+                radial-gradient(circle at 80% 18%, rgba(88, 215, 232, 0.12), transparent 26rem),
+                linear-gradient(135deg, #0d1110 0%, #171a15 48%, #24200f 100%);
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.65;
+        }
+
+        a {
+            color: inherit;
+        }
+
+        .layout {
+            min-height: 100vh;
+            display: grid;
+            grid-template-columns: 290px minmax(0, 1fr);
+        }
+
+        aside {
+            position: sticky;
+            top: 0;
+            height: 100vh;
+            padding: 28px 18px;
+            background: rgba(16, 19, 18, 0.82);
+            border-right: 1px solid var(--line);
+            backdrop-filter: blur(22px);
+            overflow-y: auto;
+        }
+
+        .brand {
+            padding: 8px 10px 22px;
+            border-bottom: 1px solid var(--line);
+        }
+
+        .brand-title {
+            margin: 0;
+            font-size: 21px;
+            font-weight: 800;
+            letter-spacing: 0;
+        }
+
+        .brand-subtitle {
+            margin-top: 6px;
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        .support-card {
+            margin: 18px 0;
+            padding: 14px;
+            border: 1px solid rgba(88, 215, 232, 0.22);
+            border-radius: 10px;
+            background: rgba(88, 215, 232, 0.08);
+        }
+
+        .support-card small {
+            display: block;
+            color: var(--cyan);
+            font-weight: 700;
+            margin-bottom: 6px;
+        }
+
+        .support-card a {
+            color: var(--text);
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 13px;
+            text-decoration: none;
+            word-break: break-all;
+        }
+
+        nav a {
+            display: block;
+            padding: 9px 10px;
+            color: var(--muted);
+            text-decoration: none;
+            font-size: 14px;
+            border-radius: 8px;
+            transition: background 0.18s ease, color 0.18s ease;
+        }
+
+        nav a:hover {
+            color: var(--text);
+            background: rgba(255, 255, 255, 0.06);
+        }
+
+        main {
+            min-width: 0;
+            padding: 44px clamp(24px, 5vw, 72px) 70px;
+        }
+
+        .hero {
+            min-height: min(760px, calc(100vh - 88px));
+            display: grid;
+            grid-template-columns: minmax(0, 1.05fr) minmax(360px, 0.95fr);
+            gap: 42px;
+            align-items: center;
+            padding-bottom: 44px;
+        }
+
+        .eyebrow {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 7px 11px;
+            border: 1px solid rgba(245, 200, 91, 0.28);
+            border-radius: 999px;
+            color: var(--gold);
+            background: rgba(245, 200, 91, 0.08);
+            font-size: 13px;
+            font-weight: 700;
+        }
+
+        h1 {
+            margin: 22px 0 18px;
+            max-width: 820px;
+            font-size: clamp(42px, 6vw, 78px);
+            line-height: 1.04;
+            letter-spacing: 0;
+        }
+
+        .hero-copy {
+            max-width: 760px;
+            color: var(--soft);
+            font-size: 18px;
+        }
+
+        .hero-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin-top: 28px;
+        }
+
+        .button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 44px;
+            padding: 0 18px;
+            border-radius: 9px;
+            border: 1px solid var(--line);
+            color: var(--text);
+            background: rgba(255, 255, 255, 0.07);
+            font-weight: 700;
+            text-decoration: none;
+        }
+
+        .button.primary {
+            color: #06110d;
+            background: linear-gradient(135deg, var(--green), var(--gold));
+            border: none;
+        }
+
+        .app-preview {
+            position: relative;
+            border-radius: 22px;
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            background: linear-gradient(180deg, rgba(255, 255, 255, 0.10), rgba(255, 255, 255, 0.04));
+            box-shadow: var(--shadow);
+            overflow: hidden;
+        }
+
+        .window-bar {
+            height: 42px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 0 16px;
+            background: rgba(0, 0, 0, 0.22);
+            border-bottom: 1px solid var(--line);
+        }
+
+        .dot {
+            width: 11px;
+            height: 11px;
+            border-radius: 50%;
+        }
+
+        .dot.red { background: #ff5f57; }
+        .dot.yellow { background: #febc2e; }
+        .dot.green { background: #28c840; }
+
+        .preview-body {
+            padding: 18px;
+            background:
+                linear-gradient(90deg, rgba(66, 211, 146, 0.08), transparent 40%),
+                rgba(20, 24, 23, 0.88);
+        }
+
+        .preview-tabs {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 18px;
+        }
+
+        .preview-tab {
+            padding: 8px 12px;
+            border-radius: 9px;
+            background: rgba(255, 255, 255, 0.08);
+            color: var(--muted);
+            font-size: 13px;
+            font-weight: 700;
+        }
+
+        .preview-tab.active {
+            color: #06110d;
+            background: var(--cyan);
+        }
+
+        .lesson-panel {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+
+        .mock-card {
+            min-height: 128px;
+            padding: 14px;
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.10);
+        }
+
+        .mock-title {
+            color: var(--gold);
+            font-size: 13px;
+            font-weight: 800;
+            margin-bottom: 8px;
+        }
+
+        .mock-line {
+            height: 9px;
+            margin: 10px 0;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.18);
+        }
+
+        .mock-line.short {
+            width: 62%;
+        }
+
+        .mock-line.green {
+            background: rgba(66, 211, 146, 0.5);
+        }
+
+        .schedule-strip {
+            grid-column: 1 / -1;
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 8px;
+        }
+
+        .schedule-item {
+            min-height: 78px;
+            padding: 10px;
+            border-radius: 10px;
+            background: rgba(88, 215, 232, 0.13);
+            border: 1px solid rgba(88, 215, 232, 0.22);
+            font-size: 12px;
+            color: var(--soft);
+        }
+
+        section {
+            padding: 28px 0;
+            border-top: 1px solid var(--line);
+        }
+
+        h2 {
+            margin: 0 0 16px;
+            font-size: clamp(27px, 3vw, 42px);
+            letter-spacing: 0;
+        }
+
+        .section-lead {
+            max-width: 860px;
+            color: var(--muted);
+            font-size: 16px;
+            margin-bottom: 22px;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 14px;
+        }
+
+        .card {
+            min-height: 188px;
+            padding: 20px;
+            border-radius: 10px;
+            border: 1px solid var(--line);
+            background: rgba(255, 255, 255, 0.055);
+        }
+
+        .card h3 {
+            margin: 0 0 10px;
+            font-size: 18px;
+            letter-spacing: 0;
+        }
+
+        .card p {
+            margin: 0;
+            color: var(--muted);
+            font-size: 14px;
+        }
+
+        .flow {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 12px;
+            counter-reset: flow;
+        }
+
+        .step {
+            position: relative;
+            padding: 20px;
+            border-radius: 10px;
+            background: var(--panel);
+            border: 1px solid var(--line);
+        }
+
+        .step::before {
+            counter-increment: flow;
+            content: counter(flow);
+            display: grid;
+            place-items: center;
+            width: 30px;
+            height: 30px;
+            margin-bottom: 14px;
+            border-radius: 50%;
+            color: #09120e;
+            background: var(--green);
+            font-weight: 900;
+        }
+
+        .step strong {
+            display: block;
+            margin-bottom: 8px;
+        }
+
+        .step span {
+            color: var(--muted);
+            font-size: 14px;
+        }
+
+        .tech-list {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 14px;
+        }
+
+        .tech-item {
+            padding: 18px;
+            border-radius: 10px;
+            background: rgba(31, 37, 35, 0.74);
+            border: 1px solid var(--line);
+        }
+
+        .tech-item b {
+            display: block;
+            color: var(--cyan);
+            margin-bottom: 6px;
+        }
+
+        .tech-item span {
+            color: var(--muted);
+            font-size: 14px;
+        }
+
+        .callout {
+            margin-top: 24px;
+            padding: 22px;
+            border-radius: 12px;
+            border: 1px solid rgba(245, 200, 91, 0.28);
+            background: linear-gradient(135deg, rgba(66, 211, 146, 0.10), rgba(245, 200, 91, 0.10));
+        }
+
+        .callout p {
+            margin: 0;
+            color: var(--soft);
+        }
+
+        footer {
+            padding: 30px 0 0;
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        @media (max-width: 1080px) {
+            .layout {
+                display: block;
+            }
+
+            aside {
+                position: relative;
+                height: auto;
+                border-right: none;
+                border-bottom: 1px solid var(--line);
+            }
+
+            nav {
+                display: grid;
+                grid-template-columns: repeat(3, 1fr);
+                gap: 6px;
+            }
+
+            .hero {
+                min-height: auto;
+                grid-template-columns: 1fr;
+            }
+
+            .grid,
+            .flow,
+            .tech-list {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
+
+        @media (max-width: 680px) {
+            main {
+                padding: 28px 18px 52px;
+            }
+
+            nav {
+                grid-template-columns: 1fr 1fr;
+            }
+
+            h1 {
+                font-size: 40px;
+            }
+
+            .lesson-panel,
+            .grid,
+            .flow,
+            .tech-list,
+            .schedule-strip {
+                grid-template-columns: 1fr;
+            }
+
+            .hero-actions {
+                display: grid;
+            }
+
+            .button {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="layout">
+        <aside>
+            <div class="brand">
+                <h2 class="brand-title">李知本授课管理</h2>
+                <div class="brand-subtitle">Mac · iPad · iOS 授课工作台</div>
+            </div>
+
+            <div class="support-card">
+                <small>技术支持与需求反馈</small>
+                <a href="mailto:weightmatrix09@163.com">weightmatrix09@163.com</a>
+            </div>
+
+            <nav aria-label="页面导航">
+                <a href="#overview">产品概览</a>
+                <a href="#features">核心功能</a>
+                <a href="#workflow">授课流程</a>
+                <a href="#technology">技术结构</a>
+                <a href="#export">导出与同步</a>
+                <a href="#roadmap">继续完善</a>
+            </nav>
+        </aside>
+
+        <main>
+            <section class="hero" id="overview">
+                <div>
+                    <span class="eyebrow">为真实授课流程写的软件</span>
+                    <h1>从教案、上课、随堂记录到课反和课时统计，放在同一个原生系统里。</h1>
+                    <p class="hero-copy">
+                        李知本授课管理是一套面向一线教学的 Mac / iPad / iOS 应用。它不是普通笔记软件套一个课表，
+                        而是围绕“备课、讲课、记录、同步、复盘、统计”建立的完整授课工作台。
+                    </p>
+                    <div class="hero-actions">
+                        <a class="button primary" href="#features">查看功能</a>
+                        <a class="button" href="mailto:weightmatrix09@163.com">反馈需求</a>
+                    </div>
+                </div>
+
+                <div class="app-preview" aria-label="软件界面示意">
+                    <div class="window-bar">
+                        <span class="dot red"></span>
+                        <span class="dot yellow"></span>
+                        <span class="dot green"></span>
+                    </div>
+                    <div class="preview-body">
+                        <div class="preview-tabs">
+                            <span class="preview-tab active">授课</span>
+                            <span class="preview-tab">教案</span>
+                            <span class="preview-tab">统计</span>
+                            <span class="preview-tab">同步</span>
+                        </div>
+                        <div class="lesson-panel">
+                            <div class="mock-card">
+                                <div class="mock-title">NodeMarkdown 教案</div>
+                                <div class="mock-line green"></div>
+                                <div class="mock-line"></div>
+                                <div class="mock-line short"></div>
+                            </div>
+                            <div class="mock-card">
+                                <div class="mock-title">随堂笔记与课反</div>
+                                <div class="mock-line"></div>
+                                <div class="mock-line green"></div>
+                                <div class="mock-line short"></div>
+                            </div>
+                            <div class="schedule-strip">
+                                <div class="schedule-item"><b>08:30</b><br>高一物理</div>
+                                <div class="schedule-item"><b>10:30</b><br>知识点同步</div>
+                                <div class="schedule-item"><b>15:00</b><br>课时统计</div>
+                                <div class="schedule-item"><b>18:00</b><br>PDF / HTML</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section id="features">
+                <h2>核心功能</h2>
+                <p class="section-lead">围绕老师每天真正会遇到的事情组织：教案要能长期维护，学生讲过什么要自动留下，课后资料要能稳定给出去。</p>
+                <div class="grid">
+                    <div class="card">
+                        <h3>自己的教案系统</h3>
+                        <p>内容按知识点组织，支持中心教案、章节教案和随堂笔记之间的联动，适合长期积累一套自己的教学体系。</p>
+                    </div>
+                    <div class="card">
+                        <h3>学生授课记录</h3>
+                        <p>每个学生讲过哪些内容会被自动记录，随堂插入的知识点包也能沉淀到课反和后续同步流程中。</p>
+                    </div>
+                    <div class="card">
+                        <h3>半自动生成课反</h3>
+                        <p>上课内容可自动写入课反结构，减少课后重复整理，让老师把精力放在判断和补充上。</p>
+                    </div>
+                    <div class="card">
+                        <h3>课时统计与核算</h3>
+                        <p>自动记录课程时间、机构、学生和价格，按月统计课时与费用，也支持排课和周课程表。</p>
+                    </div>
+                    <div class="card">
+                        <h3>随堂记录汇总</h3>
+                        <p>讲课时随手记录有用内容，之后可汇总回中心教案，让实际教学反过来推动教案变好。</p>
+                    </div>
+                    <div class="card">
+                        <h3>通用文本格式</h3>
+                        <p>底层使用通用文本与 Markdown 思路，支持图片、公式和 HTML，迁移与长期保存更安心。</p>
+                    </div>
+                    <div class="card">
+                        <h3>LaTeX 公式</h3>
+                        <p>公式可以点击进入源码编辑，编辑后自动渲染，适合物理、数学等高频公式场景。</p>
+                    </div>
+                    <div class="card">
+                        <h3>物理画图</h3>
+                        <p>内置画图能力，面向受力分析、几何图形、坐标系等教学需求，后续会继续根据真实需求完善。</p>
+                    </div>
+                    <div class="card">
+                        <h3>标准化单列表格</h3>
+                        <p>支持学生信息表、课反表等固定结构数据。多列表格暂时不是核心需求，所以当前优先做好单列表格。</p>
+                    </div>
+                </div>
+            </section>
+
+            <section id="workflow">
+                <h2>一次上课的完整流程</h2>
+                <p class="section-lead">软件的核心不是“写字”，而是把一节课前后真正发生的动作串起来。</p>
+                <div class="flow">
+                    <div class="step">
+                        <strong>准备教案</strong>
+                        <span>在中心教案或章节教案中维护知识点，按 Node 结构组织内容。</span>
+                    </div>
+                    <div class="step">
+                        <strong>进入授课</strong>
+                        <span>选择学生和教案，开课后开始记录本节课内容、图片、公式和临时讲解。</span>
+                    </div>
+                    <div class="step">
+                        <strong>随堂更新</strong>
+                        <span>插入知识点包、修改内容、生成脏包，必要时同步回中心教案。</span>
+                    </div>
+                    <div class="step">
+                        <strong>下课导出</strong>
+                        <span>自动生成课反、统计课时，并导出 PDF / HTML 到学生同步目录。</span>
+                    </div>
+                </div>
+            </section>
+
+            <section id="technology">
+                <h2>技术结构</h2>
+                <p class="section-lead">这套系统更像一个本地优先的教学资料数据库：内容可读、结构清楚、同步可控。</p>
+                <div class="tech-list">
+                    <div class="tech-item">
+                        <b>Markdown 语法，兼容 HTML</b>
+                        <span>普通 Markdown 文本可以直接写，也支持下划线、高亮、加粗、图片和公式等教学常用内容。</span>
+                    </div>
+                    <div class="tech-item">
+                        <b>Node 式内容结构</b>
+                        <span>教案不是单纯一篇长文，而是按知识点、层级和包组织，便于插入、删除、剪切和同步。</span>
+                    </div>
+                    <div class="tech-item">
+                        <b>中心化同步策略</b>
+                        <span>中心教案作为母本，学生上课时使用的内容可以与中心教案保持联动，改动条目可继续更新到相关学生。</span>
+                    </div>
+                    <div class="tech-item">
+                        <b>本地文件与通用格式</b>
+                        <span>尽量使用可迁移、可备份、可同步的文件形式，减少被单一平台或私有格式锁住的风险。</span>
+                    </div>
+                </div>
+            </section>
+
+            <section id="export">
+                <h2>导出与同步</h2>
+                <p class="section-lead">下课后的资料整理应该尽量自动完成，学生拿到的内容也应该始终是最新版本。</p>
+                <div class="grid">
+                    <div class="card">
+                        <h3>PDF 与 HTML</h3>
+                        <p>下课时自动生成 PDF 和 HTML。HTML 模板保留更灵活的排版能力，PDF 则适合直接发给学生。</p>
+                    </div>
+                    <div class="card">
+                        <h3>网盘同步</h3>
+                        <p>导出结果可以放入学生同步文件夹，再由百度网盘或其它同步工具完成分发。</p>
+                    </div>
+                    <div class="card">
+                        <h3>排课导出</h3>
+                        <p>排课系统和周课程表可以导出给合作伙伴，也可以按机构或学生生成统计视图。</p>
+                    </div>
+                </div>
+                <div class="callout">
+                    <p>目标很简单：老师上完课之后，不需要再从一堆零散笔记里手动整理资料。软件应该把能确定的事情自动做完，把需要老师判断的地方留给老师。</p>
+                </div>
+            </section>
+
+            <section id="roadmap">
+                <h2>继续完善中</h2>
+                <p class="section-lead">
+                    画图、公式、课表、统计和多端体验都还会继续迭代。尤其是物理画图和之后可能加入的数学画图，需要更多真实使用场景来推动完善。
+                </p>
+                <div class="callout">
+                    <p>
+                        如果你在授课中有明确需求、发现 bug，或者有某个流程希望自动化，可以通过邮件反馈：
+                        <a href="mailto:weightmatrix09@163.com">weightmatrix09@163.com</a>
+                    </p>
+                </div>
+            </section>
+
+            <footer>
+                <p>© 李知本授课管理。独立开发，持续完善。</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

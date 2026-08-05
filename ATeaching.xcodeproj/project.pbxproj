@@ -6,8 +6,22 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		8800A9AA2F9D136D00B96C59 /* SwiftMath in Frameworks */ = {isa = PBXBuildFile; productRef = 8800A9A92F9D136D00B96C59 /* SwiftMath */; };
+		8843ECEA2FA4EC7B00626F5B /* TeachingCoursePackageChangeTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8843ECE92FA4EC7B00626F5B /* TeachingCoursePackageChangeTracker.swift */; };
+		88E477572FE80FFA00B9AF01 /* NodeMarkdownTextKit2VerticalMoveCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88E477562FE80FFA00B9AF01 /* NodeMarkdownTextKit2VerticalMoveCommands.swift */; };
+		88E477592FE810E400B9AF01 /* NodeMarkdownTextKit2EditorViewFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88E477582FE810E400B9AF01 /* NodeMarkdownTextKit2EditorViewFactory.swift */; };
+		88E4775B2FE8119100B9AF01 /* NodeMarkdownTextKit2EditorCoordinatorFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88E4775A2FE8119100B9AF01 /* NodeMarkdownTextKit2EditorCoordinatorFactory.swift */; };
+		88E4775D2FE811E100B9AF01 /* NodeMarkdownTextKit2EditorLifecycle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88E4775C2FE811E100B9AF01 /* NodeMarkdownTextKit2EditorLifecycle.swift */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
+		8843ECE92FA4EC7B00626F5B /* TeachingCoursePackageChangeTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TeachingCoursePackageChangeTracker.swift; sourceTree = "<group>"; };
 		88C3760F2F95267100093CC3 /* ATeaching.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ATeaching.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		88E477562FE80FFA00B9AF01 /* NodeMarkdownTextKit2VerticalMoveCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeMarkdownTextKit2VerticalMoveCommands.swift; sourceTree = "<group>"; };
+		88E477582FE810E400B9AF01 /* NodeMarkdownTextKit2EditorViewFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeMarkdownTextKit2EditorViewFactory.swift; sourceTree = "<group>"; };
+		88E4775A2FE8119100B9AF01 /* NodeMarkdownTextKit2EditorCoordinatorFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeMarkdownTextKit2EditorCoordinatorFactory.swift; sourceTree = "<group>"; };
+		88E4775C2FE811E100B9AF01 /* NodeMarkdownTextKit2EditorLifecycle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeMarkdownTextKit2EditorLifecycle.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -23,6 +37,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				8800A9AA2F9D136D00B96C59 /* SwiftMath in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -34,6 +49,11 @@
 			children = (
 				88C376112F95267100093CC3 /* ATeaching */,
 				88C376102F95267100093CC3 /* Products */,
+				8843ECE92FA4EC7B00626F5B /* TeachingCoursePackageChangeTracker.swift */,
+				88E477562FE80FFA00B9AF01 /* NodeMarkdownTextKit2VerticalMoveCommands.swift */,
+				88E477582FE810E400B9AF01 /* NodeMarkdownTextKit2EditorViewFactory.swift */,
+				88E4775A2FE8119100B9AF01 /* NodeMarkdownTextKit2EditorCoordinatorFactory.swift */,
+				88E4775C2FE811E100B9AF01 /* NodeMarkdownTextKit2EditorLifecycle.swift */,
 			);
 			sourceTree = "<group>";
 		};
@@ -65,6 +85,7 @@
 			);
 			name = ATeaching;
 			packageProductDependencies = (
+				8800A9A92F9D136D00B96C59 /* SwiftMath */,
 			);
 			productName = ATeaching;
 			productReference = 88C3760F2F95267100093CC3 /* ATeaching.app */;
@@ -78,7 +99,7 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 2630;
-				LastUpgradeCheck = 2630;
+				LastUpgradeCheck = 2660;
 				TargetAttributes = {
 					88C3760E2F95267100093CC3 = {
 						CreatedOnToolsVersion = 26.3;
@@ -94,6 +115,9 @@
 			);
 			mainGroup = 88C376062F95267100093CC3;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				8800A9A82F9D136D00B96C59 /* XCLocalSwiftPackageReference "Vendor/SwiftMath" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 88C376102F95267100093CC3 /* Products */;
 			projectDirPath = "";
@@ -119,6 +143,11 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				88E477572FE80FFA00B9AF01 /* NodeMarkdownTextKit2VerticalMoveCommands.swift in Sources */,
+				88E4775D2FE811E100B9AF01 /* NodeMarkdownTextKit2EditorLifecycle.swift in Sources */,
+				88E4775B2FE8119100B9AF01 /* NodeMarkdownTextKit2EditorCoordinatorFactory.swift in Sources */,
+				88E477592FE810E400B9AF01 /* NodeMarkdownTextKit2EditorViewFactory.swift in Sources */,
+				8843ECEA2FA4EC7B00626F5B /* TeachingCoursePackageChangeTracker.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -159,6 +188,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = F4L9P953MQ;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -178,14 +208,18 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.2;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
-				SDKROOT = macosx;
+				SDKROOT = auto;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
 		};
@@ -223,6 +257,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = F4L9P953MQ;
 				ENABLE_NS_ASSERTIONS = NO;
@@ -236,12 +271,16 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.2;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
-				SDKROOT = macosx;
+				SDKROOT = auto;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
 				SWIFT_COMPILATION_MODE = wholemodule;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
 		};
@@ -250,30 +289,46 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = ATeaching/ATeaching.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2608051658;
+				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = F4L9P953MQ;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_INCOMING_NETWORK_CONNECTIONS = NO;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
-				ENABLE_USER_SELECTED_FILES = readonly;
-				GENERATE_INFOPLIST_FILE = YES;
+				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
+				ENABLE_RESOURCE_ACCESS_BLUETOOTH = NO;
+				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
+				ENABLE_RESOURCE_ACCESS_CAMERA = NO;
+				ENABLE_RESOURCE_ACCESS_CONTACTS = NO;
+				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
+				ENABLE_RESOURCE_ACCESS_PRINTING = NO;
+				ENABLE_RESOURCE_ACCESS_USB = NO;
+				ENABLE_USER_SELECTED_FILES = readwrite;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.2608051658;
 				PRODUCT_BUNDLE_IDENTIFIER = Han.ATeaching;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
 		};
@@ -282,30 +337,46 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = ATeaching/ATeaching.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2608051658;
+				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = F4L9P953MQ;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_INCOMING_NETWORK_CONNECTIONS = NO;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
-				ENABLE_USER_SELECTED_FILES = readonly;
-				GENERATE_INFOPLIST_FILE = YES;
+				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
+				ENABLE_RESOURCE_ACCESS_BLUETOOTH = NO;
+				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
+				ENABLE_RESOURCE_ACCESS_CAMERA = NO;
+				ENABLE_RESOURCE_ACCESS_CONTACTS = NO;
+				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
+				ENABLE_RESOURCE_ACCESS_PRINTING = NO;
+				ENABLE_RESOURCE_ACCESS_USB = NO;
+				ENABLE_USER_SELECTED_FILES = readwrite;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.2608051658;
 				PRODUCT_BUNDLE_IDENTIFIER = Han.ATeaching;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
 		};
@@ -331,6 +402,20 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		8800A9A82F9D136D00B96C59 /* XCLocalSwiftPackageReference "Vendor/SwiftMath" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Vendor/SwiftMath;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		8800A9A92F9D136D00B96C59 /* SwiftMath */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = SwiftMath;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 88C376072F95267100093CC3 /* Project object */;
 }

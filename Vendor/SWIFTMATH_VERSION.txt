@@ -1,0 +1,2 @@
+installed_at=2026-04-25 23:18:01
+source_archive=SwiftMath-offline.tgz

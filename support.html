@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>李知本授课管理 - 技术支持</title>
+    <style>
+        :root {
+            --bg: #101312;
+            --panel: #171b1a;
+            --panel-strong: #1f2523;
+            --line: rgba(255, 255, 255, 0.12);
+            --text: #f5f6f2;
+            --muted: #a9b0aa;
+            --soft: #d9dfd5;
+            --green: #42d392;
+            --cyan: #58d7e8;
+            --gold: #f5c85b;
+            --orange: #ff9f43;
+            --red: #ff6b6b;
+            --shadow: 0 22px 70px rgba(0, 0, 0, 0.35);
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            margin: 0;
+            color: var(--text);
+            background:
+                radial-gradient(circle at 12% 8%, rgba(66, 211, 146, 0.16), transparent 28rem),
+                radial-gradient(circle at 82% 16%, rgba(88, 215, 232, 0.12), transparent 28rem),
+                linear-gradient(135deg, #0d1110 0%, #171a15 50%, #24200f 100%);
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.68;
+        }
+
+        a {
+            color: inherit;
+        }
+
+        .layout {
+            min-height: 100vh;
+            display: grid;
+            grid-template-columns: 290px minmax(0, 1fr);
+        }
+
+        aside {
+            position: sticky;
+            top: 0;
+            height: 100vh;
+            padding: 28px 18px;
+            background: rgba(16, 19, 18, 0.82);
+            border-right: 1px solid var(--line);
+            backdrop-filter: blur(22px);
+            overflow-y: auto;
+        }
+
+        .brand {
+            padding: 8px 10px 22px;
+            border-bottom: 1px solid var(--line);
+        }
+
+        .brand-title {
+            margin: 0;
+            font-size: 21px;
+            font-weight: 800;
+            letter-spacing: 0;
+        }
+
+        .brand-subtitle {
+            margin-top: 6px;
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        .support-card {
+            margin: 18px 0;
+            padding: 14px;
+            border: 1px solid rgba(88, 215, 232, 0.22);
+            border-radius: 10px;
+            background: rgba(88, 215, 232, 0.08);
+        }
+
+        .support-card small {
+            display: block;
+            color: var(--cyan);
+            font-weight: 700;
+            margin-bottom: 6px;
+        }
+
+        .support-card a {
+            color: var(--text);
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 13px;
+            text-decoration: none;
+            word-break: break-all;
+        }
+
+        nav a {
+            display: block;
+            padding: 9px 10px;
+            color: var(--muted);
+            text-decoration: none;
+            font-size: 14px;
+            border-radius: 8px;
+            transition: background 0.18s ease, color 0.18s ease;
+        }
+
+        nav a:hover {
+            color: var(--text);
+            background: rgba(255, 255, 255, 0.06);
+        }
+
+        .side-link {
+            display: block;
+            margin-top: 18px;
+            padding: 10px 12px;
+            border: 1px solid var(--line);
+            border-radius: 9px;
+            color: var(--soft);
+            text-decoration: none;
+            font-size: 14px;
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        main {
+            min-width: 0;
+            padding: 44px clamp(24px, 5vw, 72px) 70px;
+        }
+
+        .hero {
+            padding: 38px 0 52px;
+            min-height: 520px;
+            display: grid;
+            align-content: center;
+        }
+
+        .eyebrow {
+            display: inline-flex;
+            width: fit-content;
+            padding: 7px 11px;
+            border: 1px solid rgba(245, 200, 91, 0.28);
+            border-radius: 999px;
+            color: var(--gold);
+            background: rgba(245, 200, 91, 0.08);
+            font-size: 13px;
+            font-weight: 700;
+        }
+
+        h1 {
+            margin: 22px 0 18px;
+            max-width: 950px;
+            font-size: clamp(42px, 6vw, 76px);
+            line-height: 1.04;
+            letter-spacing: 0;
+        }
+
+        .hero-copy {
+            max-width: 850px;
+            color: var(--soft);
+            font-size: 18px;
+        }
+
+        .hero-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin-top: 28px;
+        }
+
+        .button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 44px;
+            padding: 0 18px;
+            border-radius: 9px;
+            border: 1px solid var(--line);
+            color: var(--text);
+            background: rgba(255, 255, 255, 0.07);
+            font-weight: 700;
+            text-decoration: none;
+        }
+
+        .button.primary {
+            color: #06110d;
+            background: linear-gradient(135deg, var(--green), var(--gold));
+            border: none;
+        }
+
+        section {
+            padding: 30px 0;
+            border-top: 1px solid var(--line);
+        }
+
+        h2 {
+            margin: 0 0 16px;
+            font-size: clamp(27px, 3vw, 42px);
+            letter-spacing: 0;
+        }
+
+        h3 {
+            margin: 0 0 8px;
+            font-size: 18px;
+        }
+
+        p {
+            margin: 0;
+        }
+
+        .section-lead {
+            max-width: 900px;
+            color: var(--muted);
+            font-size: 16px;
+            margin-bottom: 22px;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 14px;
+        }
+
+        .two-column {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 14px;
+        }
+
+        .card {
+            min-height: 168px;
+            padding: 20px;
+            border-radius: 10px;
+            border: 1px solid var(--line);
+            background: rgba(255, 255, 255, 0.055);
+        }
+
+        .card p,
+        .card li {
+            color: var(--muted);
+            font-size: 14px;
+        }
+
+        .card ul,
+        .card ol {
+            margin: 10px 0 0;
+            padding-left: 20px;
+        }
+
+        .card li + li {
+            margin-top: 7px;
+        }
+
+        .label {
+            display: inline-flex;
+            padding: 3px 8px;
+            margin-bottom: 10px;
+            border-radius: 999px;
+            color: #06110d;
+            background: var(--green);
+            font-size: 12px;
+            font-weight: 800;
+        }
+
+        .warning .label {
+            background: var(--orange);
+        }
+
+        .danger .label {
+            color: #fff;
+            background: var(--red);
+        }
+
+        .faq {
+            display: grid;
+            gap: 12px;
+        }
+
+        details {
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.055);
+            overflow: hidden;
+        }
+
+        summary {
+            cursor: pointer;
+            padding: 16px 18px;
+            font-weight: 800;
+        }
+
+        details p,
+        details ul {
+            padding: 0 18px 18px;
+            color: var(--muted);
+            font-size: 14px;
+        }
+
+        details ul {
+            margin: 0;
+            padding-left: 38px;
+        }
+
+        .template {
+            padding: 18px;
+            border-radius: 10px;
+            border: 1px solid rgba(88, 215, 232, 0.24);
+            background: rgba(88, 215, 232, 0.08);
+            color: var(--soft);
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            white-space: pre-wrap;
+            overflow-x: auto;
+        }
+
+        .callout {
+            margin-top: 22px;
+            padding: 22px;
+            border-radius: 12px;
+            border: 1px solid rgba(245, 200, 91, 0.28);
+            background: linear-gradient(135deg, rgba(66, 211, 146, 0.10), rgba(245, 200, 91, 0.10));
+        }
+
+        .callout p {
+            color: var(--soft);
+        }
+
+        footer {
+            padding: 30px 0 0;
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        @media (max-width: 1080px) {
+            .layout {
+                display: block;
+            }
+
+            aside {
+                position: relative;
+                height: auto;
+                border-right: none;
+                border-bottom: 1px solid var(--line);
+            }
+
+            nav {
+                display: grid;
+                grid-template-columns: repeat(3, 1fr);
+                gap: 6px;
+            }
+
+            .grid {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
+
+        @media (max-width: 680px) {
+            main {
+                padding: 28px 18px 52px;
+            }
+
+            nav,
+            .grid,
+            .two-column {
+                grid-template-columns: 1fr;
+            }
+
+            h1 {
+                font-size: 40px;
+            }
+
+            .hero-actions {
+                display: grid;
+            }
+
+            .button {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="layout">
+        <aside>
+            <div class="brand">
+                <h2 class="brand-title">李知本授课管理</h2>
+                <div class="brand-subtitle">技术支持与使用帮助</div>
+            </div>
+
+            <div class="support-card">
+                <small>开发者邮箱</small>
+                <a href="mailto:weightmatrix09@163.com">weightmatrix09@163.com</a>
+            </div>
+
+            <nav aria-label="页面导航">
+                <a href="#contact">联系支持</a>
+                <a href="#start">快速开始</a>
+                <a href="#manual">核心模块</a>
+                <a href="#faq">常见问题</a>
+                <a href="#data">数据与备份</a>
+                <a href="#feedback">反馈格式</a>
+            </nav>
+
+            <a class="side-link" href="index.html">返回产品介绍</a>
+        </aside>
+
+        <main>
+            <section class="hero" id="contact">
+                <span class="eyebrow">Support</span>
+                <h1>技术支持与使用帮助</h1>
+                <p class="hero-copy">
+                    如果你在使用李知本授课管理时遇到问题、发现 Bug、希望增加功能，或者需要说明某个真实授课流程，
+                    可以通过邮件联系开发者。反馈越具体，问题越容易复现和修复。
+                </p>
+                <div class="hero-actions">
+                    <a class="button primary" href="mailto:weightmatrix09@163.com">发送邮件</a>
+                    <a class="button" href="#feedback">查看反馈格式</a>
+                </div>
+            </section>
+
+            <section id="start">
+                <h2>快速开始</h2>
+                <p class="section-lead">第一次使用时，建议按这个顺序建立基础数据。这样授课、课反、课时统计和同步文件夹才能串起来。</p>
+                <div class="grid">
+                    <div class="card">
+                        <span class="label">1</span>
+                        <h3>建立学生</h3>
+                        <p>在学生页添加学生，并维护学生基础资料。需要同步资料时，为学生设置同步文件夹。</p>
+                    </div>
+                    <div class="card">
+                        <span class="label">2</span>
+                        <h3>准备教案</h3>
+                        <p>在教案系统中建立中心教案和章节教案。NodeMarkdown 适合按知识点组织长期维护的内容。</p>
+                    </div>
+                    <div class="card">
+                        <span class="label">3</span>
+                        <h3>配置统计</h3>
+                        <p>如果需要课时统计，先添加机构，再给学生设置机构和课时价格。课时价格按 2 小时价格填写。</p>
+                    </div>
+                    <div class="card">
+                        <span class="label">4</span>
+                        <h3>进入授课</h3>
+                        <p>选择学生、选择教案，点击开课后开始记录内容。下课时系统会处理课反、课时和导出。</p>
+                    </div>
+                    <div class="card">
+                        <span class="label">5</span>
+                        <h3>导出给学生</h3>
+                        <p>下课导出的 PDF 和 HTML 会进入学生同步文件夹中的指定目录，方便通过网盘同步给学生。</p>
+                    </div>
+                    <div class="card">
+                        <span class="label">6</span>
+                        <h3>检查备份</h3>
+                        <p>重要数据建议定期备份，尤其是系统文件夹、学生文件夹、中心教案和统计课单。</p>
+                    </div>
+                </div>
+            </section>
+
+            <section id="manual">
+                <h2>核心模块说明</h2>
+                <p class="section-lead">软件模块较多，但主线清楚：教案负责内容，授课负责过程，统计负责课时，档案和同步负责长期管理。</p>
+                <div class="two-column">
+                    <div class="card">
+                        <h3>教案系统</h3>
+                        <ul>
+                            <li>支持中心教案和章节教案。</li>
+                            <li>内容按 Node 层级组织，适合拆成知识点包。</li>
+                            <li>支持图片、LaTeX 公式、Markdown 和部分 HTML 样式。</li>
+                        </ul>
+                    </div>
+                    <div class="card">
+                        <h3>授课系统</h3>
+                        <ul>
+                            <li>记录学生本节课讲过的内容。</li>
+                            <li>随堂可插入 H3 知识点包。</li>
+                            <li>下课时生成课反、导出 PDF / HTML，并处理同步。</li>
+                        </ul>
+                    </div>
+                    <div class="card">
+                        <h3>NodeMarkdown 编辑器</h3>
+                        <ul>
+                            <li>层级化 Markdown，支持源码编辑和即时渲染。</li>
+                            <li>公式点击可编辑，确认后自动渲染。</li>
+                            <li>图片可设置宽度，并参与 PDF / HTML 导出。</li>
+                        </ul>
+                    </div>
+                    <div class="card">
+                        <h3>课时统计</h3>
+                        <ul>
+                            <li>按学生、机构、月份统计课时和费用。</li>
+                            <li>支持排课、周表、修改课程和导出课程表。</li>
+                            <li>机构删除不会破坏历史上课单快照。</li>
+                        </ul>
+                    </div>
+                    <div class="card">
+                        <h3>画图功能</h3>
+                        <ul>
+                            <li>面向物理教学中的受力图、斜面、坐标系和几何结构。</li>
+                            <li>支持画笔、文字、图形、橡皮、撤销恢复等基础操作。</li>
+                            <li>后续会继续按实际教学需求完善。</li>
+                        </ul>
+                    </div>
+                    <div class="card">
+                        <h3>单列表格</h3>
+                        <ul>
+                            <li>适合学生信息、课反模板等标准化文本数据。</li>
+                            <li>支持导出图片，方便保存和分享。</li>
+                            <li>当前重点是稳定做好单列表格，多列表格暂不作为核心功能。</li>
+                        </ul>
+                    </div>
+                </div>
+            </section>
+
+            <section id="faq">
+                <h2>常见问题</h2>
+                <div class="faq">
+                    <details open>
+                        <summary>下课后学生资料没有更新怎么办？</summary>
+                        <p>先检查该学生是否设置了同步文件夹，再确认下课导出的 PDF / HTML 是否生成到学生同步文件夹的对应子目录。如果使用网盘同步，还需要确认网盘客户端正在运行并已完成同步。</p>
+                    </details>
+                    <details>
+                        <summary>课时统计没有自动添加课程怎么办？</summary>
+                        <p>请检查统计功能是否打开，学生统计设置里机构和课时价格是否完整。机构为空时不会静默添加课时记录。课时价格是 2 小时价格，不是 1 小时价格。</p>
+                    </details>
+                    <details>
+                        <summary>公式显示不正常怎么办？</summary>
+                        <p>请优先确认公式是否是标准 LaTeX 语法。若某个特殊符号显示异常，请把原始公式、截图和出现位置一起发给开发者，方便补充支持。</p>
+                    </details>
+                    <details>
+                        <summary>图片路径不对怎么办？</summary>
+                        <p>请说明是在授课模式、教案编辑模式还是普通 Markdown 中插入图片。不同模式的图片目录规则不同，反馈时最好附上生成的 Markdown 图片链接。</p>
+                    </details>
+                    <details>
+                        <summary>可以迁移数据吗？</summary>
+                        <p>软件尽量使用通用文本、JSON、CSV、图片、PDF、HTML 等文件形式。迁移前建议完整备份系统文件夹、学生文件夹和教案文件夹。</p>
+                    </details>
+                </div>
+            </section>
+
+            <section id="data">
+                <h2>数据与备份</h2>
+                <p class="section-lead">授课数据很重要。任何系统都应该默认重视备份，尤其是长期积累的教案和学生资料。</p>
+                <div class="grid">
+                    <div class="card">
+                        <span class="label">建议</span>
+                        <h3>定期备份</h3>
+                        <p>建议定期备份 App 的系统目录、教案目录、学生目录和同步目录。重要修改前可以额外手动复制一份。</p>
+                    </div>
+                    <div class="card warning">
+                        <span class="label">注意</span>
+                        <h3>不要手动破坏结构</h3>
+                        <p>可以查看和备份文件，但不建议随意改名、移动或删除系统生成的 JSON、CSV、图片目录和教案目录。</p>
+                    </div>
+                    <div class="card danger">
+                        <span class="label">重要</span>
+                        <h3>删除前确认</h3>
+                        <p>删除学生、机构、教案、课程记录前请确认已经备份。历史上课单会尽量保留快照，但用户主动删除的文件无法保证恢复。</p>
+                    </div>
+                </div>
+                <div class="callout">
+                    <p>如果你不确定某个文件能不能删，建议先不要删，先邮件问一下。真实授课数据比“清理一下看起来舒服”更重要。</p>
+                </div>
+            </section>
+
+            <section id="feedback">
+                <h2>反馈格式</h2>
+                <p class="section-lead">为了更快定位问题，反馈 Bug 时建议包含以下信息。尤其是编辑器、公式、图片、同步、统计这类问题，复现步骤非常关键。</p>
+                <div class="template">标题：简短描述问题
+
+设备：Mac / iPad / iPhone
+系统版本：
+App 版本：
+
+问题发生位置：
+例如：授课 - 某学生 - NodeMarkdown 编辑器 - TextKit2 管线
+
+复现步骤：
+1. 
+2. 
+3. 
+
+预期结果：
+
+实际结果：
+
+附件：
+截图、录屏、出错文字、相关公式或生成的 Markdown 链接</div>
+                <div class="hero-actions">
+                    <a class="button primary" href="mailto:weightmatrix09@163.com">发送反馈邮件</a>
+                    <a class="button" href="index.html">查看产品介绍</a>
+                </div>
+            </section>
+
+            <footer>
+                <p>© 李知本授课管理。独立开发，持续完善。</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>
