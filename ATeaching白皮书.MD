@@ -97,16 +97,16 @@ Ateaching开发记录.MD
 
 这是未来把排课能力剥离成 Flutter / Web / iOS / Android / Windows / macOS 多端应用的预留目录。当前只应作为独立项目的起点，不应反向污染 ATeaching 主工程。
 
-## 5. 构建产物的统一管理
+## 5. 构建产物与暂存文件的统一管理
 
-为保持项目目录干净（尤其是项目位于 iCloud 云盘时，项目树内的构建中间件会被 iCloud 当作资料同步放大），构建产物统一存放在 Xcode 派生数据目录：
+为保持项目目录干净（尤其是项目位于 iCloud 云盘时，项目树内的构建中间件会被 iCloud 当作资料同步放大），统一约定：每个 App 在 `/Users/Witten/Downloads/Temp/` 下建立自己名字的文件夹作为暂存目录，构建产物、中间件、临时文件一律放那里。ATeaching 的暂存目录：
 
 ```text
-~/Library/Developer/Xcode/DerivedData/ATeaching
+/Users/Witten/Downloads/Temp/ATeaching
 ```
 
-- 图形界面构建位置由共享设置 `ATeaching.xcodeproj/project.xcworkspace/xcshareddata/WorkspaceSettings.xcsettings` 指定。
-- 命令行构建固定通过 `Scripts/build.sh` 执行，内部统一加 `-derivedDataPath` 指向同一目录；`clean` 子命令可清理全部构建产物。
+- 图形界面构建位置由共享设置 `ATeaching.xcodeproj/project.xcworkspace/xcshareddata/WorkspaceSettings.xcsettings` 指定，指向该暂存目录。
+- 命令行构建固定通过 `Scripts/build.sh` 执行，内部统一加 `-derivedDataPath` 指向同一目录；`clean` 子命令可清空该 App 的暂存目录。
 - 项目目录内（含 `Vendor/SwiftMath` 包目录）不应出现任何 `build` 目录；源码树中的临时构建产物一律直接删除。
 - 注意：不要用 pbxproj 工程级 `SYMROOT` 收拢输出，它会触发 legacy build locations 导致 Swift 包依赖无法解析。
 

@@ -745,7 +745,7 @@ NodeMarkdown 的 PDF 缩放比例由设置中的 PDF 设置控制。
 
 ## 8. 为什么项目文件夹突然变大了？/ 项目里出现 build 目录怎么办？
 
-构建产物默认统一存放在 `~/Library/Developer/Xcode/DerivedData/ATeaching`，项目文件夹内不应出现 `build` 目录。如果项目里出现 `build` 或 `Vendor/SwiftMath/build`，是直接用 `xcodebuild` 命令行构建时落错了位置，可以删除这两个目录（不影响源码），命令行构建请改走统一脚本：
+构建产物统一存放在 `/Users/Witten/Downloads/Temp/ATeaching`（每个 App 在 `/Users/Witten/Downloads/Temp/` 下建自己名字的文件夹作暂存目录），项目文件夹内不应出现 `build` 目录。如果项目里出现 `build` 或 `Vendor/SwiftMath/build`，是直接用 `xcodebuild` 命令行构建时落错了位置，可以删除这两个目录（不影响源码），命令行构建请改走统一脚本：
 
 ```bash
 ./Scripts/build.sh          # macOS Debug
