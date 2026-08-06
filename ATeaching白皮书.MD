@@ -99,10 +99,10 @@ Ateaching开发记录.MD
 
 ## 5. 构建产物与暂存文件的统一管理
 
-为保持项目目录干净（尤其是项目位于 iCloud 云盘时，项目树内的构建中间件会被 iCloud 当作资料同步放大），统一约定：每个 App 在 `/Users/Witten/Downloads/Temp/` 下建立自己名字的文件夹作为暂存目录，构建产物、中间件、临时文件一律放那里。ATeaching 的暂存目录：
+为保持项目目录干净（尤其是项目位于 iCloud 云盘时，项目树内的构建中间件会被 iCloud 当作资料同步放大），统一约定：每个 App 在 `/Users/Witten/Downloads/Temp/SoftWare/XcodeTemp/` 下建立自己名字的文件夹作为暂存目录，构建产物、中间件、临时文件一律放那里。ATeaching 的暂存目录：
 
 ```text
-/Users/Witten/Downloads/Temp/ATeaching
+/Users/Witten/Downloads/Temp/SoftWare/XcodeTemp/ATeaching
 ```
 
 - 图形界面构建位置由共享设置 `ATeaching.xcodeproj/project.xcworkspace/xcshareddata/WorkspaceSettings.xcsettings` 指定，指向该暂存目录。

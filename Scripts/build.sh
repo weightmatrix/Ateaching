@@ -1,15 +1,15 @@
 #!/bin/bash
-# 统一构建脚本：每个 App 在 /Users/Witten/Downloads/Temp/ 下建立自己名字的文件夹，
+# 统一构建脚本：每个 App 在 /Users/Witten/Downloads/Temp/SoftWare/XcodeTemp/ 下建立自己名字的文件夹，
 # 全部构建产物统一落在 <App名> 文件夹内，不再写入项目目录（如 build/、Vendor/SwiftMath/build）。
-# 约定：Downloads/Temp/<App名> 即该 App 的暂存目录（构建、中间件、临时文件均放这里）。
+# 约定：Downloads/Temp/SoftWare/XcodeTemp/<App名> 即该 App 的暂存目录。
 # 用法：
-#   ./Scripts/build.sh                 # macOS Debug
-#   ./Scripts/build.sh ios            # iOS Debug
-#   ./Scripts/build.sh clean          # 清理该 App 的暂存目录
+#   ./Scripts/build.sh                # macOS Debug
+#   ./Scripts/build.sh ios           # iOS Debug
+#   ./Scripts/build.sh clean         # 清理该 App 的暂存目录
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-DERIVED_DATA="/Users/Witten/Downloads/Temp/ATeaching"
+DERIVED_DATA="/Users/Witten/Downloads/Temp/SoftWare/XcodeTemp/ATeaching"
 
 cd "$PROJECT_DIR"
 
