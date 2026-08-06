@@ -1,3 +1,19 @@
+# 898 构建产物统一迁移到 DerivedData
+
+- 版本号更新为`V1.2608062236`。
+- 查明"代码突然变大到一百多M"的原因：项目目录内的 `build/`（App 命令行构建产物 35M）与 `Vendor/SwiftMath/build`（本地 Swift 公式包构建产物 177M）被我此前用 `xcodebuild` 命令行验证构建时写进了项目目录。Xcode 图形界面的构建默认进 `~/Library/Developer/Xcode/DerivedData`，命令行不带 `-derivedDataPath` 时默认落在项目树内；SwiftMath 包又会在包目录内生成自己的产物。源码本身只有约 16M。
+- 清理并删除项目内两个构建产物目录；实测结论：凡是写入项目树（又位于 iCloud 云盘）的构建中间件都会被 iCloud 当作资料同步放大。
+- 统一构建位置：新增 `ATeaching.xcodeproj/project.xcworkspace/xcshareddata/WorkspaceSettings.xcsettings`，把共享派生数据位置指到 `~/Library/Developer/Xcode/DerivedData/ATeaching`，Xcode 图形界面的构建从此统一落在这里。
+- 新增统一构建脚本 `Scripts/build.sh`：命令行构建固定加 `-derivedDataPath` 指向同一目录，并提供 `clean` 子命令清理统一构建目录；`./Scripts/build.sh`（macOS Debug）、`./Scripts/build.sh ios`（iOS Debug）。
+- 曾尝试在 pbxproj 工程级设置 `SYMROOT` 统一输出，但会触发"legacy build locations"，导致 Swift 包依赖无法解析，已回退；正确做法是派生数据位置而非 SYMROOT。
+- `.gitignore` 增加对临时目录的排除；仓库做 `git gc` 后 `.git` 从 54M 瘦身到 9.6M。
+
+## 验证
+
+- `./Scripts/build.sh`（macOS Debug）构建通过；构建后项目根目录与 `Vendor/SwiftMath` 目录内均无 `build` 残留。
+- `./Scripts/build.sh ios`（iOS Debug）构建通过；项目目录保持干净。
+- 统一构建目录 `~/Library/Developer/Xcode/DerivedData/ATeaching` 下生成全部产物。
+
 # 896 批注与橡皮按钮切换与高亮
 
 - 版本号更新为`V1.2608051658`。
