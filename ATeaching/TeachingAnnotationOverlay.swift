@@ -28,27 +28,17 @@ final class TeachingAnnotationController: ObservableObject {
     private(set) var clearToken = 0
 
     func handlePenTap() {
-        if isActive && tool == .pen {
-            // 批注激活时再点批注：清空并关闭批注状态
-            clearAll()
-            isActive = false
-        } else {
-            // 未激活进入批注；或橡皮激活时点笔进入手写批注
+        if !isActive {
             isActive = true
-            tool = .pen
         }
+        tool = .pen
     }
 
     func handleEraserTap() {
-        if isActive && tool == .eraser {
-            // 橡皮激活时再点橡皮：清空并关闭批注状态
-            clearAll()
-            isActive = false
-        } else {
-            // 未激活进入橡皮；或笔激活时点橡皮进入橡皮
+        if !isActive {
             isActive = true
-            tool = .eraser
         }
+        tool = .eraser
     }
 
     func clearAll() {
