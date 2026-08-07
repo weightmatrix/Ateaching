@@ -1,3 +1,20 @@
+# 899 H3包时间戳与同步方向修复
+
+- 版本号更新为`V1.2608080728`。
+- 修复 `NodeMarkdownTextKitEditor.parse` 的回退逻辑：当 `canTrustRowMetadata == false` 时，删除位置匹配和末尾行层级的盲目赋值（策略3/4），仅保留 UUID 精确匹配，其余交还给 `decodeLine` 从文本前缀自行解析层级。
+- 修复 `decodeLine` 在无元数据时保留完整行文本（不再 `dropFirst`），确保 `commonPrefixCount`/`commonSuffixCount` 在任意路径下均产出相同格式的 content 元组。
+- 修复 `TeachingCourseWorkflowService.refreshNotebookBySources:2072` 的时间戳比较从 `>=` 改为 `>`。旧逻辑在 mtime 相等时让母本无条件覆盖随堂笔记，新逻辑相等时不动随堂笔记。
+- 新增 `NodeMarkdownDocument.propagateChildMtimeToH3Roots()`：扫描每个 H3 包，当子节点 mtime 晚于根节点时，将根节点 mtime 同步为子节点中最新的值。此方法在每次解析完成和每次写盘前调用，确保编辑子行时 H3 根节点的时间戳正确反映包内变化。
+
+## 背景
+
+H3 包的同步方向（脏包回传母本 vs 母本覆盖随堂）通过比较根节点的 `mtimeCache` 判断。但改动 H4/H5/正文等子行时，根 H3 自身的 level 和 text 不变 → parse 的 `isChanged` 为 false → `mtimeCache` 不被更新 → 时间戳比较失效。这导致上课时改的子行非但不回传母本，反而被母本覆盖。
+
+## 验证
+
+- macOS + iOS 双平台 Debug 构建通过。
+- `refreshNotebookBySources` 的 `>=` 已改为 `>`；`propagateChildMtimeToH3Roots` 在全部4处 `touchChangedH3Packages` 调用点之后执行。
+
 # 898 构建产物统一迁移到 DerivedData
 
 - 版本号更新为`V1.2608062236`。

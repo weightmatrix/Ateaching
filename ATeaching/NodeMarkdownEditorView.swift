@@ -930,6 +930,7 @@ struct NodeMarkdownEditorView: View {
                 var persistenceDocument = documentSnapshot
                 if let diskDocument = try? NodeMarkdownFileManager.read(fileURL: targetURL).0 {
                     _ = persistenceDocument.touchChangedH3Packages(comparedTo: diskDocument)
+                    persistenceDocument.propagateChildMtimeToH3Roots()
                 }
                 try NodeMarkdownFileManager.write(document: persistenceDocument, meta: metaSnapshot, to: targetURL)
                 await TeachingCourseWriteCoordinator.shared.release(key: writeKey)
@@ -987,10 +988,11 @@ struct NodeMarkdownEditorView: View {
         }
         do {
             var persistenceDocument = documentSnapshot
-            if let diskDocument = try? NodeMarkdownFileManager.read(fileURL: fileURL).0 {
-                _ = persistenceDocument.touchChangedH3Packages(comparedTo: diskDocument)
-            }
-            try NodeMarkdownFileManager.write(document: persistenceDocument, meta: metaSnapshot, to: fileURL)
+                if let diskDocument = try? NodeMarkdownFileManager.read(fileURL: fileURL).0 {
+                    _ = persistenceDocument.touchChangedH3Packages(comparedTo: diskDocument)
+                    persistenceDocument.propagateChildMtimeToH3Roots()
+                }
+                try NodeMarkdownFileManager.write(document: persistenceDocument, meta: metaSnapshot, to: fileURL)
             await TeachingCourseWriteCoordinator.shared.release(key: writeKey)
             if documentRevision == revisionSnapshot {
                 document = persistenceDocument
@@ -1172,6 +1174,7 @@ struct NodeMarkdownEditorView: View {
         }
         _ = parsed.restoreMissingH3SourceLinks(from: previousDocument)
         let touchedH3IDs = parsed.touchChangedH3Packages(comparedTo: previousDocument)
+        parsed.propagateChildMtimeToH3Roots()
         document = parsed
         synchronizeDocumentIndex(
             previousDocument: previousDocument,
@@ -1360,6 +1363,7 @@ struct NodeMarkdownEditorView: View {
             )
             _ = parsed.restoreMissingH3SourceLinks(from: previousDocument)
             let touchedH3IDs = parsed.touchChangedH3Packages(comparedTo: previousDocument)
+            parsed.propagateChildMtimeToH3Roots()
             await MainActor.run {
                 guard !Task.isCancelled, parseGeneration == textKitParseGeneration else { return }
                 document = parsed

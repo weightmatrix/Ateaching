@@ -70,16 +70,16 @@ enum TeachingLessonPlanningStore {
 /// 排课中的占位块不是学生课程，不参与预计课时和预计收入。
 /// UUID沿用旧数据，显示名称可以安全迁移，不依赖文字判断身份。
 enum TeachingLessonPlanningPlaceholder {
-    static let studentID = UUID(uuidString: "5A6DB295-6BB5-4D1C-84E8-A19D9490E5AD")!
-    static let institutionID = UUID(uuidString: "7E7E9A8C-18DE-4C42-B569-E7C80431D9A4")!
-    static let studentName = "占位"
-    static let institutionName = "空课"
+    nonisolated static let studentID = UUID(uuidString: "5A6DB295-6BB5-4D1C-84E8-A19D9490E5AD")!
+    nonisolated static let institutionID = UUID(uuidString: "7E7E9A8C-18DE-4C42-B569-E7C80431D9A4")!
+    nonisolated static let studentName = "占位"
+    nonisolated static let institutionName = "空课"
 
-    static func isPlaceholder(_ record: TeachingLessonRecord) -> Bool {
+    nonisolated static func isPlaceholder(_ record: TeachingLessonRecord) -> Bool {
         record.studentID == studentID || record.institutionID == institutionID
     }
 
-    static func normalizedRecord(_ record: TeachingLessonRecord) -> TeachingLessonRecord {
+    nonisolated static func normalizedRecord(_ record: TeachingLessonRecord) -> TeachingLessonRecord {
         guard isPlaceholder(record) else { return record }
         var normalized = record
         normalized.studentID = studentID

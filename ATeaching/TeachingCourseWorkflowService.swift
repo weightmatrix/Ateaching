@@ -2069,7 +2069,7 @@ enum TeachingCourseWorkflowService {
             if notebookDigest == sourceDigest {
                 continue
             }
-            if sourceRoot.mtimeCache >= rootNode.mtimeCache {
+            if sourceRoot.mtimeCache > rootNode.mtimeCache {
                 sourcePackage[0].sourceID = sourceID
                 sourcePackage[0].sourceFile = sourceFile
                 document.nodes.replaceSubrange(range.start..<range.end, with: sourcePackage)

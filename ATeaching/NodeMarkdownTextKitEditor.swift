@@ -5884,18 +5884,15 @@ enum NodeMarkdownPlainTextCodec {
                 if canTrustRowMetadata {
                     return rowMetadata?[index].level
                 }
-                // 正文已经不携带层级前缀。行表短暂错位时，只接受仍能按UUID
-                // 对上原Node的层级；否则保留当前位置原层级，绝不能全篇降为正文。
+                // 元数据条目数与文本行数不匹配时，仅保留UUID精确匹配的层级，
+                // 其余交还给decodeLine从文本前缀自行解析，杜绝错位赋值。
                 if let metadataRows = rowMetadata, metadataRows.indices.contains(index) {
                     let metadata = metadataRows[index]
                     if let nodeID = UUID(uuidString: metadata.nodeID), previousByID[nodeID] != nil {
                         return metadata.level
                     }
                 }
-                if previousNodes.indices.contains(index) {
-                    return previousNodes[index].level
-                }
-                return rowMetadata?.last?.level ?? previousNodes.last?.level ?? 7
+                return nil
             }()
             return decodeLine(line, metadataLevel: metadataLevel)
         }
@@ -6057,10 +6054,11 @@ enum NodeMarkdownPlainTextCodec {
         if let metadataLevel {
             return (max(1, min(12, metadataLevel)), line)
         }
-        // 仅作为旧调用者的过渡兼容；NodeMarkdown编辑器不再将前缀放入文本。
+        // 从正文前缀解析层级，不剥离前缀以保证与信任元数据路径产出相同格式的content，
+        // 避免prefix/suffix匹配因内容格式不一致而全线失败。
         let prefix = detectPrefix(in: line)
         if !prefix.isEmpty {
-            return (NodeMarkdownPrefixCodec.decode(prefix: prefix), String(line.dropFirst(prefix.count)))
+            return (NodeMarkdownPrefixCodec.decode(prefix: prefix), line)
         }
         return (7, line)
     }

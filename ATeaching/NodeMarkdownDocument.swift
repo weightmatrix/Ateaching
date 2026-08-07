@@ -161,6 +161,35 @@ struct NodeMarkdownDocument: Hashable, Codable {
         nodes[ownerIndex].cache = NodeMarkdownCacheCodec.encode(mtime: now)
     }
 
+    /// 将H3包内任意子节点比根节点更晚的mtimeCache传播到根节点。
+    /// 仅依赖当前文档自身的时间戳，不比较外部版本。
+    mutating func propagateChildMtimeToH3Roots() {
+        var h3RootIndex: Int?
+        var maxChildMtime: Date?
+        for index in nodes.indices {
+            let node = nodes[index]
+            if node.level == 3 {
+                if let root = h3RootIndex, let mtime = maxChildMtime, mtime > nodes[root].mtimeCache {
+                    nodes[root].mtimeCache = mtime
+                    nodes[root].cache = NodeMarkdownCacheCodec.encode(mtime: mtime)
+                }
+                h3RootIndex = index
+                maxChildMtime = nil
+            } else if node.level > 3, let root = h3RootIndex {
+                if maxChildMtime == nil || node.mtimeCache > maxChildMtime! {
+                    maxChildMtime = node.mtimeCache
+                }
+            } else if node.level < 3 {
+                h3RootIndex = nil
+                maxChildMtime = nil
+            }
+        }
+        if let root = h3RootIndex, let mtime = maxChildMtime, mtime > nodes[root].mtimeCache {
+            nodes[root].mtimeCache = mtime
+            nodes[root].cache = NodeMarkdownCacheCodec.encode(mtime: mtime)
+        }
+    }
+
     mutating func touchChangedH3Packages(comparedTo previousDocument: NodeMarkdownDocument, at timestamp: Date = Date()) -> Set<String> {
         let currentIndex = NodeMarkdownDocumentIndex(nodes: nodes)
         let previousStructureIndex = NodeMarkdownDocumentIndex(nodes: previousDocument.nodes)
