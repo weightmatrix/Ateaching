@@ -28,17 +28,21 @@ final class TeachingAnnotationController: ObservableObject {
     private(set) var clearToken = 0
 
     func handlePenTap() {
-        if !isActive {
+        if isActive && tool == .pen {
+            isActive = false
+        } else {
             isActive = true
+            tool = .pen
         }
-        tool = .pen
     }
 
     func handleEraserTap() {
-        if !isActive {
+        if isActive && tool == .eraser {
+            isActive = false
+        } else {
             isActive = true
+            tool = .eraser
         }
-        tool = .eraser
     }
 
     func clearAll() {
