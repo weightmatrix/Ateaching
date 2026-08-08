@@ -92,12 +92,22 @@ extension NodeMarkdownTextKit2TextView {
         }
         let fragmentFrame = fragment.layoutFragmentFrame
         let lineBounds = lineFragment.typographicBounds
-        return NSRect(
+        var rect = NSRect(
             x: textContainerOrigin.x + fragmentFrame.minX + lineBounds.minX,
             y: textContainerOrigin.y + fragmentFrame.minY + lineBounds.minY,
             width: lineBounds.width,
             height: lineBounds.height
         )
+        if layout.range.length == 0 {
+            let font = Self.resolvedFont(for: layout.lineStyle.roleStyle)
+            let paragraphStyle = Self.paragraphStyle(for: layout, font: font)
+            let minHeight = paragraphStyle.minimumLineHeight
+            if rect.height < minHeight {
+                rect.origin.y -= (minHeight - rect.height) * 0.5
+                rect.size.height = minHeight
+            }
+        }
+        return rect
     }
 
     private func markerDrawingRect(for layout: NodeMarkdownTextKit2RowLayout, lineRect: NSRect) -> NSRect {
