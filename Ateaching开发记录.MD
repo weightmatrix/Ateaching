@@ -1,3 +1,16 @@
+# 906 投屏功能初版
+
+- 版本号更新为`V1.2608081144`。
+- 新增投屏标签到底部导航栏：授课 → 档案 → **投屏** → 设置。图标 `rectangle.connected.to.line.below`，蓝色高亮。
+- 投屏主页面包含两个入口按钮：「APP内投屏」和「网络投屏（待开发）」。
+- **APP内投屏**（`ScreenCastService` + `ScreenCastView`）：
+  - 投屏端：启动 TCP 监听（端口 55555），等待接收端连接。教室端打开上课时通过 `pushDocument` 推送随堂笔记文档（NodeMarkdownDocument JSON + 学生名）到所有连接的接收端。
+  - 接收端：输入投屏端 IP 和端口连接，自动请求文档。接收后以只读 WKWebView 展示随堂笔记 HTML。
+  - 接收端只有「批注」按钮，批注颜色非红色，每新学生自动分配新颜色（蓝/绿/橙/紫/青/粉等 10 色调色板）。
+  - 接收端不能编辑、不能下课。仅可批注叠加。
+- **状态监控**：主页面显示主控 IP、端口、连接状态、接收学生名。
+- 新增文件：`ScreenCastView.swift`、`ScreenCastService.swift`、`ScreenCastReceiverView.swift`。修改 `GlassTabBar.swift`、`ContentView.swift`。
+
 # 905 公式垂直定位改用字体真实指标
 
 - 版本号更新为`V1.2608081018`。

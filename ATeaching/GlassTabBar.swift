@@ -4,6 +4,7 @@ import SwiftUI
 enum TeachingTab: CaseIterable {
     case teaching
     case archive
+    case screenCast
     case settings
 
     var title: String {
@@ -12,6 +13,8 @@ enum TeachingTab: CaseIterable {
             return "授课"
         case .archive:
             return "档案"
+        case .screenCast:
+            return "投屏"
         case .settings:
             return "设置"
         }
@@ -23,6 +26,8 @@ enum TeachingTab: CaseIterable {
             return "person.2.fill"
         case .archive:
             return "tray.full.fill"
+        case .screenCast:
+            return "rectangle.connected.to.line.below"
         case .settings:
             return "gearshape.fill"
         }
@@ -34,6 +39,8 @@ enum TeachingTab: CaseIterable {
             return .pink
         case .archive:
             return .green
+        case .screenCast:
+            return .blue
         case .settings:
             return .orange
         }

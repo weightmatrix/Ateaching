@@ -37,6 +37,8 @@ struct ContentView: View {
             TeachingHomeView()
         case .archive:
             ArchiveView()
+        case .screenCast:
+            ScreenCastView()
         case .settings:
             AppSettingsView()
         }
