@@ -1,5 +1,7 @@
 - 投屏服务生命周期修复：`ScreenCastService` 从 `ScreenCastView` 内部 `@StateObject` 提升到 `ContentView` 层级，切换标签不再中断投屏。工具栏显示"投屏中"/"接收中"状态指示。App 退出时自动停止所有投屏连接。
 
+- 批注 canvas 生命周期修复：移除 `if isActive` 条件渲染。canvas 始终存在于视图树中，通过 `allowsHitTesting(isActive)` 控制交互。`isActive=false` 时不再销毁 NSView，批注笔画保留不丢失。
+
 # 908 暂停上课中母本有更新机制
 
 - 版本号更新为`V1.2608081956`。

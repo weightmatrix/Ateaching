@@ -116,12 +116,10 @@ struct NodeMarkdownEditorView: View {
                     .ignoresSafeArea()
                     .overlay { ProgressView() }
             }
-            if annotationController.isActive {
-                TeachingAnnotationCanvasHost(controller: annotationController)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .contentShape(Rectangle())
-                    .allowsHitTesting(true)
-            }
+            TeachingAnnotationCanvasHost(controller: annotationController)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
+                .allowsHitTesting(annotationController.isActive)
         }
         .navigationTitle("Node-\(fileURL.lastPathComponent)")
         .toolbar {
