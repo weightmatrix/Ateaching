@@ -12,9 +12,9 @@ struct TeachingLessonStatisticsSubpageView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     /// 统计页顶部的三个子页面模式。
     private enum SectionMode: String, CaseIterable, Identifiable {
-        case institutions = "机构"
-        case schedule = "成课"
         case planning = "排课"
+        case schedule = "成课"
+        case institutions = "机构"
         case weekly = "周表"
 
         var id: String { rawValue }

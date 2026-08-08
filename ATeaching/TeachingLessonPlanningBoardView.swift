@@ -106,9 +106,6 @@ private struct TeachingLessonPlanningBoardView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .task {
             load()
-            if kind == .planning {
-                promotePastPlanning()
-            }
         }
         .sheet(item: $editingRecord) { record in
             TeachingLessonEditorSheet(lesson: record, students: students) { draft in
@@ -669,7 +666,7 @@ private struct TeachingLessonPlanningBoardView: View {
     }
 
     private var planningLockDate: Date? {
-        kind == .planning ? Date() : nil
+        nil
     }
 
     private var visibleWeekIntervals: [DateInterval] {
@@ -1287,6 +1284,7 @@ struct TeachingPlanningInteractiveWeekView: View {
 
     @State private var draggingRecordID: UUID?
     @State private var dragTranslations: [UUID: CGSize] = [:]
+    @State private var menuRecord: TeachingLessonRecord?
 
     private let startHour = 8
     private let endHour = 24
@@ -1478,7 +1476,6 @@ struct TeachingPlanningInteractiveWeekView: View {
             LongPressGesture(minimumDuration: 0.25)
                 .sequenced(before: DragGesture(minimumDistance: 0))
                 .onChanged { value in
-                    guard !locked else { return }
                     if case let .second(true, drag?) = value {
                         draggingRecordID = record.id
                         dragTranslations[record.id] = drag.translation
@@ -1487,19 +1484,28 @@ struct TeachingPlanningInteractiveWeekView: View {
                 .onEnded { value in
                     draggingRecordID = nil
                     dragTranslations[record.id] = nil
-                    guard !locked else { return }
                     guard case let .second(true, drag?) = value else { return }
                     let dayDelta = Int((drag.translation.width / max(1, dayWidth + columnSpacing)).rounded())
                     let hourDelta = Int((drag.translation.height / rowHeight).rounded())
                     onMoveLesson(record, dayDelta, hourDelta)
                 },
-            including: locked ? .none : lessonDragGestureMask
+            including: lessonDragGestureMask
         )
         .onTapGesture {
-            guard !locked else { return }
-            onEditLesson(record)
+            menuRecord = record
+        }
+        .popover(item: $menuRecord) { record in
+            lessonActionMenu(for: record)
         }
         .contextMenu {
+            lessonActionMenu(for: record)
+        }
+    }
+
+    @ViewBuilder
+    private func lessonActionMenu(for record: TeachingLessonRecord) -> some View {
+        let locked = isRecordLocked(record)
+        Group {
             Button(canInsertWeeklyTemplate ? "复制文本·学生·当月" : "复制文本·学生·当周") {
                 onCopyStudent(record)
             }
@@ -1521,24 +1527,17 @@ struct TeachingPlanningInteractiveWeekView: View {
                 .disabled(locked)
             Button("前进半小时") { onShiftLesson(record, 30) }
                 .disabled(locked)
-            Button("修改") {
-                onEditLesson(record)
-            }
-            .disabled(locked)
+            Button("修改") { onEditLesson(record) }
+                .disabled(locked)
+            Divider()
             Button("删除", role: .destructive) {
                 onDeleteLesson(record)
             }
         }
     }
 
-    /// iPhone上的长按只交给右键菜单，避免拖动识别抢占菜单手势。
-    /// Mac继续保留日历式长按拖动，两端仍共用同一课块和菜单内容。
     private var lessonDragGestureMask: GestureMask {
-        #if os(macOS)
         .all
-        #else
-        .none
-        #endif
     }
 
     private func recordsForDay(_ day: Date) -> [TeachingLessonRecord] {

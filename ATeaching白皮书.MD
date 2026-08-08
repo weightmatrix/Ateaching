@@ -1138,6 +1138,7 @@ V1.2607121530
 11. H3包同步方向的时间戳比较：`source.mtime > notebook.mtime` 用严格大于；刷新时子行修改必须传播到根H3的mtimeCache，否则方向反判。
 12. 公式渲染的 metrics来源必须从SwiftMath typesetter获取真实ascent/descent/axis，禁止从位图宽高猜测；公式字号跟随正文，无硬下限。
 13. `applicationShouldHandleReopen` 必须检查 `hasVisibleWindows`，已有可见窗口时不弹主窗口。
+14. 排课页面不再锁已完成课程；左键点击弹出操作菜单而非直接编辑；长按在 Mac 和 iPhone 上统一为拖动。
 
 这些位置都有历史 bug，维护时要先找到数据源、状态变化点和刷新入口，再整体改。
 
