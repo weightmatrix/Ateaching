@@ -1,3 +1,8 @@
+# 902 主窗口不再随 Dock 点击自动弹出
+
+- 版本号更新为`V1.2608080919`。
+- `applicationShouldHandleReopen` 增加 `hasVisibleWindows` 检查：当前已有可见窗口（如上课窗口、编辑器）时，点击 Dock 不再弹出主窗口并打断工作。无可见窗口时仍正常恢复主窗口。
+
 # 901 公式渲染改用 SwiftMath 真实 metrics
 
 - 版本号更新为`V1.2608080834`。
