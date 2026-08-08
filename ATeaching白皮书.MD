@@ -1136,6 +1136,7 @@ V1.2607121530
 9. PDF / HTML 导出样式。
 10. 外部 Markdown 文件窗口管理。
 11. H3包同步方向的时间戳比较：`source.mtime > notebook.mtime` 用严格大于；刷新时子行修改必须传播到根H3的mtimeCache，否则方向反判。
+12. 公式渲染的 metrics来源必须从SwiftMath typesetter获取真实ascent/descent/axis，禁止从位图宽高猜测；公式字号跟随正文，无硬下限。
 
 这些位置都有历史 bug，维护时要先找到数据源、状态变化点和刷新入口，再整体改。
 

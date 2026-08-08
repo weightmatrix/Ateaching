@@ -10,6 +10,13 @@ import CoreText
 #endif
 
 #if os(macOS)
+struct NodeMarkdownTextKit2FormulaMetrics {
+    let baselineAscent: CGFloat
+    let baselineDescent: CGFloat
+    let width: CGFloat
+    let imageOriginY: CGFloat
+}
+
 extension NodeMarkdownTextKit2TextView {
     static func applyFormulaAttachments(
         to storage: NSMutableAttributedString,
@@ -30,17 +37,24 @@ extension NodeMarkdownTextKit2TextView {
                 guard !overlapsAny(fullRange, protectedRanges) else { return }
                 let latex = source.substring(with: innerRange)
                 let sourceToken = source.substring(with: fullRange)
-                guard let attachment = formulaAttachment(
+                guard let (image, metrics) = renderedFormula(
                     latex: latex,
                     mode: mode,
                     textColor: textColor,
-                    fontSize: fontSize,
-                    baseFont: baseFont
+                    fontSize: fontSize
                 ) else {
                     applyDelimiterFade(to: storage, fullRange: fullRange, innerRange: innerRange, textColor: textColor)
                     return
                 }
 
+                let attachment = NodeMarkdownTextKit2FormulaAttachment(
+                    image: image,
+                    width: metrics.width,
+                    imageHeight: image.size.height / max(1, formulaRenderScale),
+                    baselineOriginY: metrics.imageOriginY,
+                    formulaAscent: metrics.baselineAscent,
+                    formulaDescent: metrics.baselineDescent
+                )
                 prepareFormulaTokenForAttachment(
                     in: storage,
                     range: fullRange,
@@ -48,96 +62,90 @@ extension NodeMarkdownTextKit2TextView {
                     sourceToken: sourceToken
                 )
                 storage.addAttributes(
-                    [
-                        .attachment: attachment,
-                        .baselineOffset: 0
-                    ],
+                    [.attachment: attachment, .baselineOffset: 0],
                     range: NSRange(location: fullRange.location, length: 1)
                 )
                 protectedRanges.append(fullRange)
             }
         }
 
-        let textFormulaSize = usesScreenMinimumFontSize ? max(baseFont.pointSize, 14) : max(1, baseFont.pointSize)
-        let displayFormulaSize = usesScreenMinimumFontSize ? max(baseFont.pointSize * 1.2, 18) : max(1, baseFont.pointSize * 1.2)
+        let formulaFontSize = baseFont.pointSize
+        let displayFormulaSize = baseFont.pointSize * 1.2
         applyFormulaPattern(#"\$\$([^$\n]+)\$\$"#, mode: .display, fontSize: displayFormulaSize)
-        applyFormulaPattern(#"(?<!\$)\$([^$\n]+)\$(?!\$)"#, mode: .text, fontSize: textFormulaSize)
-        applyFormulaPattern(#"\\\(([^)\n]+)\\\)"#, mode: .text, fontSize: textFormulaSize)
+        applyFormulaPattern(#"(?<!\$)\$([^$\n]+)\$(?!\$)"#, mode: .text, fontSize: formulaFontSize)
+        applyFormulaPattern(#"\\\(([^)\n]+)\\\)"#, mode: .text, fontSize: formulaFontSize)
         applyFormulaPattern(#"\\\[([^\]\n]+)\\\]"#, mode: .display, fontSize: displayFormulaSize)
 
         return protectedRanges
     }
 
-    private static func formulaAttachment(
-        latex: String,
-        mode: NodeMarkdownTextKit2FormulaRenderMode,
-        textColor: NSColor,
-        fontSize: CGFloat,
-        baseFont: NSFont
-    ) -> NSTextAttachment? {
-        #if canImport(SwiftMath)
-        guard let image = formulaAttachmentImage(
-            latex: latex,
-            mode: mode,
-            textColor: textColor,
-            fontSize: fontSize
-        ) else {
-            return nil
-        }
-        let renderScale = max(1, formulaRenderScale)
-        let width = image.size.width / renderScale
-        let height = image.size.height / renderScale
-        guard width > 0, height > 0 else { return nil }
-        return NodeMarkdownTextKit2FormulaAttachment(
-            image: image,
-            width: width,
-            height: height,
-            baselineOriginY: formulaBaselineOriginY(height: height, baseFont: baseFont)
-        )
-        #else
-        return nil
-        #endif
-    }
-
-    private static func formulaBaselineOriginY(height: CGFloat, baseFont: NSFont) -> CGFloat {
-        let textCenterY = (baseFont.ascender + baseFont.descender) * 0.5
-        return textCenterY - height * 0.5
-    }
-
     #if canImport(SwiftMath)
-    private static func formulaAttachmentImage(
+    private static func renderedFormula(
         latex: String,
         mode: NodeMarkdownTextKit2FormulaRenderMode,
         textColor: NSColor,
         fontSize: CGFloat
-    ) -> NSImage? {
+    ) -> (NSImage, NodeMarkdownTextKit2FormulaMetrics)? {
         let normalizedLatex = normalizedFormulaLatex(latex)
         let normalizedColor = formulaRenderColor(from: textColor)
+        let scale = max(1, formulaRenderScale)
+        let scaledSize = fontSize * scale
+
         let cacheKey = NodeMarkdownTextKit2FormulaAttachmentCacheKey(
             latex: normalizedLatex,
             mode: mode == .display ? 1 : 0,
-            fontSize: Int((fontSize * formulaRenderScale).rounded()),
+            fontSize: Int(scaledSize.rounded()),
             red: Int((normalizedColor.redComponent * 255).rounded()),
             green: Int((normalizedColor.greenComponent * 255).rounded()),
             blue: Int((normalizedColor.blueComponent * 255).rounded()),
             alpha: Int((normalizedColor.alphaComponent * 255).rounded())
         )
-        if let cached = formulaAttachmentImageCache[cacheKey] {
+        if let cached = cachedFormulaResult[cacheKey] {
             return cached
         }
+
         let imageBuilder = MTMathImage(
             latex: normalizedLatex,
-            fontSize: fontSize * formulaRenderScale,
+            fontSize: scaledSize,
             textColor: normalizedColor,
             labelMode: mode == .display ? .display : .text,
             textAlignment: .left
         )
-        imageBuilder.font?.fallbackFont = regularFormulaFallbackFont(size: fontSize * formulaRenderScale)
+        imageBuilder.font?.fallbackFont = regularFormulaFallbackFont(size: scaledSize)
         let result = imageBuilder.asImage()
         guard result.0 == nil, let image = result.1 else { return nil }
-        formulaAttachmentImageCache[cacheKey] = image
-        return image
+
+        let rawAscent = imageBuilder.mathAscent
+        let rawDescent = imageBuilder.mathDescent
+        let rawWidth = image.size.width
+        let axisHeight = scaledSize * 0.25
+
+        // Math axis position from image bottom (MTMathImage centers vertically)
+        let sumHeight = rawAscent + rawDescent
+        let axisFromBottom: CGFloat
+        if sumHeight >= scaledSize * 0.5 {
+            axisFromBottom = rawDescent
+        } else {
+            axisFromBottom = (sumHeight - scaledSize * 0.5) * 0.5 + rawDescent
+        }
+
+        let originY = axisHeight - axisFromBottom
+        let metrics = NodeMarkdownTextKit2FormulaMetrics(
+            baselineAscent: (axisHeight + rawAscent) / scale,
+            baselineDescent: max(0, (rawDescent - axisHeight)) / scale,
+            width: rawWidth / scale,
+            imageOriginY: originY / scale
+        )
+
+        guard metrics.width > 0, (metrics.baselineAscent + metrics.baselineDescent) > 0 else { return nil }
+
+        let output = (image, metrics)
+        cachedFormulaResult[cacheKey] = output
+        return output
     }
+
+    private static var cachedFormulaResult: [NodeMarkdownTextKit2FormulaAttachmentCacheKey: (NSImage, NodeMarkdownTextKit2FormulaMetrics)] = [:]
+
 
     private static func formulaRenderColor(from textColor: NSColor) -> NSColor {
         let appearance = NSAppearance(named: .aqua)
@@ -157,9 +165,7 @@ extension NodeMarkdownTextKit2TextView {
 
     private static func regularFormulaFallbackFont(size: CGFloat) -> CTFont {
         let preferred = CTFontCreateWithName("PingFangSC-Regular" as CFString, size, nil)
-        if CTFontGetGlyphCount(preferred) > 0 {
-            return preferred
-        }
+        if CTFontGetGlyphCount(preferred) > 0 { return preferred }
         return CTFontCreateWithName("Helvetica" as CFString, size, nil)
     }
     #endif
@@ -171,10 +177,10 @@ extension NodeMarkdownTextKit2TextView {
         sourceToken: String
     ) {
         guard range.length > 0 else { return }
-        let attachmentAnchorRange = NSRange(location: range.location, length: 1)
-        let currentAnchor = (storage.string as NSString).substring(with: attachmentAnchorRange)
+        let anchorRange = NSRange(location: range.location, length: 1)
+        let currentAnchor = (storage.string as NSString).substring(with: anchorRange)
         if currentAnchor != "\u{FFFC}" {
-            storage.replaceCharacters(in: attachmentAnchorRange, with: "\u{FFFC}")
+            storage.replaceCharacters(in: anchorRange, with: "\u{FFFC}")
         }
         storage.addAttributes(
             [
@@ -188,11 +194,12 @@ extension NodeMarkdownTextKit2TextView {
             range: range
         )
         if range.length > 1 {
+            // Hide delimiter characters with zero-size font to eliminate wrapping whitespace
             storage.addAttributes(
                 [
                     .foregroundColor: NSColor.clear,
-                    .font: NSFont.monospacedSystemFont(ofSize: 0.1, weight: .regular),
-                    .kern: -2.0,
+                    .font: NSFont.systemFont(ofSize: 0),
+                    .kern: 0,
                     .ligature: 0
                 ],
                 range: NSRange(location: range.location + 1, length: range.length - 1)

@@ -35,6 +35,8 @@ public class MTMathImage {
     
     public let latex: String
     private(set) var intrinsicContentSize = CGSize.zero
+    public private(set) var mathAscent: CGFloat = 0
+    public private(set) var mathDescent: CGFloat = 0
 
     public init(latex: String, fontSize: CGFloat, textColor: MTColor, labelMode: MTMathUILabelMode = .display, textAlignment: MTTextAlignment = .center) {
         self.latex = latex
@@ -81,6 +83,8 @@ extension MTMathImage {
         }
          
         intrinsicContentSize = intrinsicContentSize(displayList)
+        mathAscent = displayList.ascent
+        mathDescent = displayList.descent
         displayList.textColor = textColor
         
         let size = intrinsicContentSize

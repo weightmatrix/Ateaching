@@ -1,3 +1,15 @@
+# 901 公式渲染改用 SwiftMath 真实 metrics
+
+- 版本号更新为`V1.2608080834`。
+- **SwiftMath 补丁**：`MTMathImage` 新增 `mathAscent` / `mathDescent` 公开属性，`asImage()` 调用后由显示列表回填。
+- **公式 attachment 重建**：不再使用 `MTMathImage.asImage()` 的位图宽高猜测定位。改用 `mathAscent`、`mathDescent` 与字体数学轴高度 (`axisHeight ≈ fontSize * 0.25`) 计算基线偏移：
+  - `baselineAscent = axisHeight + ascent`（公式顶部到文本基线的距离）
+  - `baselineDescent = max(0, descent - axisHeight)`（公式底部到基线的距离）
+  - `imageOriginY = axisHeight - axisFromBottom`（公式图像原点相对于文本基线的偏移）
+- **字号**：移除行内公式 ≥14pt、独立公式 ≥18pt 的硬下限。行内公式使用正文字号，独立公式为正文的 1.2 倍。
+- **行高**：不再用 `attachment.bounds.height` 粗暴拉行高。直接用 `formulaAscent` / `formulaDescent` 分别与 `font.ascender` / `-font.descender` 取最大值，精确计算所需行高。
+- **留空**：隐藏的公式分隔符字符改用 `fontSize: 0` + `kern: 0`，不再产生残留空白。
+
 # 900 批注按钮不再清空批注
 
 - 版本号更新为`V1.2608080754`。

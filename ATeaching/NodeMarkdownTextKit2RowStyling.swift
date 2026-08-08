@@ -198,39 +198,31 @@ extension NodeMarkdownTextKit2TextView {
         formulaRanges: [NSRange],
         font: NSFont
     ) {
-        let formulaHeight = formulaRanges.reduce(CGFloat.zero) { height, range in
+        var maxAboveBaseline = font.ascender
+        var maxBelowBaseline = -font.descender
+        for range in formulaRanges {
             guard range.location >= 0, range.location < styled.length,
                   let attachment = styled.attribute(
-                    .attachment,
-                    at: range.location,
-                    effectiveRange: nil
-                  ) as? NodeMarkdownTextKit2FormulaAttachment else {
-                return height
-            }
-            return max(height, attachment.bounds.height)
+                    .attachment, at: range.location, effectiveRange: nil
+                  ) as? NodeMarkdownTextKit2FormulaAttachment else { continue }
+            maxAboveBaseline = max(maxAboveBaseline, attachment.formulaAscent)
+            maxBelowBaseline = max(maxBelowBaseline, attachment.formulaDescent)
         }
-        guard formulaHeight > 0,
+        guard maxAboveBaseline != font.ascender || maxBelowBaseline != -font.descender,
               let safeRowRange = rowRange.clamped(toLength: styled.length),
               safeRowRange.length > 0 else { return }
 
         let paragraph: NSMutableParagraphStyle = {
             if let existing = styled.attribute(
-                .paragraphStyle,
-                at: safeRowRange.location,
-                effectiveRange: nil
+                .paragraphStyle, at: safeRowRange.location, effectiveRange: nil
             ) as? NSParagraphStyle {
                 return existing.mutableCopy() as? NSMutableParagraphStyle ?? NSMutableParagraphStyle()
             }
             return NSMutableParagraphStyle()
         }()
-        let metrics = NodeMarkdownRenderContract.inlineVerticalMetrics(
-            fontAscender: font.ascender,
-            fontDescender: font.descender,
-            fontLeading: font.leading,
-            existingMinimumLineHeight: paragraph.minimumLineHeight,
-            renderedContentHeight: formulaHeight
-        )
-        paragraph.minimumLineHeight = metrics.lineHeight
+        let naturalHeight = ceil(max(1, font.ascender - font.descender + max(0, font.leading)))
+        let formulaHeight = ceil(maxAboveBaseline + maxBelowBaseline)
+        paragraph.minimumLineHeight = max(naturalHeight, formulaHeight)
         styled.addAttribute(.paragraphStyle, value: paragraph, range: safeRowRange)
     }
 

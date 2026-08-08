@@ -176,16 +176,25 @@ final class NodeMarkdownTextKit2ImageAttachment: NSTextAttachment {
 
 final class NodeMarkdownTextKit2FormulaAttachment: NSTextAttachment {
     let baselineOriginY: CGFloat
+    let formulaAscent: CGFloat
+    let formulaDescent: CGFloat
 
-    init(image: NSImage, width: CGFloat, height: CGFloat, baselineOriginY: CGFloat) {
+    init(image: NSImage, width: CGFloat, imageHeight: CGFloat,
+         baselineOriginY: CGFloat, formulaAscent: CGFloat, formulaDescent: CGFloat) {
+        self.formulaAscent = formulaAscent
+        self.formulaDescent = formulaDescent
         self.baselineOriginY = baselineOriginY
         super.init(data: nil, ofType: nil)
         self.image = image
-        bounds = NSRect(x: 0, y: baselineOriginY, width: max(0, width), height: max(0, height))
+        bounds = NSRect(x: 0, y: baselineOriginY,
+                        width: max(0, width),
+                        height: max(0, imageHeight))
     }
 
     required init?(coder: NSCoder) {
         baselineOriginY = 0
+        formulaAscent = 0
+        formulaDescent = 0
         super.init(coder: coder)
     }
 

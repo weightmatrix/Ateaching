@@ -11,9 +11,6 @@ import SwiftMath
 #if os(macOS)
 final class NodeMarkdownTextKit2TextView: NSTextView {
     static let formulaRenderScale: CGFloat = 2
-#if canImport(SwiftMath)
-    static var formulaAttachmentImageCache: [NodeMarkdownTextKit2FormulaAttachmentCacheKey: NSImage] = [:]
-#endif
     static var backgroundGradientCache: [NodeMarkdownTextKit2BackgroundGradientCacheKey: NSGradient] = [:]
     /// TextKit2新管线唯一的正文存储。正文、选择、输入法和排版必须共同使用这一实例。
     let nodeTextStorage: NSTextStorage
