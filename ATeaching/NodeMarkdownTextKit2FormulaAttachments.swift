@@ -41,7 +41,8 @@ extension NodeMarkdownTextKit2TextView {
                     latex: latex,
                     mode: mode,
                     textColor: textColor,
-                    fontSize: fontSize
+                    fontSize: fontSize,
+                    baseFont: baseFont
                 ) else {
                     applyDelimiterFade(to: storage, fullRange: fullRange, innerRange: innerRange, textColor: textColor)
                     return
@@ -84,7 +85,8 @@ extension NodeMarkdownTextKit2TextView {
         latex: String,
         mode: NodeMarkdownTextKit2FormulaRenderMode,
         textColor: NSColor,
-        fontSize: CGFloat
+        fontSize: CGFloat,
+        baseFont: NSFont
     ) -> (NSImage, NodeMarkdownTextKit2FormulaMetrics)? {
         let normalizedLatex = normalizedFormulaLatex(latex)
         let normalizedColor = formulaRenderColor(from: textColor)
@@ -118,7 +120,12 @@ extension NodeMarkdownTextKit2TextView {
         let rawAscent = imageBuilder.mathAscent
         let rawDescent = imageBuilder.mathDescent
         let rawWidth = image.size.width
-        let axisHeight = scaledSize * 0.25
+        let axisHeight: CGFloat
+        if mode == .text {
+            axisHeight = baseFont.xHeight * 0.5 * scale
+        } else {
+            axisHeight = (baseFont.ascender + baseFont.descender) * 0.5 * scale
+        }
 
         // Math axis position from image bottom (MTMathImage centers vertically)
         let sumHeight = rawAscent + rawDescent

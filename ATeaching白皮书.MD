@@ -1140,6 +1140,7 @@ V1.2607121530
 13. `applicationShouldHandleReopen` 必须检查 `hasVisibleWindows`，已有可见窗口时不弹主窗口。
 14. 排课页面不再锁已完成课程；左键点击弹出操作菜单而非直接编辑；长按在 Mac 和 iPhone 上统一为拖动。
 15. 空行的背景条和编号高度必须与有内容时一致：`firstLineRect` 对空行补上 `minimumLineHeight`，不能只用字体自然行高。
+16. 公式垂直定位的 `axisHeight` 不能猜：行内公式用 `baseFont.xHeight/2`（对齐x字高），独立公式用字体中线。
 
 这些位置都有历史 bug，维护时要先找到数据源、状态变化点和刷新入口，再整体改。
 

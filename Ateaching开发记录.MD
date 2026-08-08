@@ -1,3 +1,8 @@
+# 905 公式垂直定位改用字体真实指标
+
+- 版本号更新为`V1.2608081018`。
+- 修复公式偏高问题：`axisHeight` 由固定 `fontSize * 0.25` 改为基于实际字体指标——行内公式用 `baseFont.xHeight * 0.5`（对齐 x 字高中点），独立公式用 `(ascender + descender) / 2`（对齐字体中线）。`baseFont` 从 `applyFormulaAttachments` 传入 `renderedFormula`。
+
 # 904 空行渲染高度修正
 
 - 版本号更新为`V1.2608080956`。
