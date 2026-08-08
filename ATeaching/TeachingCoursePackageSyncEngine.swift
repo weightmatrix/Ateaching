@@ -181,19 +181,13 @@ enum TeachingCoursePackageSyncEngine {
             }
 
             guard let sourceRoot = sourcePackage.first else { continue }
-            if sourceRoot.mtimeCache > rootNode.mtimeCache {
-                packageResults.append(
-                    TeachingCourseSyncPackageResult(
-                        packageTitle: rootNode.text,
-                        sourceFile: sourceFile,
-                        sourceID: sourceID,
-                        isNewPackage: false,
-                        success: true,
-                        reason: "mother-source update pending; active notebook preserved"
-                    )
-                )
-                continue
-            }
+            // 上课期间母本有更新机制暂停：不再因为 source.mtime > notebook.mtime 而跳过。
+            // 上课中教师不会修改母本，双方差异一律按随堂→母本方向处理。
+            // 若需恢复母本→随堂保护，取消下面注释：
+            // if sourceRoot.mtimeCache > rootNode.mtimeCache {
+            //     packageResults.append(...)
+            //     continue
+            // }
 
             packageNodes = NodeMarkdownPackageCleaner.cleanPackage(packageNodes)
             let notebookContentDigest = TeachingCoursePackageContentSignature.digest(packageNodes)

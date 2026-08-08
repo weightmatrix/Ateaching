@@ -1,5 +1,10 @@
 - 投屏服务生命周期修复：`ScreenCastService` 从 `ScreenCastView` 内部 `@StateObject` 提升到 `ContentView` 层级，切换标签不再中断投屏。工具栏显示"投屏中"/"接收中"状态指示。App 退出时自动停止所有投屏连接。
 
+# 908 暂停上课中母本有更新机制
+
+- 版本号更新为`V1.2608081956`。
+- 上课期间"母本有更新"检测和提示暂停：`summarizePreviewState` 中差异统一归为脏包不再区分方向；`TeachingCoursePackageSyncEngine` 不再因 source.mtime > notebook.mtime 而跳过回传；两处 UI（编辑器更新页面+课程页）注释掉母本有更新显示。开课时母本→随堂覆盖逻辑保留不变。所有注释标注了恢复方法。
+
 # 907 批注逻辑精细化：再点熄灭笔/橡皮进入编辑模式
 
 - 版本号更新为`V1.2608081301`。

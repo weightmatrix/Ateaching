@@ -322,9 +322,11 @@ struct NodeMarkdownEditorView: View {
                         .font(.headline)
                     Text("脏包：\(max(classUpdatePreview.dirtyPackageCount, dirtyPackageItems.count))")
                     Text("新包（将进入上课收集）：\(max(classUpdatePreview.newPackageCount, newPackageItems.count))")
-                    if classUpdatePreview.sourceUpdatePackageCount > 0 {
-                        Text("母本有更新：\(classUpdatePreview.sourceUpdatePackageCount)")
-                    }
+                    // 上课期间母本有更新机制暂停。上课中教师不修改母本，母本不会比随堂更新。
+                    // 若需恢复，取消下面注释：
+                    // if classUpdatePreview.sourceUpdatePackageCount > 0 {
+                    //     Text("母本有更新：\(classUpdatePreview.sourceUpdatePackageCount)")
+                    // }
                     if classUpdatePreview.conflictPackageCount > 0 {
                         Text("双方冲突：\(classUpdatePreview.conflictPackageCount)")
                             .foregroundStyle(.red)

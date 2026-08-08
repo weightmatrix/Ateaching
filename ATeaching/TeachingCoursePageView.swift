@@ -289,9 +289,11 @@ struct TeachingCoursePageView: View {
                             .font(.headline)
                         Text("脏包：\(updatePreview.dirtyPackageCount)")
                         Text("新包（将进入上课收集）：\(updatePreview.newPackageCount)")
-                        if updatePreview.sourceUpdatePackageCount > 0 {
-                            Text("母本有更新：\(updatePreview.sourceUpdatePackageCount)")
-                        }
+                        // 上课期间母本有更新机制暂停。上课中教师不修改母本，母本不会比随堂更新。
+                        // 若需恢复，取消下面注释：
+                        // if updatePreview.sourceUpdatePackageCount > 0 {
+                        //     Text("母本有更新：\(updatePreview.sourceUpdatePackageCount)")
+                        // }
                         if updatePreview.conflictPackageCount > 0 {
                             Text("双方冲突：\(updatePreview.conflictPackageCount)")
                                 .foregroundStyle(.red)

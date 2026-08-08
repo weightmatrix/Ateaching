@@ -54,12 +54,10 @@ enum TeachingCoursePackageStateEngine {
                 Array(sourceDocument.nodes[sourceRange.start..<sourceRange.end])
             )
             if notebookDigest != sourceDigest {
-                let sourceRoot = sourceDocument.nodes[sourceRange.start]
-                if sourceRoot.mtimeCache > rootNode.mtimeCache {
-                    sourceUpdates += 1
-                } else {
-                    dirty += 1
-                }
+                // 上课期间母本不会被修改，母本有更新机制暂停。
+                // 上课中所有差异统一归为脏包（随堂→母本方向）。
+                // 未来若需恢复母本→随堂检测：比较 sourceRoot.mtimeCache > rootNode.mtimeCache
+                dirty += 1
             }
         }
 
