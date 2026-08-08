@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct ScreenCastView: View {
-    @StateObject private var service = ScreenCastService()
+    @ObservedObject var service: ScreenCastService
     @State private var showInternalCast = false
     @State private var receiveIP = ""
     @State private var receivePort = ""

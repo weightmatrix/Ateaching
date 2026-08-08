@@ -3,6 +3,7 @@ import SwiftUI
 // MARK: - 主内容页 - v1 - 承载顶部导航与底部分页栏
 struct ContentView: View {
     @State private var selectedTab: TeachingTab = .teaching
+    @StateObject private var screenCastService = ScreenCastService()
 
     private var displayTitle: String {
         AppDisplayTitle.mainWindowTitle(forPage: selectedTab.title)
@@ -24,11 +25,34 @@ struct ContentView: View {
             .background(AppBackgroundVisualStyle.pageBackground)
             .navigationTitle(displayTitle)
             .buttonStyle(AppGlassButtonStyle(tier: .regular))
+            .toolbar {
+                if screenCastService.isCasting || screenCastService.isReceiving {
+                    ToolbarItem(placement: .automatic) {
+                        HStack(spacing: 4) {
+                            Image(systemName: screenCastService.isCasting
+                                   ? "arrow.up.forward" : "arrow.down.forward")
+                                .font(.caption)
+                            Text(screenCastService.isCasting ? "投屏中" : "接收中")
+                                .font(.caption)
+                        }
+                        .foregroundStyle(.blue)
+                    }
+                }
+            }
             #if os(macOS)
             .background(MacMainWindowAccessor(title: displayTitle))
             #endif
         }
+        .onReceive(NotificationCenter.default.publisher(for: appWillTerminate)) { _ in
+            screenCastService.stopAll()
+        }
     }
+
+    #if os(macOS)
+    private var appWillTerminate: Notification.Name { NSApplication.willTerminateNotification }
+    #else
+    private var appWillTerminate: Notification.Name { UIApplication.willTerminateNotification }
+    #endif
 
     @ViewBuilder
     private var currentPage: some View {
@@ -38,33 +62,9 @@ struct ContentView: View {
         case .archive:
             ArchiveView()
         case .screenCast:
-            ScreenCastView()
+            ScreenCastView(service: screenCastService)
         case .settings:
             AppSettingsView()
         }
     }
-}
-
-// MARK: - 空状态页 - v1 - 显示功能待上线占位内容
-private struct EmptyStateView: View {
-    let title: String
-
-    var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "square.grid.2x2")
-                .font(.system(size: 38, weight: .semibold))
-                .foregroundStyle(.secondary)
-            Text(title)
-                .font(.title3)
-                .fontWeight(.semibold)
-            Text("内容即将上线")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-#Preview {
-    ContentView()
 }
