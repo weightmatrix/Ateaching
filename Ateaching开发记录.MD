@@ -6,6 +6,8 @@
 - **点击行为**：课表格和列表行的单击/点击现在弹出操作菜单（popover），不再直接进入编辑页。菜单包含复制、导出图片、打开信息/课反、前后半小时调整、修改和删除。上下文菜单（右键）共用同一菜单内容。
 - **拖动行为**：长按拖动在 Mac 和 iPhone 上均启用（`lessonDragGestureMask` 统一为 `.all`），iPhone 上不再被右键菜单抢占长按手势。
 
+- **显示修正**：`displayRecords` 合并 `lessonRecords + records` 全部展示，已完成课程以暗淡样式呈现（`isRecordLocked` 视觉反馈）但正常可编辑。删除 insert/edit/move/shift/paste/delete 六处操作中的锁定拦截 guard。
+
 # 902 主窗口不再随 Dock 点击自动弹出
 
 - 版本号更新为`V1.2608080919`。

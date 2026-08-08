@@ -418,7 +418,6 @@ private struct TeachingLessonPlanningBoardView: View {
                 shiftLesson(record, minutes: minutes)
             },
             onEditLesson: { record in
-                guard !isLocked(record) else { return }
                 editingRecord = record
             },
             onCopyStudent: { record in
@@ -649,16 +648,8 @@ private struct TeachingLessonPlanningBoardView: View {
     }
 
     private var displayRecords: [TeachingLessonRecord] {
-        guard kind == .planning, let lockDate = planningLockDate else { return records }
-        let history = lessonRecords.filter { record in
-            guard let start = TeachingLessonStatisticsStore.date(from: record.startAt) else { return false }
-            return start < lockDate
-        }
-        let currentPlanning = records.filter { record in
-            guard let start = TeachingLessonStatisticsStore.date(from: record.startAt) else { return true }
-            return start >= lockDate
-        }
-        return (history + currentPlanning).map(TeachingLessonPlanningPlaceholder.normalizedRecord)
+        guard kind == .planning else { return records }
+        return (lessonRecords + records).map(TeachingLessonPlanningPlaceholder.normalizedRecord)
     }
 
     private var conflictRecords: [TeachingLessonRecord] {
@@ -666,7 +657,7 @@ private struct TeachingLessonPlanningBoardView: View {
     }
 
     private var planningLockDate: Date? {
-        nil
+        kind == .planning ? Date() : nil
     }
 
     private var visibleWeekIntervals: [DateInterval] {
@@ -746,10 +737,6 @@ private struct TeachingLessonPlanningBoardView: View {
             guard let standardEnd = Calendar.current.date(byAdding: .hour, value: 2, to: start) else { return }
             end = standardEnd
         }
-        guard !isPastPlanningDate(start) else {
-            statusMessage = "当前时刻之前的排课已锁定，不能新增。"
-            return
-        }
         guard !TeachingLessonScheduleBuilder.hasConflict(start: start, end: end, in: conflictRecords) else {
             statusMessage = "时间冲突，无法插入。"
             return
@@ -792,10 +779,6 @@ private struct TeachingLessonPlanningBoardView: View {
         guard let source = draft.sourceLesson else { return }
         guard draft.start < draft.end else {
             statusMessage = LessonEditError.invalidTimeRange.localizedDescription
-            return
-        }
-        guard !isLocked(source), !isPastPlanningDate(draft.start) else {
-            statusMessage = "当前时刻之前的排课已锁定，不能修改。"
             return
         }
         guard !TeachingLessonScheduleBuilder.hasConflict(start: draft.start, end: draft.end, in: conflictRecords, excluding: source.id) else {
@@ -874,10 +857,6 @@ private struct TeachingLessonPlanningBoardView: View {
             statusMessage = "移动后超出当前\(kind.title)范围。"
             return
         }
-        guard !isLocked(record), !isPastPlanningDate(newStart) else {
-            statusMessage = "当前时刻之前的排课已锁定，不能移动。"
-            return
-        }
         guard !TeachingLessonScheduleBuilder.hasConflict(start: newStart, end: newEnd, in: conflictRecords, excluding: record.id) else {
             statusMessage = "移动失败：时间冲突。"
             return
@@ -897,10 +876,6 @@ private struct TeachingLessonPlanningBoardView: View {
               let newStart = Calendar.current.date(byAdding: .minute, value: minutes, to: oldStart),
               let newEnd = Calendar.current.date(byAdding: .minute, value: minutes, to: oldEnd) else {
             statusMessage = "课程时间无效，无法移动。"
-            return
-        }
-        guard !isLocked(record), !isPastPlanningDate(newStart) else {
-            statusMessage = "当前时刻之前的排课已锁定，不能移动。"
             return
         }
         guard !TeachingLessonScheduleBuilder.hasConflict(
@@ -933,10 +908,6 @@ private struct TeachingLessonPlanningBoardView: View {
         let components = Calendar.current.dateComponents([.hour, .minute], from: sourceStart)
         guard let start = date(on: day, hour: components.hour ?? hour, minute: components.minute ?? 0) else { return }
         let end = start.addingTimeInterval(sourceEnd.timeIntervalSince(sourceStart))
-        guard !isPastPlanningDate(start) else {
-            statusMessage = "当前时刻之前的排课已锁定，不能粘贴。"
-            return
-        }
         guard !TeachingLessonScheduleBuilder.hasConflict(start: start, end: end, in: conflictRecords) else {
             statusMessage = "粘贴失败：时间冲突。"
             return
@@ -1161,10 +1132,6 @@ private struct TeachingLessonPlanningBoardView: View {
     }
 
     private func deleteRecord(_ record: TeachingLessonRecord) {
-        guard !isLocked(record) else {
-            statusMessage = "当前时刻之前的排课已锁定，不能删除。"
-            return
-        }
         pushUndoSnapshot()
         records.removeAll { $0.id == record.id }
         save()
