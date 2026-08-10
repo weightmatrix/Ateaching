@@ -7,8 +7,11 @@ struct TeachingPDFSettingsView: View {
     @State private var didLoad = false
 
     var body: some View {
-        Form {
-            Section("PDF设置") {
+        AppSettingsPage(
+            title: "PDF设置",
+            subtitle: "统一管理纸张、边距、分页方式和NodeMarkdown导出比例"
+        ) {
+            AppSettingsCard(title: "页面", systemImage: "doc.richtext") {
                 Picker("PDF纸张", selection: $settings.paperPreset) {
                     Text("A4").tag(TeachingPDFExportSettings.PaperPreset.a4)
                     Text("Letter").tag(TeachingPDFExportSettings.PaperPreset.letter)
@@ -66,11 +69,8 @@ struct TeachingPDFSettingsView: View {
                 }
                 Slider(value: $settings.nodeMarkdownScalePercent, in: 10...100, step: 1)
             }
-
-            TeachingStatusMessageSection(message: statusMessage)
+            AppSettingsStatusMessage(message: statusMessage)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .navigationTitle("PDF设置")
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button("关闭") {

@@ -81,7 +81,7 @@ extension NodeMarkdownTextKit2Coordinator {
         rememberFocus(in: textView, selection: selectedRange)
         restoreRememberedFocus(in: textView)
         reportActiveRowIfNeeded(from: textView)
-        publishTextChange(value)
+        publishTextChange(value, structural: updatedRowMetadata != nil)
         updateTypingAttributes(for: textView)
         validateTextKit2State(in: textView, deep: true)
     }
@@ -136,20 +136,55 @@ extension NodeMarkdownTextKit2Coordinator {
         restoreRememberedFocus(in: textView)
         textView.needsDisplay = true
         reportActiveRowIfNeeded(from: textView)
-        publishTextChange(value)
+        publishTextChange(value, structural: true)
         updateTypingAttributes(for: textView)
         validateTextKit2State(in: textView, deep: true)
     }
 
-    func publishTextChange(_ value: String) {
+    func publishTextChange(_ value: String, structural: Bool = false) {
         localEditRevision &+= 1
         lastPublishedLocalText = value
-        if let onTextChangeWithRowMetadata {
+        let updatedIncrementally: Bool = {
+            guard !structural,
+                  let row = currentRowIndexForPublishedText(),
+                  rowLayouts.indices.contains(row),
+                  rowMetadata.indices.contains(row),
+                  documentState.nodes.count == rowLayouts.count else { return false }
+            let source = value as NSString
+            let contentRange = rowLayouts[row].contentRange
+            guard let safeRange = contentRange.exact(toLength: source.length) else { return false }
+            return documentState.updateRow(
+                row,
+                content: source.substring(with: safeRange),
+                metadata: rowMetadata[row]
+            )
+        }()
+        if !updatedIncrementally {
+            guard documentState.replace(text: value, rowMetadata: rowMetadata) else {
+                NodeMarkdownTextKit2Diagnostics.log(
+                    "拒绝发布Node文档：\(documentState.lastValidationError?.description ?? "Node数据契约失败")。"
+                )
+                return
+            }
+            rowMetadata = documentState.snapshot.rowMetadata
+        }
+        synchronizeActiveNodeSession()
+        if structural, onDocumentSnapshot != nil {
+            publishDocumentSnapshot()
+        } else if onDocumentSnapshot != nil {
+            // 普通输入只保留活动Node草稿。离行或保存时按UUID提交，禁止每键构造全文快照。
+            return
+        } else if let onTextChangeWithRowMetadata {
             onTextChangeWithRowMetadata(value, rowMetadata)
         } else {
             text.wrappedValue = value
             onTextChange?(value)
         }
+    }
+
+    private func currentRowIndexForPublishedText() -> Int? {
+        guard let textView else { return activeNodeSession.flatMap { documentState.row(for: $0.nodeID) } }
+        return currentRowIndex(in: textView)
     }
 }
 #endif

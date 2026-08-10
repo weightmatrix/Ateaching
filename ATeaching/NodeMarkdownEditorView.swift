@@ -662,6 +662,7 @@ struct NodeMarkdownEditorView: View {
             rowMetadata: textKitDraftRowMetadata,
             externalTextSyncToken: externalTextSyncToken,
             quickInputSettings: settingsCenter.quickInputSettings,
+            draftCommitController: legacyDraftCommitController,
             onTextChange: { newText in
                 queueTextKitParse(with: newText)
             },
@@ -690,10 +691,23 @@ struct NodeMarkdownEditorView: View {
                 openDrawingBoardAtRow(rowIndex)
             },
             onActiveRowChange: { rowIndex in
-                handleActiveEditorRowChange(rowIndex)
+                enqueueEditorStateUpdate {
+                    handleActiveEditorRowChange(rowIndex)
+                }
             },
             onFocusLocationChange: { location in
-                textKit2FocusLocation = location
+                enqueueEditorStateUpdate {
+                    textKit2FocusLocation = location
+                }
+            },
+            onDocumentSnapshot: { snapshot in
+                queueLegacyDocumentSnapshot(snapshot)
+            },
+            onCommitEditingNode: { draft in
+                commitLegacyEditingNode(draft)
+            },
+            onEditingDraftDirtyChange: { isDirty in
+                handleLegacyEditingDraftDirtyChange(isDirty)
             },
             onInputSessionStateChange: { isActive in
                 isTextInputSessionActive = isActive
@@ -739,7 +753,9 @@ struct NodeMarkdownEditorView: View {
                 openDrawingBoardAtRow(rowIndex)
             },
             onActiveRowChange: { rowIndex in
-                handleActiveEditorRowChange(rowIndex)
+                enqueueEditorStateUpdate {
+                    handleActiveEditorRowChange(rowIndex)
+                }
             },
             onTextChangeWithRowMetadata: nil,
             onLegacyDocumentSnapshot: { snapshot in
@@ -2434,6 +2450,16 @@ struct NodeMarkdownEditorView: View {
         isUpdatingBottomEditorText = true
         bottomEditorText = document.nodes[rowIndex].text
         isUpdatingBottomEditorText = false
+    }
+
+    /// AppKit编辑器可能在SwiftUI执行updateNSView期间同步报告焦点和活动行。
+    /// 该调用栈内禁止修改@State；统一推迟到本轮视图更新结束后，再以原顺序
+    /// 执行完整状态事务。不能把refreshLocalPackageListsAndLight中的多个赋值
+    /// 分别异步化，否则脏包列表、选择集合和计数会短暂属于不同版本。
+    private func enqueueEditorStateUpdate(_ update: @escaping @MainActor () -> Void) {
+        DispatchQueue.main.async {
+            update()
+        }
     }
 
     private func applyBottomEditorTextChange(_ newValue: String) {

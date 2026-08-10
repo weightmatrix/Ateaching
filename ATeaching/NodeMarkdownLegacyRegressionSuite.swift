@@ -30,6 +30,7 @@ enum NodeMarkdownLegacyRegressionSuite {
         testSourceMetadataDoesNotChangeLayoutIdentity()
         testActiveNodeTransactionOwnsOnlyItsRow()
         testProtectedH3ReturnCreatesH4()
+        testStructuralInsertPreservesEveryFollowingNode()
         testLeakedAttachmentSourceRepair()
         testFileBoundaryRepairsLeakedAttachmentSource()
     }
@@ -162,6 +163,26 @@ enum NodeMarkdownLegacyRegressionSuite {
         assert(!NodeMarkdownLegacyStructurePolicy.insertsEmptyChildInsteadOfSplitting(metadata(id: "BODY", level: 8)))
         assert(NodeMarkdownLegacyStructurePolicy.insertedLevel(after: metadata(id: "NEW-H3", level: 3)) == 3)
         assert(!NodeMarkdownLegacyStructurePolicy.insertsEmptyChildInsteadOfSplitting(metadata(id: "NEW-H3", level: 3)))
+    }
+
+    private static func testStructuralInsertPreservesEveryFollowingNode() {
+        let original = [
+            metadata(id: "A", level: 1),
+            metadata(id: "B", level: 6),
+            metadata(id: "C", level: 9, sourceID: "SOURCE-C", sourceFile: "母本.csv"),
+            metadata(id: "D", level: 12)
+        ]
+        let projected = NodeMarkdownLegacyMetadataProjection.insertingRows(
+            count: 1,
+            after: 1,
+            into: original,
+            insertedLevel: 6
+        )
+        assert(projected.count == original.count + 1)
+        assert(projected[0] == original[0])
+        assert(projected[1] == original[1])
+        assert(projected[2].level == 6 && projected[2].nodeID != original[1].nodeID)
+        assert(Array(projected[3...]) == Array(original[2...]))
     }
 
     private static func testUndoSnapshotShape() {

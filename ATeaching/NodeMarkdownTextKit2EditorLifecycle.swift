@@ -6,15 +6,33 @@ import AppKit
 
 extension NodeMarkdownTextKit2Representable {
     func makeNSView(context: Context) -> NSScrollView {
+        #if DEBUG
+        NodeMarkdownTextKit2RegressionSuite.runOnce()
+        #endif
         let textView = makeConfiguredTextView(context: context)
         context.coordinator.attach(textView)
         context.coordinator.configureCommandHandlers(for: textView)
-        context.coordinator.rebuildRowRanges(from: textView)
-        return makeConfiguredScrollView(textView: textView)
+        context.coordinator.installDocument(
+            text,
+            metadata: rowMetadata,
+            in: textView,
+            reason: "makeNSView首次载入"
+        )
+        let scrollView = makeConfiguredScrollView(textView: textView)
+        context.coordinator.prepareViewport(in: textView, scrollView: scrollView)
+        NodeMarkdownTextKit2Diagnostics.report(
+            stage: "makeNSView返回前",
+            textView: textView,
+            bindingText: text,
+            metadataCount: rowMetadata.count,
+            rowLayoutCount: context.coordinator.rowLayouts.count
+        )
+        return scrollView
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? NodeMarkdownTextKit2TextView else { return }
+        NodeMarkdownTextKit2Diagnostics.log("updateNSView进入，binding长度=\((text as NSString).length)，storage长度=\(textView.nodeTextStorage.length)，同步Token=\(externalTextSyncToken)，上次Token=\(context.coordinator.lastExternalTextSyncToken)。")
         let hasExplicitExternalSync = context.coordinator.hasPendingExternalTextSync(
             externalTextSyncToken
         )
@@ -45,6 +63,9 @@ extension NodeMarkdownTextKit2Representable {
             onRequestOpenDrawingBoardAtRow: onRequestOpenDrawingBoardAtRow,
             onActiveRowChange: onActiveRowChange,
             onFocusLocationChange: onFocusLocationChange,
+            onDocumentSnapshot: onDocumentSnapshot,
+            onCommitEditingNode: onCommitEditingNode,
+            onEditingDraftDirtyChange: onEditingDraftDirtyChange,
             onInputSessionStateChange: onInputSessionStateChange
         )
         context.coordinator.attach(textView)
@@ -54,6 +75,9 @@ extension NodeMarkdownTextKit2Representable {
             externalText: text,
             externalTextSyncToken: externalTextSyncToken
         )
+        if hasExplicitExternalSync {
+            context.coordinator.prepareViewport(in: textView, scrollView: scrollView)
+        }
     }
 
     static func dismantleNSView(_ scrollView: NSScrollView, coordinator: NodeMarkdownTextKit2Coordinator) {

@@ -16,7 +16,10 @@ extension NodeMarkdownTextKit2TextView {
     ) {
         let normalizedSearchQuery = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedSearchQuery.isEmpty else { return }
-        let searchableRange = layout.contentRange.clamped(toLength: textLength) ?? NSRange(location: 0, length: 0)
+        guard let searchableRange = layout.contentRange.exact(toLength: textLength) else {
+            NodeMarkdownTextKit2Diagnostics.log("跳过搜索高亮：行范围与真实正文不一致。")
+            return
+        }
         guard searchableRange.length > 0 else { return }
 
         var remaining = searchableRange

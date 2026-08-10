@@ -67,8 +67,11 @@ struct AppBackgroundSettingsView: View {
     @State private var statusMessage = ""
 
     var body: some View {
-        Form {
-            Section("背景管理") {
+        AppSettingsPage(
+            title: "背景设置",
+            subtitle: "选择主界面、清单和表格共用的背景"
+        ) {
+            AppSettingsCard(title: "背景管理", systemImage: "paintpalette") {
                 Picker("背景", selection: $settings.backgroundStyle) {
                     ForEach(AppBackgroundSettings.BackgroundStyle.allCases) { style in
                         Text(style.title).tag(style)
@@ -79,11 +82,8 @@ struct AppBackgroundSettingsView: View {
                     .frame(height: 120)
                     .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
             }
-
-            TeachingStatusMessageSection(message: statusMessage)
+            AppSettingsStatusMessage(message: statusMessage)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .navigationTitle("背景设置")
         .onChange(of: settings) { _, _ in
             save()
         }

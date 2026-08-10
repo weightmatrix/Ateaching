@@ -27,8 +27,17 @@ extension NodeMarkdownTextKit2Coordinator {
         onRequestOpenDrawingBoardAtRow: ((Int) -> Void)?,
         onActiveRowChange: ((Int?) -> Void)?,
         onFocusLocationChange: ((NodeMarkdownTextFocusLocation?) -> Void)?,
+        onDocumentSnapshot: ((NodeMarkdownLegacyDocumentSnapshot) -> Void)?,
+        onCommitEditingNode: ((NodeMarkdownLegacyEditingNodeDraft) -> Void)?,
+        onEditingDraftDirtyChange: ((Bool) -> Void)?,
         onInputSessionStateChange: ((Bool) -> Void)?
     ) {
+        let incomingMetadataChanged = rowMetadata != self.rowMetadata
+        let incomingValidationError = NodeMarkdownTextKit2DocumentState.validationError(
+            text: externalText,
+            rowMetadata: rowMetadata
+        )
+        let incomingDocumentIsValid = incomingValidationError == nil
         self.workingDirectoryURL = workingDirectoryURL
         self.documentStyle = documentStyle
         self.activeRowIndex = activeRowIndex
@@ -37,12 +46,21 @@ extension NodeMarkdownTextKit2Coordinator {
         if externalText == lastPublishedLocalText {
             lastAcknowledgedLocalRevision = localEditRevision
             lastPublishedLocalText = nil
-            self.rowMetadata = rowMetadata
-        } else if !hasUnacknowledgedLocalText {
+            if incomingDocumentIsValid {
+                self.rowMetadata = rowMetadata
+            }
+        } else if !hasUnacknowledgedLocalText, incomingDocumentIsValid {
             // 焦点本身不能冻结外部行信息。首次载入时NSTextView可能已经是第一响应者，
             // 但只要没有待确认的本地正文，层级、H3保护和编辑行就必须与正文一起接收。
             self.editingRowIndex = editingRowIndex
             self.rowMetadata = rowMetadata
+        }
+        if incomingMetadataChanged, !hasUnacknowledgedLocalText, incomingDocumentIsValid {
+            if documentState.replace(text: externalText, rowMetadata: rowMetadata) {
+                self.rowMetadata = documentState.snapshot.rowMetadata
+            }
+        } else if incomingMetadataChanged, let incomingValidationError {
+            NodeMarkdownTextKit2Diagnostics.log("拒绝接收Node元数据：\(incomingValidationError.description)。")
         }
         self.quickInputSettings = quickInputSettings
         self.onTextChange = onTextChange
@@ -56,6 +74,9 @@ extension NodeMarkdownTextKit2Coordinator {
         self.onRequestOpenDrawingBoardAtRow = onRequestOpenDrawingBoardAtRow
         self.onActiveRowChange = onActiveRowChange
         self.onFocusLocationChange = onFocusLocationChange
+        self.onDocumentSnapshot = onDocumentSnapshot
+        self.onCommitEditingNode = onCommitEditingNode
+        self.onEditingDraftDirtyChange = onEditingDraftDirtyChange
         self.onInputSessionStateChange = onInputSessionStateChange
         _ = externalTextSyncToken
     }

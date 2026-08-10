@@ -8,7 +8,6 @@ import AppKit
 /// Enter、Backspace、Tab、撤销引起前文长度变化时，焦点仍属于原定Node。
 struct NodeMarkdownTextKit2FocusAnchor {
     let nodeID: String
-    let fallbackRowIndex: Int
     let contentOffset: Int
     let selectionLength: Int
 }
@@ -26,10 +25,20 @@ extension NodeMarkdownTextKit2Coordinator {
             return
         }
         let contentRange = rowLayouts[rowIndex].contentRange
+        guard let lastRange = rowLayouts.last?.range else {
+            pendingFocusAnchor = nil
+            return
+        }
+        let documentLength = NSMaxRange(lastRange)
+        guard targetSelection.exact(toLength: documentLength) != nil,
+              targetSelection.location >= contentRange.location,
+              NSMaxRange(targetSelection) <= NSMaxRange(contentRange) else {
+            pendingFocusAnchor = nil
+            return
+        }
         pendingFocusAnchor = NodeMarkdownTextKit2FocusAnchor(
             nodeID: rowMetadata[rowIndex].nodeID,
-            fallbackRowIndex: rowIndex,
-            contentOffset: max(0, targetSelection.location - contentRange.location),
+            contentOffset: targetSelection.location - contentRange.location,
             selectionLength: targetSelection.length
         )
     }
@@ -37,20 +46,34 @@ extension NodeMarkdownTextKit2Coordinator {
     @discardableResult
     func restoreRememberedFocus(in textView: NodeMarkdownTextKit2TextView) -> Bool {
         guard let anchor = pendingFocusAnchor else { return false }
-        let rowIndex = rowMetadata.firstIndex { !$0.nodeID.isEmpty && $0.nodeID == anchor.nodeID }
-            ?? (rowLayouts.indices.contains(anchor.fallbackRowIndex) ? anchor.fallbackRowIndex : nil)
+        let rowIndex = rowMetadata.firstIndex { $0.nodeID == anchor.nodeID }
         guard let rowIndex, rowLayouts.indices.contains(rowIndex) else {
             pendingFocusAnchor = nil
             return false
         }
 
         let contentRange = rowLayouts[rowIndex].contentRange
-        let location = contentRange.location + min(anchor.contentOffset, contentRange.length)
-        let length = min(anchor.selectionLength, max(0, NSMaxRange(contentRange) - location))
+        guard anchor.contentOffset >= 0,
+              anchor.contentOffset <= contentRange.length else {
+            pendingFocusAnchor = nil
+            return false
+        }
+        let location = contentRange.location + anchor.contentOffset
+        guard anchor.selectionLength >= 0,
+              anchor.selectionLength <= NSMaxRange(contentRange) - location else {
+            pendingFocusAnchor = nil
+            return false
+        }
+        let length = anchor.selectionLength
         let restoredSelection = NSRange(location: location, length: length)
 
         isApplyingStyleUpdate = true
-        textView.setSelectedRange(textView.clampedEditableSelection(restoredSelection))
+        guard let editableSelection = textView.clampedEditableSelection(restoredSelection) else {
+            isApplyingStyleUpdate = false
+            pendingFocusAnchor = nil
+            return false
+        }
+        textView.setSelectedRange(editableSelection)
         isApplyingStyleUpdate = false
         enterEditingRow(rowIndex, from: textView)
         reportActiveRowIfNeeded(from: textView)
@@ -63,12 +86,16 @@ extension NodeMarkdownTextKit2Coordinator {
 
     private func rowIndex(for location: Int) -> Int? {
         guard !rowLayouts.isEmpty else { return nil }
-        let documentLength = NSMaxRange(rowLayouts.last?.range ?? NSRange(location: 0, length: 0))
-        let safeLocation = max(0, min(location, documentLength))
-        if let exact = lineIndexForLocation(safeLocation) {
+        guard let lastRange = rowLayouts.last?.range else { return nil }
+        let documentLength = NSMaxRange(lastRange)
+        guard NSRange(location: location, length: 0).exact(toLength: documentLength) != nil else {
+            return nil
+        }
+        if let exact = lineIndexForLocation(location) {
             return exact
         }
-        if safeLocation == documentLength {
+        if location == documentLength,
+           NSMaxRange(lastRange) == documentLength {
             return rowLayouts.indices.last
         }
         return nil

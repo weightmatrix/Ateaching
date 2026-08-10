@@ -11,10 +11,11 @@ extension NodeMarkdownTextKit2Coordinator {
     ) -> Bool {
         let deletionRanges = deletionCandidateRanges(in: textView, affectedRange: affectedRange)
         guard !deletionRanges.isEmpty else { return false }
-        let isBlocked = protectedH3PackageContentRanges().contains { packageRanges in
-            !packageRanges.isEmpty && packageRanges.allSatisfy { contentRange in
-                range(contentRange, isCoveredBy: deletionRanges)
-            }
+        let protectedRoots = rowLayouts
+            .filter { $0.level == 3 && $0.isProtectedH3 }
+            .map(\.contentRange)
+        let isBlocked = protectedRoots.contains { contentRange in
+            range(contentRange, isCoveredBy: deletionRanges)
         }
         if isBlocked {
             showProtectedH3SelectionDeleteAlert()
@@ -36,35 +37,6 @@ extension NodeMarkdownTextKit2Coordinator {
             return [affectedRange]
         }
         return []
-    }
-
-    private func protectedH3PackageContentRanges() -> [[NSRange]] {
-        var packages: [[NSRange]] = []
-        var rowIndex = 0
-        while rowIndex < rowLayouts.count {
-            let rootLayout = rowLayouts[rowIndex]
-            guard rootLayout.level == 3, rootLayout.isProtectedH3 else {
-                rowIndex += 1
-                continue
-            }
-
-            var packageRanges: [NSRange] = []
-            var cursor = rowIndex
-            while cursor < rowLayouts.count {
-                let layout = rowLayouts[cursor]
-                if cursor > rowIndex, layout.level <= 3 {
-                    break
-                }
-                if layout.contentRange.length > 0 {
-                    packageRanges.append(layout.contentRange)
-                }
-                cursor += 1
-            }
-
-            packages.append(packageRanges)
-            rowIndex = max(cursor, rowIndex + 1)
-        }
-        return packages
     }
 
     private func range(_ target: NSRange, isCoveredBy ranges: [NSRange]) -> Bool {

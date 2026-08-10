@@ -32,9 +32,8 @@ extension NodeMarkdownTextKit2Coordinator {
         let replaceRange = NSRange(location: replaceStart, length: max(0, replaceEnd - replaceStart))
         let newCursor = previousContentRange.location + (previousContent as NSString).length
         var nextMetadata = rowMetadata
-        if nextMetadata.indices.contains(currentLineIndex) {
-            nextMetadata.remove(at: currentLineIndex)
-        }
+        guard nextMetadata.indices.contains(currentLineIndex) else { return false }
+        nextMetadata.remove(at: currentLineIndex)
         replaceSourceText(
             in: textView,
             range: replaceRange,
@@ -46,8 +45,16 @@ extension NodeMarkdownTextKit2Coordinator {
     }
 
     func handleDeleteForward(in textView: NodeMarkdownTextKit2TextView) -> Bool {
-        guard hasDeletionSelection(in: textView) else { return false }
-        return blocksCompleteProtectedH3Deletion(in: textView)
+        if hasDeletionSelection(in: textView) {
+            return blocksCompleteProtectedH3Deletion(in: textView)
+        }
+        guard let row = currentRowIndex(in: textView),
+              rowLayouts.indices.contains(row),
+              rowLayouts.indices.contains(row + 1),
+              textView.selectedRange().location >= NSMaxRange(rowLayouts[row].contentRange),
+              rowLayouts[row + 1].isProtectedH3 else { return false }
+        showProtectedH3Alert()
+        return true
     }
 
     private func hasDeletionSelection(in textView: NodeMarkdownTextKit2TextView) -> Bool {

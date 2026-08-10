@@ -18,20 +18,24 @@ extension NodeMarkdownTextKit2TextView {
         editingRowIndex: Int?
     ) {
         nodeMarkdownEditingRowIndex = editingRowIndex
-        guard markedRange().location == NSNotFound else { return }
+        guard !hasActiveInputMethodComposition else { return }
         let currentText = documentString()
         let textLength = (currentText as NSString).length
         let nsText = currentText as NSString
         let selectedRanges = self.selectedRanges
         let fullRange = NSRange(location: 0, length: nodeTextStorage.length)
-        let baseAttributes = Self.baseAttributes(for: documentStyle)
-
+        guard rowLayouts.allSatisfy({ $0.range.exact(toLength: textLength) != nil }),
+              selectedRanges.allSatisfy({ $0.rangeValue.exact(toLength: textLength) != nil }) else {
+            NodeMarkdownTextKit2Diagnostics.log("拒绝全文样式事务：行范围或选区与真实正文不一致。")
+            return
+        }
         nodeTextContentStorage.performEditingTransaction {
             restoreAttachmentSourceAnchors(in: fullRange)
-            if fullRange.length > 0 {
-                nodeTextStorage.setAttributes(baseAttributes, range: fullRange)
-            }
             for layout in rowLayouts {
+                let exactRange = layout.range
+                if exactRange.length > 0 {
+                    nodeTextStorage.setAttributes([:], range: exactRange)
+                }
                 applyNodeMarkdownStyle(
                     to: nodeTextStorage,
                     source: nsText,
@@ -46,10 +50,7 @@ extension NodeMarkdownTextKit2TextView {
                 )
             }
         }
-        self.selectedRanges = selectedRanges.compactMap { value in
-            guard let range = value.rangeValue.clamped(toLength: textLength) else { return nil }
-            return NSValue(range: range)
-        }
+        self.selectedRanges = selectedRanges
         setNeedsDisplay(bounds)
     }
 
@@ -64,19 +65,22 @@ extension NodeMarkdownTextKit2TextView {
         editingRowIndex: Int?
     ) {
         nodeMarkdownEditingRowIndex = editingRowIndex
-        guard markedRange().location == NSNotFound else { return }
+        guard !hasActiveInputMethodComposition else { return }
         guard let rowIndex, rowLayouts.indices.contains(rowIndex) else { return }
         let currentText = documentString()
         let textLength = (currentText as NSString).length
         let layout = rowLayouts[rowIndex]
-        guard let rowRange = layout.range.clamped(toLength: textLength), rowRange.length > 0 else { return }
+        guard let rowRange = layout.range.exact(toLength: textLength), rowRange.length > 0 else { return }
 
         let nsText = currentText as NSString
         let selectedRanges = self.selectedRanges
-        let baseAttributes = Self.baseAttributes(for: documentStyle)
+        guard selectedRanges.allSatisfy({ $0.rangeValue.exact(toLength: textLength) != nil }) else {
+            NodeMarkdownTextKit2Diagnostics.log("拒绝单行样式事务：选区与真实正文不一致。")
+            return
+        }
         nodeTextContentStorage.performEditingTransaction {
             restoreAttachmentSourceAnchors(in: rowRange)
-            nodeTextStorage.setAttributes(baseAttributes, range: rowRange)
+            nodeTextStorage.setAttributes([:], range: rowRange)
             applyNodeMarkdownStyle(
                 to: nodeTextStorage,
                 source: nsText,
@@ -90,11 +94,7 @@ extension NodeMarkdownTextKit2TextView {
                 textLength: textLength
             )
         }
-        self.selectedRanges = selectedRanges.compactMap { value in
-            guard let range = value.rangeValue.clamped(toLength: textLength) else { return nil }
-            return NSValue(range: range)
-        }
-        setNeedsDisplay(bounds)
+        self.selectedRanges = selectedRanges
     }
 
 }

@@ -18,6 +18,11 @@ struct NodeMarkdownTextKit2FormulaMetrics {
 }
 
 extension NodeMarkdownTextKit2TextView {
+    /// 不能使用systemFont(ofSize: 0)：AppKit会把0解释成默认13pt，
+    /// 导致透明公式源码继续占据完整宽度。0.001pt可保留1:1字符位置，
+    /// 同时把残余宽度压到亚像素级，实际行宽只由公式附件决定。
+    private static let collapsedFormulaSourceFontSize: CGFloat = 0.001
+
     static func applyFormulaAttachments(
         to storage: NSMutableAttributedString,
         source: NSString,
@@ -66,6 +71,7 @@ extension NodeMarkdownTextKit2TextView {
                     [.attachment: attachment, .baselineOffset: 0],
                     range: NSRange(location: fullRange.location, length: 1)
                 )
+                NodeMarkdownTextKit2Diagnostics.log("公式附件安装：源码UTF16长度=\(fullRange.length)，渲染宽度=\(String(format: "%.2f", metrics.width))，图片高度=\(String(format: "%.2f", image.size.height / max(1, formulaRenderScale)))，透明源码字号=\(collapsedFormulaSourceFontSize)。")
                 protectedRanges.append(fullRange)
             }
         }
@@ -201,13 +207,17 @@ extension NodeMarkdownTextKit2TextView {
             range: range
         )
         if range.length > 1 {
-            // Hide delimiter characters with zero-size font to eliminate wrapping whitespace
+            let collapsedFont = NSFont.monospacedSystemFont(
+                ofSize: collapsedFormulaSourceFontSize,
+                weight: .regular
+            )
             storage.addAttributes(
                 [
                     .foregroundColor: NSColor.clear,
-                    .font: NSFont.systemFont(ofSize: 0),
+                    .font: collapsedFont,
                     .kern: 0,
-                    .ligature: 0
+                    .ligature: 0,
+                    .expansion: 0
                 ],
                 range: NSRange(location: range.location + 1, length: range.length - 1)
             )

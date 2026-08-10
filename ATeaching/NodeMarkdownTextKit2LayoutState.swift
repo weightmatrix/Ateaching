@@ -34,6 +34,13 @@ extension NodeMarkdownTextKit2Coordinator {
         value: String,
         applyStyles: Bool = true
     ) {
+        if let error = NodeMarkdownTextKit2DocumentState.validationError(
+            text: value,
+            rowMetadata: rowMetadata
+        ) {
+            NodeMarkdownTextKit2Diagnostics.log("拒绝重建行布局：\(error.description)。")
+            return
+        }
         editingParagraphStyleCache.removeAll(keepingCapacity: true)
         rowLayouts = Self.makeRowLayouts(
             in: value,
@@ -45,6 +52,7 @@ extension NodeMarkdownTextKit2Coordinator {
         lastLayoutDocumentStyleIdentity = documentStyle.renderIdentity
         lastLayoutRowMetadataSnapshot = rowMetadata
         textView.nodeMarkdownRowLayouts = rowLayouts
+        NodeMarkdownTextKit2Diagnostics.log("行布局重建完成，正文UTF16长度=\((value as NSString).length)，rowLayouts=\(rowLayouts.count)，metadata=\(rowMetadata.count)，applyStyles=\(applyStyles)。")
         if applyStyles {
             applyRowStyles(to: textView)
         }
@@ -57,7 +65,6 @@ extension NodeMarkdownTextKit2Coordinator {
         affectedRange: NSRange,
         characterDelta: Int
     ) -> Bool {
-        guard characterDelta == 0 else { return false }
         guard !rowLayouts.isEmpty, !rowCharacterRanges.isEmpty else { return false }
         let nsText = value as NSString
         guard nsText.length > 0 else {
@@ -65,7 +72,10 @@ extension NodeMarkdownTextKit2Coordinator {
             return true
         }
 
-        let anchor = max(0, min(affectedRange.location, nsText.length - 1))
+        guard affectedRange.exact(toLength: nsText.length) != nil else { return false }
+        let anchor = affectedRange.location == nsText.length
+            ? nsText.length - 1
+            : affectedRange.location
         guard let rowIndex = lineIndexForLocation(anchor), rowLayouts.indices.contains(rowIndex) else {
             return false
         }
@@ -89,6 +99,14 @@ extension NodeMarkdownTextKit2Coordinator {
         }
         rowLayouts[rowIndex] = rebuiltLayout
         rowCharacterRanges[rowIndex] = rebuiltLayout.range
+        if characterDelta != 0, rowIndex + 1 < rowLayouts.count {
+            // 普通输入只平移后续Node的字符地址，不重新解析其层级、样式、公式或图片。
+            // 这是单一NSTextStorage过渡期的轻量路径；最终y坐标由高度索引管理。
+            for index in (rowIndex + 1)..<rowLayouts.count {
+                rowLayouts[index] = rowLayouts[index].offsetBy(characterDelta)
+                rowCharacterRanges[index].location += characterDelta
+            }
+        }
 
         lastLayoutTextSnapshot = value
         lastLayoutDocumentStyleIdentity = documentStyle.renderIdentity
@@ -104,7 +122,8 @@ extension NodeMarkdownTextKit2Coordinator {
             return rowLayouts.isEmpty ? nil : 0
         }
         let selection = textView.selectedRange()
-        let safeLocation = max(0, min(selection.location, nsText.length))
+        guard selection.exact(toLength: nsText.length) != nil else { return nil }
+        let safeLocation = selection.location
         if safeLocation == nsText.length,
            let lastRange = rowCharacterRanges.last,
            lastRange.location == nsText.length,
@@ -115,23 +134,18 @@ extension NodeMarkdownTextKit2Coordinator {
         if let index = lineIndexForLocation(anchor) {
             return index
         }
-        let lineRange = nsText.lineRange(for: NSRange(location: anchor, length: 0))
-        if let fallback = rowCharacterRanges.firstIndex(of: lineRange) {
-            return fallback
-        }
-        let prefixRange = NSRange(location: 0, length: anchor)
-        let prefixText = nsText.substring(with: prefixRange)
-        return prefixText.reduce(into: 0) { count, character in
-            if character == "\n" { count += 1 }
-        }
+        return nil
     }
 
     func lineIndexForRange(_ range: NSRange) -> Int? {
-        if let index = lineIndexForLocation(range.location) {
-            return index
-        }
-        let tailLocation = max(range.location, range.location + max(0, range.length - 1))
-        return lineIndexForLocation(tailLocation)
+        guard range.location != NSNotFound,
+              range.length >= 0,
+              let index = lineIndexForLocation(range.location),
+              rowCharacterRanges.indices.contains(index) else { return nil }
+        let rowRange = rowCharacterRanges[index]
+        guard range.location >= rowRange.location,
+              NSMaxRange(range) <= NSMaxRange(rowRange) else { return nil }
+        return index
     }
 
     func lineIndexForLocation(_ location: Int) -> Int? {
@@ -165,7 +179,8 @@ extension NodeMarkdownTextKit2Coordinator {
         let nsText = value as NSString
         let renderContract = NodeMarkdownRenderContract.default
         if nsText.length == 0 {
-            let level = rowMetadata.first.map { max(1, min(12, $0.level)) } ?? 7
+            guard rowMetadata.count == 1 else { return [] }
+            let level = rowMetadata[0].level
             let lineStyle = renderContract.lineStyle(
                 level: level,
                 prefix: "",
@@ -179,7 +194,7 @@ extension NodeMarkdownTextKit2Coordinator {
                 level: level,
                 lineStyle: lineStyle,
                 spacingBefore: 0,
-                isProtectedH3: rowMetadata.first?.isProtectedH3 ?? false
+                isProtectedH3: rowMetadata[0].isProtectedH3
             )]
         }
         var layouts: [NodeMarkdownTextKit2RowLayout] = []
@@ -204,9 +219,8 @@ extension NodeMarkdownTextKit2Coordinator {
         }
         if value.hasSuffix("\n") {
             let rowIndex = layouts.count
-            let level = rowMetadata.indices.contains(rowIndex)
-                ? max(1, min(12, rowMetadata[rowIndex].level))
-                : (layouts.last?.level ?? 7)
+            guard rowMetadata.indices.contains(rowIndex) else { return [] }
+            let level = rowMetadata[rowIndex].level
             let lineStyle = renderContract.lineStyle(
                 level: level,
                 prefix: "",
@@ -224,9 +238,7 @@ extension NodeMarkdownTextKit2Coordinator {
                     currentLevel: level,
                     currentLineStyle: lineStyle
                 ),
-                isProtectedH3: rowMetadata.indices.contains(rowIndex)
-                    ? rowMetadata[rowIndex].isProtectedH3
-                    : false
+                isProtectedH3: rowMetadata[rowIndex].isProtectedH3
             ))
         }
         return layouts
@@ -241,14 +253,13 @@ extension NodeMarkdownTextKit2Coordinator {
         rowMetadata: [NodeMarkdownTextKitRowMetadata],
         renderContract: NodeMarkdownRenderContract = .default
     ) -> NodeMarkdownTextKit2RowLayout? {
-        let safeRange = NSIntersectionRange(lineRange, NSRange(location: 0, length: nsText.length))
-        guard safeRange.length > 0 else { return nil }
+        guard let safeRange = lineRange.exact(toLength: nsText.length),
+              safeRange.length > 0 else { return nil }
         let lineText = nsText.substring(with: safeRange)
         let hasTrailingNewline = lineText.hasSuffix("\n")
         let prefix = ""
-        let level = rowMetadata.indices.contains(rowIndex)
-            ? max(1, min(12, rowMetadata[rowIndex].level))
-            : 7
+        guard rowMetadata.indices.contains(rowIndex) else { return nil }
+        let level = rowMetadata[rowIndex].level
         let coreLength = max(0, safeRange.length - (hasTrailingNewline ? 1 : 0))
         let contentRange = NSRange(
             location: safeRange.location,
@@ -259,9 +270,7 @@ extension NodeMarkdownTextKit2Coordinator {
             prefix: prefix,
             documentStyle: documentStyle
         )
-        let isProtectedH3 = rowMetadata.indices.contains(rowIndex)
-            ? rowMetadata[rowIndex].isProtectedH3
-            : false
+        let isProtectedH3 = rowMetadata[rowIndex].isProtectedH3
         let spacingBefore = spacingBeforeRow(
             previousLayout: previousLayout,
             currentLevel: level,

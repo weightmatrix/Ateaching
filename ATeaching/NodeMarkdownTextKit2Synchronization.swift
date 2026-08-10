@@ -7,7 +7,7 @@ import AppKit
 private struct NodeMarkdownTextKit2VisualViewportAnchor {
     let nodeID: String
     let verticalOffset: CGFloat
-    let fallbackOrigin: NSPoint
+    let horizontalOrigin: CGFloat
 }
 
 extension NodeMarkdownTextKit2Coordinator {
@@ -20,15 +20,23 @@ extension NodeMarkdownTextKit2Coordinator {
         externalText: String,
         externalTextSyncToken: Int
     ) {
-        applyBaseStyle(to: textView)
-        guard !isApplyingExternalText else { return }
-        guard textView.markedRange().location == NSNotFound else {
+        let markedRange = textView.markedRange()
+        let hasActiveComposition = textView.hasActiveInputMethodComposition
+        NodeMarkdownTextKit2Diagnostics.log("同步入口：外部应用中=\(isApplyingExternalText)，markedRange=\(NSStringFromRange(markedRange))，有效输入法组合=\(hasActiveComposition)，storage长度=\(textView.nodeTextStorage.length)，外部长度=\((externalText as NSString).length)。")
+        guard !isApplyingExternalText else {
+            NodeMarkdownTextKit2Diagnostics.log("同步退出：正在安装外部正文。")
+            return
+        }
+        let mustInstallInitialDocument = textView.nodeTextStorage.length == 0 && !externalText.isEmpty
+        guard !hasActiveComposition || mustInstallInitialDocument else {
+            NodeMarkdownTextKit2Diagnostics.log("同步暂缓：输入法正在组合非空文字。")
             updateTypingAttributes(for: textView)
             return
         }
 
         let currentText = textView.documentString()
         let hasExplicitExternalSync = externalTextSyncToken != lastExternalTextSyncToken
+        NodeMarkdownTextKit2Diagnostics.log("同步判定：当前长度=\((currentText as NSString).length)，外部长度=\((externalText as NSString).length)，明确外部同步=\(hasExplicitExternalSync)，存在未确认本地正文=\(hasUnacknowledgedLocalText)，有效输入法组合=\(hasActiveComposition)。")
         let viewportAnchor: NodeMarkdownTextKit2VisualViewportAnchor? = {
             guard hasExplicitExternalSync,
                   !currentText.isEmpty else { return nil }
@@ -38,6 +46,7 @@ extension NodeMarkdownTextKit2Coordinator {
             )
         }()
         if currentText == externalText {
+            NodeMarkdownTextKit2Diagnostics.log("同步分支=正文相同，不替换TextStorage。")
             if lastPublishedLocalText == externalText {
                 lastAcknowledgedLocalRevision = localEditRevision
                 lastPublishedLocalText = nil
@@ -46,29 +55,29 @@ extension NodeMarkdownTextKit2Coordinator {
             rebuildRowLayoutsIfNeeded(from: textView)
             restoreRememberedFocus(in: textView)
         } else if hasUnacknowledgedLocalText && !hasExplicitExternalSync {
+            NodeMarkdownTextKit2Diagnostics.log("同步分支=保留未确认本地正文，拒绝迟到的普通外部回写。")
             // 只有真正发布且尚未被SwiftUI确认的正文才能阻止外部回写。
             // NSTextView刚挂入窗口时可能已经获得焦点；“正在编辑”不等于“正文已经改变”，
             // 否则磁盘正文首次载入会被空的初始文本挡住，Mac端只剩一块空白编辑器。
             rebuildRowLayoutsIfNeeded(from: textView)
             restoreRememberedFocus(in: textView)
         } else {
+            NodeMarkdownTextKit2Diagnostics.log("同步分支=安装外部正文。")
             _ = consumeExternalTextSyncToken(externalTextSyncToken)
-            isApplyingExternalText = true
             let selectedRanges = textView.selectedRanges
-            textView.replaceDocumentText(externalText, documentStyle: documentStyle, selectedRanges: selectedRanges)
-            isApplyingExternalText = false
-            rebuildRowLayouts(from: textView)
+            installDocument(
+                externalText,
+                metadata: rowMetadata,
+                in: textView,
+                preserving: selectedRanges,
+                reason: "synchronize外部替换"
+            )
             restoreRememberedFocus(in: textView)
-            validateTextKit2State(in: textView, deep: true)
         }
 
         reportActiveRowIfNeeded(from: textView)
         if let viewportAnchor {
             restoreVisualViewportAnchor(viewportAnchor, in: textView)
-        } else if hasExplicitExternalSync {
-            // 保存状态、工具栏状态等普通SwiftUI更新不属于导航命令。
-            // 只有真正替换整篇正文且无法恢复原视野时，才允许定位活动行。
-            scrollToActiveRowIfNeeded(in: textView)
         }
         refreshSearchHighlightsIfNeeded(in: textView)
         updateTypingAttributes(for: textView)
@@ -79,29 +88,36 @@ extension NodeMarkdownTextKit2Coordinator {
         metadata: [NodeMarkdownTextKitRowMetadata]
     ) -> NodeMarkdownTextKit2VisualViewportAnchor? {
         guard let scrollView = textView.enclosingScrollView,
-              !rowCharacterRanges.isEmpty else { return nil }
+              !rowCharacterRanges.isEmpty,
+              let viewportRange = textView.nodeTextLayoutManager.textViewportLayoutController.viewportRange else {
+            return nil
+        }
         let clipView = scrollView.contentView
-        let source = textView.documentString() as NSString
-        let point = NSPoint(
-            x: textView.visibleRect.minX + 2,
-            y: textView.visibleRect.minY + 2
+        let documentStart = textView.nodeMarkdownTextContentStorage.documentRange.location
+        let viewportStart = textView.nodeMarkdownTextContentStorage.offset(
+            from: documentStart,
+            to: viewportRange.location
         )
-        let characterIndex = min(source.length, textView.characterIndexForInsertion(at: point))
-        guard let firstVisibleRow = lineIndexForLocation(characterIndex) else { return nil }
-        let candidateRows = firstVisibleRow..<min(rowCharacterRanges.count, firstVisibleRow + 12)
-        let anchorRow = candidateRows.first { row in
-            guard metadata.indices.contains(row), rowCharacterRanges.indices.contains(row) else { return false }
-            let range = rowCharacterRanges[row]
-            guard range.location <= source.length, NSMaxRange(range) <= source.length else { return false }
-            return !source.substring(with: range).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        } ?? firstVisibleRow
-        guard metadata.indices.contains(anchorRow),
-              !metadata[anchorRow].nodeID.isEmpty,
-              let rowRect = visualRect(forRow: anchorRow, in: textView) else { return nil }
+        let viewportEnd = textView.nodeMarkdownTextContentStorage.offset(
+            from: documentStart,
+            to: viewportRange.endLocation
+        )
+        guard let firstVisibleRow = lineIndexForLocation(viewportStart),
+              let lastVisibleRow = lineIndexForLocation(viewportEnd),
+              firstVisibleRow <= lastVisibleRow else { return nil }
+        let anchor: (row: Int, rect: NSRect)? = (firstVisibleRow...lastVisibleRow).lazy.compactMap { row in
+            guard metadata.indices.contains(row),
+                  self.rowCharacterRanges.indices.contains(row),
+                  UUID(uuidString: metadata[row].nodeID) != nil,
+                  let rowRect = self.visualRect(forRow: row, in: textView),
+                  rowRect.intersects(textView.visibleRect) else { return nil }
+            return (row, rowRect)
+        }.first
+        guard let anchor else { return nil }
         return NodeMarkdownTextKit2VisualViewportAnchor(
-            nodeID: metadata[anchorRow].nodeID,
-            verticalOffset: rowRect.minY - clipView.bounds.minY,
-            fallbackOrigin: clipView.bounds.origin
+            nodeID: metadata[anchor.row].nodeID,
+            verticalOffset: anchor.rect.minY - clipView.bounds.minY,
+            horizontalOrigin: clipView.bounds.minX
         )
     }
 
@@ -113,13 +129,11 @@ extension NodeMarkdownTextKit2Coordinator {
         let clipView = scrollView.contentView
         guard let row = rowMetadata.firstIndex(where: { $0.nodeID == anchor.nodeID }),
               let rowRect = visualRect(forRow: row, in: textView) else {
-            clipView.setBoundsOrigin(anchor.fallbackOrigin)
-            scrollView.reflectScrolledClipView(clipView)
             return
         }
         var proposedBounds = clipView.bounds
         proposedBounds.origin = NSPoint(
-            x: anchor.fallbackOrigin.x,
+            x: anchor.horizontalOrigin,
             y: rowRect.minY - anchor.verticalOffset
         )
         let constrained = clipView.constrainBoundsRect(proposedBounds)

@@ -5,15 +5,6 @@ import SwiftUI
 import AppKit
 
 extension NodeMarkdownTextKit2TextView {
-    static func baseAttributes(for documentStyle: NodeMarkdownDocumentStyle) -> [NSAttributedString.Key: Any] {
-        let baseStyle = documentStyle.style(forLevel: 7)
-        let font = resolvedFont(for: baseStyle)
-        return [
-            .font: font,
-            .foregroundColor: NSColor(baseStyle.renderedColor)
-        ]
-    }
-
     static func resolvedFont(for style: NodeMarkdownRoleStyle) -> NSFont {
         var font = NSFont(name: style.fontName, size: style.fontSize)
             ?? NSFont.monospacedSystemFont(ofSize: style.fontSize, weight: .regular)
@@ -53,21 +44,5 @@ extension NodeMarkdownTextKit2TextView {
         return paragraph
     }
 
-    static func defaultParagraphStyle(documentStyle: NodeMarkdownDocumentStyle) -> NSParagraphStyle {
-        let baseStyle = documentStyle.style(forLevel: 7)
-        let lineStyle = NodeMarkdownRenderContract.default.lineStyle(level: 7, prefix: "", documentStyle: documentStyle)
-        let font = resolvedFont(for: baseStyle)
-        let layout = NodeMarkdownTextKit2RowLayout(
-            rowIndex: 0,
-            range: NSRange(location: 0, length: 0),
-            contentRange: NSRange(location: 0, length: 0),
-            prefix: "",
-            level: 7,
-            lineStyle: lineStyle,
-            spacingBefore: 0,
-            isProtectedH3: false
-        )
-        return paragraphStyle(for: layout, font: font)
-    }
 }
 #endif

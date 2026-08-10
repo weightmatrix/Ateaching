@@ -22,7 +22,7 @@ extension NodeMarkdownTextKit2TextView {
         editingRowIndex: Int?,
         textLength: Int
     ) {
-        guard let rowRange = layout.range.clamped(toLength: textLength),
+        guard let rowRange = layout.range.exact(toLength: textLength),
               rowRange.length > 0 else { return }
 
         let roleStyle = layout.lineStyle.roleStyle
@@ -37,7 +37,7 @@ extension NodeMarkdownTextKit2TextView {
             textColor: textColor
         )
 
-        guard let contentRange = layout.contentRange.clamped(toLength: textLength),
+        guard let contentRange = layout.contentRange.exact(toLength: textLength),
               contentRange.length > 0 else {
             applySearchHighlightIfNeeded(
                 to: styled,
@@ -209,7 +209,7 @@ extension NodeMarkdownTextKit2TextView {
             maxBelowBaseline = max(maxBelowBaseline, attachment.formulaDescent)
         }
         guard maxAboveBaseline != font.ascender || maxBelowBaseline != -font.descender,
-              let safeRowRange = rowRange.clamped(toLength: styled.length),
+              let safeRowRange = rowRange.exact(toLength: styled.length),
               safeRowRange.length > 0 else { return }
 
         let paragraph: NSMutableParagraphStyle = {

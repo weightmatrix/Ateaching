@@ -24,6 +24,7 @@ struct NodeMarkdownTextKit2Editor: View {
     let rowMetadata: [NodeMarkdownTextKitRowMetadata]
     let externalTextSyncToken: Int
     let quickInputSettings: MarkdownQuickInputSettings
+    let draftCommitController: NodeMarkdownLegacyDraftCommitController?
     var onTextChange: ((String) -> Void)?
     var onTextChangeWithRowMetadata: ((String, [NodeMarkdownTextKitRowMetadata]) -> Void)?
     var onRequestInsertImageAtRow: ((Int) -> String?)?
@@ -35,6 +36,9 @@ struct NodeMarkdownTextKit2Editor: View {
     var onRequestOpenDrawingBoardAtRow: ((Int) -> Void)?
     var onActiveRowChange: ((Int?) -> Void)?
     var onFocusLocationChange: ((NodeMarkdownTextFocusLocation?) -> Void)?
+    var onDocumentSnapshot: ((NodeMarkdownLegacyDocumentSnapshot) -> Void)?
+    var onCommitEditingNode: ((NodeMarkdownLegacyEditingNodeDraft) -> Void)?
+    var onEditingDraftDirtyChange: ((Bool) -> Void)?
     var onInputSessionStateChange: ((Bool) -> Void)?
 
     var body: some View {
@@ -50,6 +54,7 @@ struct NodeMarkdownTextKit2Editor: View {
             rowMetadata: rowMetadata,
             externalTextSyncToken: externalTextSyncToken,
             quickInputSettings: quickInputSettings,
+            draftCommitController: draftCommitController,
             onTextChange: onTextChange,
             onTextChangeWithRowMetadata: onTextChangeWithRowMetadata,
             onRequestInsertImageAtRow: onRequestInsertImageAtRow,
@@ -61,6 +66,9 @@ struct NodeMarkdownTextKit2Editor: View {
             onRequestOpenDrawingBoardAtRow: onRequestOpenDrawingBoardAtRow,
             onActiveRowChange: onActiveRowChange,
             onFocusLocationChange: onFocusLocationChange,
+            onDocumentSnapshot: onDocumentSnapshot,
+            onCommitEditingNode: onCommitEditingNode,
+            onEditingDraftDirtyChange: onEditingDraftDirtyChange,
             onInputSessionStateChange: onInputSessionStateChange
         )
         #else
@@ -86,6 +94,7 @@ struct NodeMarkdownTextKit2Representable: NSViewRepresentable {
     let rowMetadata: [NodeMarkdownTextKitRowMetadata]
     let externalTextSyncToken: Int
     let quickInputSettings: MarkdownQuickInputSettings
+    let draftCommitController: NodeMarkdownLegacyDraftCommitController?
     var onTextChange: ((String) -> Void)?
     var onTextChangeWithRowMetadata: ((String, [NodeMarkdownTextKitRowMetadata]) -> Void)?
     var onRequestInsertImageAtRow: ((Int) -> String?)?
@@ -97,6 +106,9 @@ struct NodeMarkdownTextKit2Representable: NSViewRepresentable {
     var onRequestOpenDrawingBoardAtRow: ((Int) -> Void)?
     var onActiveRowChange: ((Int?) -> Void)?
     var onFocusLocationChange: ((NodeMarkdownTextFocusLocation?) -> Void)?
+    var onDocumentSnapshot: ((NodeMarkdownLegacyDocumentSnapshot) -> Void)?
+    var onCommitEditingNode: ((NodeMarkdownLegacyEditingNodeDraft) -> Void)?
+    var onEditingDraftDirtyChange: ((Bool) -> Void)?
     var onInputSessionStateChange: ((Bool) -> Void)?
 }
 #endif

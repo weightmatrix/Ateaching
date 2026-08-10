@@ -18,8 +18,10 @@ extension NodeMarkdownTextKit2Coordinator {
             )
         }
 
-        let safeLocation = max(0, min(selection.location, sourceText.length))
-        let anchor = safeLocation == sourceText.length ? max(0, sourceText.length - 1) : safeLocation
+        guard selection.exact(toLength: sourceText.length) != nil else { return false }
+        let anchor = selection.location == sourceText.length
+            ? sourceText.length - 1
+            : selection.location
         let lineRange = sourceText.lineRange(for: NSRange(location: anchor, length: 0))
         guard let rowIndex = lineIndexForRange(lineRange), rowMetadata.indices.contains(rowIndex) else {
             return false
@@ -40,7 +42,7 @@ extension NodeMarkdownTextKit2Coordinator {
         rebuildRowLayouts(from: textView)
         rememberFocus(in: textView, selection: selection)
         restoreRememberedFocus(in: textView)
-        publishTextChange(textView.documentString())
+        publishTextChange(textView.documentString(), structural: true)
         return true
     }
 
@@ -66,7 +68,7 @@ extension NodeMarkdownTextKit2Coordinator {
         rebuildRowLayouts(from: textView)
         rememberFocus(in: textView, selection: selection)
         restoreRememberedFocus(in: textView)
-        publishTextChange(textView.documentString())
+        publishTextChange(textView.documentString(), structural: true)
         return true
     }
 
@@ -88,15 +90,16 @@ extension NodeMarkdownTextKit2Coordinator {
             insertionLocation = NSMaxRange(lineRange)
             replacement = "\n"
             cursor = hasTrailingNewline ? insertionLocation : insertionLocation + 1
-            metadataIndex = min(rowMetadata.count, rowIndex + 1)
+            metadataIndex = rowIndex + 1
         } else {
             insertionLocation = lineRange.location
             replacement = "\n"
             cursor = insertionLocation
-            metadataIndex = min(rowMetadata.count, rowIndex)
+            metadataIndex = rowIndex
         }
 
         var nextMetadata = rowMetadata
+        guard (0...nextMetadata.count).contains(metadataIndex) else { return false }
         nextMetadata.insert(.fresh(level: level), at: metadataIndex)
         replaceSourceText(
             in: textView,

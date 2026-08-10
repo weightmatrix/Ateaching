@@ -10,9 +10,20 @@ import SwiftMath
 
 #if os(macOS)
 final class NodeMarkdownTextKit2TextView: NSTextView {
+    struct InputMethodCommit {
+        let sourceBefore: String
+        let affectedRange: NSRange
+        let replacement: String
+    }
+
     static let formulaRenderScale: CGFloat = 2
     static var backgroundGradientCache: [NodeMarkdownTextKit2BackgroundGradientCacheKey: NSGradient] = [:]
-    /// TextKit2新管线唯一的正文存储。正文、选择、输入法和排版必须共同使用这一实例。
+    let diagnosticSessionID = UUID()
+    var diagnostic19DrawSequence = 0
+    var diagnostic19EventSequence = 0
+    var diagnostic19Observers: [NSObjectProtocol] = []
+    /// 唯一TextKit2对象链。NSTextView子类不能调用AppKit的便利初始化器，
+    /// 因此由此处一次性显式组装，并用assertSingleTextStorage证明视图没有替换其中任何对象。
     let nodeTextStorage: NSTextStorage
     let nodeTextContentStorage: NSTextContentStorage
     let nodeTextLayoutManager: NSTextLayoutManager
@@ -36,10 +47,18 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
     var onHandleVerticalMove: ((Int) -> Bool)?
     var onHandleCancelOperation: (() -> Bool)?
     var onHandlePrimaryClick: (() -> Void)?
+    var onInputMethodCommit: ((InputMethodCommit) -> Void)?
+    var onInputMethodTransactionFailure: ((String) -> Void)?
     var quickInputSettings = MarkdownQuickInputSettings()
     var isApplyingQuickInputReplacement = false
     var suppressesAutomaticSelectionScrolling = false
     var usesScreenMinimumFormulaFontSize = true
+    private var inputMethodTransactionActive = false
+    private var inputMethodCommitPending = false
+    private var inputMethodSourceBefore = ""
+    private var inputMethodAffectedRange = NSRange(location: 0, length: 0)
+    private var inputMethodRowLayoutsBefore: [NodeMarkdownTextKit2RowLayout] = []
+    private var inputMethodGeneration: UInt64 = 0
     var nodeMarkdownEditingRowIndex: Int?
     var nodeMarkdownRowLayouts: [NodeMarkdownTextKit2RowLayout] = [] {
         didSet {
@@ -52,7 +71,9 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
         let textStorage = NSTextStorage()
         let contentStorage = NSTextContentStorage()
         let layoutManager = NSTextLayoutManager()
-        let textContainer = NSTextContainer(size: NSSize(width: 720, height: CGFloat.greatestFiniteMagnitude))
+        let textContainer = NSTextContainer(
+            size: NSSize(width: 688, height: CGFloat.greatestFiniteMagnitude)
+        )
         contentStorage.textStorage = textStorage
         contentStorage.addTextLayoutManager(layoutManager)
         layoutManager.textContainer = textContainer
@@ -60,8 +81,12 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
         nodeTextContentStorage = contentStorage
         nodeTextLayoutManager = layoutManager
         nodeTextContainer = textContainer
-        super.init(frame: NSRect(x: 0, y: 0, width: 720, height: 600), textContainer: textContainer)
+        super.init(
+            frame: NSRect(x: 0, y: 0, width: 720, height: 600),
+            textContainer: textContainer
+        )
         assertSingleTextStorage()
+        NodeMarkdownTextKit2Diagnostics.report(stage: "TextView唯一对象链创建完成", textView: self)
     }
 
     required init?(coder: NSCoder) {
@@ -74,6 +99,15 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
 
     var nodeMarkdownTextContentStorage: NSTextContentStorage {
         nodeTextContentStorage
+    }
+
+    /// TextKit may expose a zero-length marked range while the view is becoming first responder.
+    /// That is not an IME composition and must never block document loading or normal styling.
+    var hasActiveInputMethodComposition: Bool {
+        let range = markedRange()
+        return inputMethodTransactionActive
+            || inputMethodCommitPending
+            || (range.location != NSNotFound && range.length > 0)
     }
 
     override var acceptsFirstResponder: Bool {
@@ -90,10 +124,26 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        drawNodeMarkdownBackgroundBars(in: dirtyRect)
-        drawNodeMarkdownInlineHighlights(in: dirtyRect)
+        let backgroundCount = drawNodeMarkdownBackgroundBars(in: dirtyRect)
+        let highlightCount = drawNodeMarkdownInlineHighlights(in: dirtyRect)
         super.draw(dirtyRect)
-        drawNodeMarkdownMarkers(in: dirtyRect)
+        let markerCount = drawNodeMarkdownMarkers(in: dirtyRect)
+        if nodeTextStorage.length > 0, diagnostic19DrawSequence < 80 {
+            diagnostic19DrawSequence += 1
+            diagnoseNodeMarkdownDecorations19(
+                stage: "draw-\(diagnostic19DrawSequence)",
+                dirtyRect: dirtyRect,
+                drawnBackgrounds: backgroundCount,
+                drawnHighlights: highlightCount,
+                drawnMarkers: markerCount
+            )
+        }
+    }
+
+    deinit {
+        for observer in diagnostic19Observers {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -102,12 +152,166 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
         onHandlePrimaryClick?()
     }
 
+    override func setMarkedText(
+        _ string: Any,
+        selectedRange: NSRange,
+        replacementRange: NSRange
+    ) {
+        guard beginInputMethodTransactionIfNeeded(replacementRange: replacementRange) else {
+            NSSound.beep()
+            return
+        }
+        super.setMarkedText(
+            string,
+            selectedRange: selectedRange,
+            replacementRange: replacementRange
+        )
+        updateInputMethodRenderingLayouts()
+    }
+
+    override func unmarkText() {
+        let wasActive = inputMethodTransactionActive
+        super.unmarkText()
+        if wasActive {
+            scheduleInputMethodCommit()
+        }
+    }
+
+    override func insertText(_ insertString: Any, replacementRange: NSRange) {
+        let wasActive = inputMethodTransactionActive
+        super.insertText(insertString, replacementRange: replacementRange)
+        if wasActive {
+            updateInputMethodRenderingLayouts()
+            scheduleInputMethodCommit()
+        }
+    }
+
+    private func beginInputMethodTransactionIfNeeded(replacementRange: NSRange) -> Bool {
+        guard !inputMethodTransactionActive, !inputMethodCommitPending else { return true }
+        inputMethodTransactionActive = true
+        inputMethodGeneration &+= 1
+        inputMethodSourceBefore = nodeSourceTextSnapshot
+        inputMethodRowLayoutsBefore = nodeMarkdownRowLayouts
+        let sourceLength = (inputMethodSourceBefore as NSString).length
+        let requestedRange = replacementRange.location == NSNotFound
+            ? selectedRange()
+            : replacementRange
+        guard let exactRange = requestedRange.exact(toLength: sourceLength) else {
+            inputMethodTransactionActive = false
+            inputMethodSourceBefore = ""
+            NodeMarkdownTextKit2Diagnostics.log(
+                "拒绝输入法事务：AppKit替换范围\(NSStringFromRange(requestedRange))不在真实源码长度\(sourceLength)内。"
+            )
+            return false
+        }
+        inputMethodAffectedRange = exactRange
+        NodeMarkdownTextKit2Diagnostics.log(
+            "输入法事务开始，代次=\(inputMethodGeneration)，源码长度=\(sourceLength)，替换范围=\(NSStringFromRange(inputMethodAffectedRange))。"
+        )
+        return true
+    }
+
+    private func scheduleInputMethodCommit() {
+        guard inputMethodTransactionActive, !inputMethodCommitPending else { return }
+        inputMethodTransactionActive = false
+        inputMethodCommitPending = true
+        let generation = inputMethodGeneration
+        DispatchQueue.main.async { [weak self] in
+            guard let self,
+                  self.inputMethodCommitPending,
+                  self.inputMethodGeneration == generation else { return }
+            self.finishInputMethodCommit(generation: generation)
+        }
+    }
+
+    private func finishInputMethodCommit(generation: UInt64) {
+        let sourceBefore = inputMethodSourceBefore
+        let sourceLengthBefore = (sourceBefore as NSString).length
+        guard let affectedRange = inputMethodAffectedRange.exact(toLength: sourceLengthBefore) else {
+            failInputMethodCommit(
+                generation: generation,
+                reason: "提交时替换范围已与事务开始时的源码不一致"
+            )
+            return
+        }
+        let replacementLength = nodeTextStorage.length - (sourceLengthBefore - affectedRange.length)
+
+        guard replacementLength >= 0,
+              let replacementRange = NSRange(
+                location: affectedRange.location,
+                length: replacementLength
+              ).exact(toLength: nodeTextStorage.length) else {
+            failInputMethodCommit(
+                generation: generation,
+                reason: "TextStorage长度无法与输入法替换事务对应"
+            )
+            return
+        }
+        let replacement = (nodeTextStorage.string as NSString).substring(with: replacementRange)
+        nodeSourceTextSnapshot = (sourceBefore as NSString).replacingCharacters(
+            in: affectedRange,
+            with: replacement
+        )
+
+        inputMethodCommitPending = false
+        inputMethodSourceBefore = ""
+        NodeMarkdownTextKit2Diagnostics.log(
+            "输入法事务提交，代次=\(generation)，正式替换范围=\(NSStringFromRange(affectedRange))，正式文字长度=\((replacement as NSString).length)，源码长度=\((nodeSourceTextSnapshot as NSString).length)。"
+        )
+        onInputMethodCommit?(
+            InputMethodCommit(
+                sourceBefore: sourceBefore,
+                affectedRange: affectedRange,
+                replacement: replacement
+            )
+        )
+        inputMethodRowLayoutsBefore.removeAll(keepingCapacity: true)
+    }
+
+    private func failInputMethodCommit(generation: UInt64, reason: String) {
+        inputMethodTransactionActive = false
+        inputMethodCommitPending = false
+        inputMethodSourceBefore = ""
+        inputMethodRowLayoutsBefore.removeAll(keepingCapacity: true)
+        NodeMarkdownTextKit2Diagnostics.log("输入法事务失败，代次=\(generation)：\(reason)。将从Node快照恢复，不推测文字或位置。")
+        onInputMethodTransactionFailure?(reason)
+    }
+
+    private func updateInputMethodRenderingLayouts() {
+        guard inputMethodTransactionActive,
+              !inputMethodRowLayoutsBefore.isEmpty else { return }
+        let sourceLengthBefore = (inputMethodSourceBefore as NSString).length
+        let characterDelta = nodeTextStorage.length - sourceLengthBefore
+        guard let projected = NodeMarkdownTextKit2TransientLayoutProjection.project(
+            inputMethodRowLayoutsBefore,
+            replacing: inputMethodAffectedRange,
+            characterDelta: characterDelta
+        ) else {
+            NodeMarkdownTextKit2Diagnostics.log(
+                "输入法临时布局拒绝投影：替换范围不属于单一真实Node。"
+            )
+            return
+        }
+        nodeMarkdownRowLayouts = projected
+        let displayRect = visibleRect.isEmpty ? bounds : visibleRect
+        if !displayRect.isEmpty {
+            setNeedsDisplay(displayRect)
+        }
+    }
+
     /// Debug构建中立刻暴露双存储或布局链断裂，避免再次出现“能显示但不能编辑”。
     func assertSingleTextStorage(file: StaticString = #fileID, line: UInt = #line) {
         assert(nodeTextContentStorage.textStorage === nodeTextStorage, "TextKit2 content storage detached from canonical text storage", file: file, line: line)
         assert(textStorage === nodeTextStorage, "NSTextView is not editing the canonical TextKit2 text storage", file: file, line: line)
         assert(textContentStorage === nodeTextContentStorage, "NSTextView is not using the configured TextKit2 content storage", file: file, line: line)
         assert(textLayoutManager === nodeTextLayoutManager, "NSTextView is not using the configured TextKit2 layout manager", file: file, line: line)
+    }
+
+    var hasSingleTextStorage: Bool {
+        nodeTextContentStorage.textStorage === nodeTextStorage
+            && textStorage === nodeTextStorage
+            && textContentStorage === nodeTextContentStorage
+            && textLayoutManager === nodeTextLayoutManager
     }
 
     override func insertNewline(_ sender: Any?) {

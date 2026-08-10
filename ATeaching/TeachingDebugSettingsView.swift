@@ -10,8 +10,11 @@ struct TeachingDebugSettingsView: View {
     @State private var didLoad = false
 
     var body: some View {
-        Form {
-            Section("Debug") {
+        AppSettingsPage(
+            title: "Debug",
+            subtitle: "管理开发日志、编辑管线和实验功能"
+        ) {
+            AppSettingsCard(title: "调试选项", systemImage: "ladybug") {
                 Toggle("调试日志", isOn: $persistLogsEnabled)
                     .onChange(of: persistLogsEnabled) { _, newValue in
                         save(
@@ -70,13 +73,24 @@ struct TeachingDebugSettingsView: View {
                 NavigationLink {
                     TeachingDebugLogViewerView()
                 } label: {
-                    Label("查看调试日志", systemImage: "doc.text.magnifyingglass")
+                    HStack(spacing: 14) {
+                        Image(systemName: "doc.text.magnifyingglass")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundStyle(appHighlightBlue)
+                            .frame(width: 30)
+                        Text("查看调试日志")
+                            .font(.system(size: 16, weight: .semibold))
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .foregroundStyle(.tertiary)
+                    }
+                    .padding(.vertical, 7)
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
             }
-            TeachingStatusMessageSection(message: statusMessage)
+            AppSettingsStatusMessage(message: statusMessage)
         }
-        .navigationTitle("Debug")
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task {
             guard !didLoad else { return }
             didLoad = true
@@ -136,32 +150,44 @@ struct TeachingDebugSettingsView: View {
 
 struct TeachingDebugActionToolsView: View {
     var body: some View {
-        Form {
-            Section("子目录") {
-                NavigationLink {
+        AppSettingsPage(
+            title: "功能按键",
+            subtitle: "集中运行数据检查、清洗和整理工具"
+        ) {
+            AppSettingsCard(title: "维护工具", systemImage: "switch.2") {
+                AppSettingsNavigationRow(
+                    title: "H3查重",
+                    subtitle: "扫描正式教案中的同名H3包",
+                    systemImage: "text.magnifyingglass"
+                ) {
                     TeachingH3DuplicateReportView()
-                } label: {
-                    Label("H3查重", systemImage: "text.magnifyingglass")
                 }
-                NavigationLink {
+                AppSettingsDivider()
+                AppSettingsNavigationRow(
+                    title: "洗教案",
+                    subtitle: "清理教案与随堂笔记并修复UUID引用",
+                    systemImage: "sparkles"
+                ) {
                     TeachingLessonWashActionView()
-                } label: {
-                    Label("洗教案", systemImage: "sparkles")
                 }
-                NavigationLink {
+                AppSettingsDivider()
+                AppSettingsNavigationRow(
+                    title: "随堂笔记SSC修改",
+                    subtitle: "整理随堂笔记的来源字段",
+                    systemImage: "arrow.triangle.2.circlepath"
+                ) {
                     TeachingNotebookSSCActionView()
-                } label: {
-                    Label("随堂笔记SSC修改", systemImage: "arrow.triangle.2.circlepath")
                 }
-                NavigationLink {
+                AppSettingsDivider()
+                AppSettingsNavigationRow(
+                    title: "颜色整理",
+                    subtitle: "重新分配高区分度机构颜色",
+                    systemImage: "paintpalette.fill"
+                ) {
                     TeachingInstitutionColorOrganizerView()
-                } label: {
-                    Label("颜色整理", systemImage: "paintpalette.fill")
                 }
             }
         }
-        .navigationTitle("功能按键")
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -236,7 +262,7 @@ private struct TeachingLessonWashActionView: View {
         .navigationTitle("洗教案")
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .confirmationDialog(
-            "确认清洗全部正式教案、随堂笔记和完成清单？",
+            "确认清洗全部正式教案和随堂笔记？",
             isPresented: $showConfirmation,
             titleVisibility: .visible
         ) {
@@ -245,7 +271,7 @@ private struct TeachingLessonWashActionView: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("上课收集只读取、不修改；无法唯一确认的H3会保留并写入报告。")
+            Text("将统一清洗正式教案和所有学生随堂笔记。母本H3换UUID时会同步更新随堂引用；未入库新包发生UUID冲突时只更换新包。完成清单和上课收集都不修改。")
         }
     }
 
@@ -266,8 +292,10 @@ private struct TeachingLessonWashActionView: View {
                     "清理公式旧链接：\(report.removedFormulaLinkCount)",
                     "随堂笔记：\(report.notebookFileCount)",
                     "重建随堂H3：\(report.rebuiltNotebookPackageCount)",
+                    "随母本重连随堂H3：\(report.relinkedNotebookH3Count)",
+                    "更换随堂新包H3 UUID：\(report.reassignedNotebookNewH3Count)",
+                    "更换随堂其他UUID：\(report.reassignedNotebookOtherNodeCount)",
                     "删除随堂重复H3：\(report.removedDuplicateNotebookPackageCount)",
-                    "重建完成清单：\(report.completionChecklistCount)",
                     "待人工处理：\(report.unresolvedItems.count)",
                     "保持原样文件：\(report.skippedFiles.count)",
                     "UUID暂存表：\(report.mappingFileURL?.path ?? "未生成")",

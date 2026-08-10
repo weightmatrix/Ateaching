@@ -5,19 +5,13 @@ import SwiftUI
 import AppKit
 
 extension NodeMarkdownTextKit2Coordinator {
-    func applyBaseStyle(to textView: NodeMarkdownTextKit2TextView) {
-        let baseStyle = documentStyle.style(forLevel: 7)
-        let font = NSFont(name: baseStyle.fontName, size: baseStyle.fontSize)
-            ?? NSFont.monospacedSystemFont(ofSize: baseStyle.fontSize, weight: .regular)
-        textView.font = font
-        textView.textColor = NSColor(baseStyle.renderedColor)
-        textView.typingAttributes[.font] = font
-        textView.typingAttributes[.foregroundColor] = NSColor(baseStyle.renderedColor)
-    }
-
     func applyRowStyles(to textView: NodeMarkdownTextKit2TextView) {
         guard !isApplyingExternalText,
-              textView.markedRange().location == NSNotFound else { return }
+              !textView.hasActiveInputMethodComposition else {
+            NodeMarkdownTextKit2Diagnostics.log("跳过全文样式，isApplyingExternalText=\(isApplyingExternalText)，有效输入法组合=\(textView.hasActiveInputMethodComposition)。")
+            return
+        }
+        NodeMarkdownTextKit2Diagnostics.log("开始应用全文样式，rowLayouts=\(rowLayouts.count)，storage长度=\(textView.nodeTextStorage.length)。")
         isApplyingStyleUpdate = true
         textView.applyNodeMarkdownStyles(
             rowLayouts: rowLayouts,
@@ -33,6 +27,12 @@ extension NodeMarkdownTextKit2Coordinator {
         lastAppliedActiveRowIndex = activeRowIndex
         lastAppliedActiveMatchLocationInRow = activeMatchLocationInRow
         lastAppliedEditingRowIndex = editingRowIndex
+        NodeMarkdownTextKit2Diagnostics.report(
+            stage: "全文样式应用完成",
+            textView: textView,
+            metadataCount: rowMetadata.count,
+            rowLayoutCount: rowLayouts.count
+        )
     }
 
     func refreshSearchHighlightsIfNeeded(in textView: NodeMarkdownTextKit2TextView) {
@@ -62,7 +62,7 @@ extension NodeMarkdownTextKit2Coordinator {
     func refreshRowStyles(in textView: NodeMarkdownTextKit2TextView, rows: Set<Int>) {
         let validRows = rows.filter { rowLayouts.indices.contains($0) }.sorted()
         guard !validRows.isEmpty,
-              textView.markedRange().location == NSNotFound else { return }
+              !textView.hasActiveInputMethodComposition else { return }
         isApplyingStyleUpdate = true
         defer { isApplyingStyleUpdate = false }
         for rowIndex in validRows {
@@ -77,17 +77,23 @@ extension NodeMarkdownTextKit2Coordinator {
                 editingRowIndex: editingRowIndex
             )
         }
+        textView.invalidateNodeMarkdownDecorationsAfterRowStyleChange(rows: validRows)
     }
 
     func updateTypingAttributes(for textView: NodeMarkdownTextKit2TextView) {
-        let attributes = typingAttributes(forLocation: textView.selectedRange().location, in: textView)
+        guard let attributes = typingAttributes(
+            forLocation: textView.selectedRange().location,
+            in: textView
+        ) else { return }
         textView.typingAttributes = attributes
     }
 
     func applyTypingAttributesToMarkedText(in textView: NodeMarkdownTextKit2TextView) {
         let markedRange = textView.markedRange()
         guard markedRange.location != NSNotFound, markedRange.length > 0 else { return }
-        let attributes = typingAttributes(forLocation: markedRange.location, in: textView)
+        guard let attributes = typingAttributes(forLocation: markedRange.location, in: textView) else {
+            return
+        }
         // 只影响后续输入属性，不触碰输入法正在管理的组合文本。
         textView.typingAttributes = attributes
     }
@@ -95,12 +101,16 @@ extension NodeMarkdownTextKit2Coordinator {
     private func typingAttributes(
         forLocation location: Int,
         in textView: NodeMarkdownTextKit2TextView
-    ) -> [NSAttributedString.Key: Any] {
+    ) -> [NSAttributedString.Key: Any]? {
         let nsText = textView.documentString() as NSString
         guard nsText.length > 0 else {
-            return textView.defaultTypingAttributes(documentStyle: documentStyle)
+            guard rowLayouts.count == 1 else { return nil }
+            return textView.typingAttributes(for: rowLayouts[0], documentStyle: documentStyle)
         }
-        let safeLocation = max(0, min(location, nsText.length))
+        guard NSRange(location: location, length: 0).exact(toLength: nsText.length) != nil else {
+            return nil
+        }
+        let safeLocation = location
         if safeLocation == nsText.length,
            let lastRange = rowCharacterRanges.last,
            lastRange.location == nsText.length,
@@ -109,16 +119,9 @@ extension NodeMarkdownTextKit2Coordinator {
             return textView.typingAttributes(for: lastLayout, documentStyle: documentStyle)
         }
         let anchor = safeLocation == nsText.length ? max(0, nsText.length - 1) : safeLocation
-        let layout: NodeMarkdownTextKit2RowLayout?
-        if let rowIndex = lineIndexForLocation(anchor), rowLayouts.indices.contains(rowIndex) {
-            layout = rowLayouts[rowIndex]
-        } else {
-            let lineRange = nsText.lineRange(for: NSRange(location: anchor, length: 0))
-            layout = rowLayouts.first { $0.range == lineRange }
-        }
-        guard let layout else {
-            return textView.defaultTypingAttributes(documentStyle: documentStyle)
-        }
+        guard let rowIndex = lineIndexForLocation(anchor),
+              rowLayouts.indices.contains(rowIndex) else { return nil }
+        let layout = rowLayouts[rowIndex]
         let attributes = textView.typingAttributes(for: layout, documentStyle: documentStyle)
         guard layout.rowIndex == editingRowIndex else {
             return attributes

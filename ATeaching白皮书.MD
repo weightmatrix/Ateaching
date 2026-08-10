@@ -23,10 +23,47 @@ ATeaching 是一个以 macOS 为主，同时兼顾 iPadOS / iOS 的授课管理�
 项目的核心设计原则是：
 
 1. **本地文件优先**：所有关键资料都落盘为普通文件，方便迁移、备份和人工检查。
+
 2. **中心教案优先**：教案是母本，上课随堂笔记可以反向改进母本。
 3. **不破坏历史数据**：学生、机构改名或删除时，历史课时记录不应丢失。
 4. **兼容旧数据**：设置和文档结构升级时必须兼容已有文件。
 5. **课堂操作少打扰**：上课中保存、导出、同步尽量自动完成。
+
+## NodeMarkdown新管线输入法临时布局与多行背景
+
+输入法组合文字可以临时改变`NSTextStorage`长度，但定字前不得改变正式Node文档。`NodeMarkdownTextKit2TextView`在组合开始时保存真实`rowLayouts`和源码替换范围；每次`setMarkedText`完成后，以当前TextStorage长度减事务开始源码长度得到真实净变化。`NodeMarkdownTextKit2TransientLayoutProjection`只扩大或缩小受影响Node的range与contentRange，并等量平移后续Node的字符地址，不重算后续Node的level、样式、UUID或来源。
+
+临时布局只赋给TextView的绘制快照，Coordinator的正式`rowLayouts`、`documentState`、源码快照和SwiftUI绑定保持不变。输入法提交后，`finishInputMethodCommit`按照正式替换结果更新当前Node并接管绘制；失败时从有效Node快照恢复。这样既允许TextKit2实时排版拼音，又不会用旧字符地址绘制后续装饰。
+
+背景条的纵向范围来自TextKit2实际布局结果。绘制器取得目标Node对应`NSTextLayoutFragment`的全部`textLineFragments`，将每个`typographicBounds`转换到TextView坐标后取并集；背景条高度使用这个真实并集与最小样式高度中的较大值。禁止根据字符数、字号或容器宽度估算换行数。编号仍单独使用第一行片段定位。
+
+## NodeMarkdown新管线真实数据契约
+
+新管线禁止用默认值或邻近状态推测已有Node。文档进入TextKit2前必须同时满足：源码自然行数与Node数量相等；UUID有效且文档内唯一；level位于1至12；SourceID和SourceFile成对存在；来源只允许附着于H3。`NodeMarkdownTextKit2DocumentState`是这组约束的唯一入口，替换、插入和更新均先验证完整结果，失败时保留上一份有效快照。
+
+字符坐标由源码逐行生成连续的UTF-16范围。范围必须无空洞、无重叠并完整覆盖源码；Node定位统一使用有序范围二分查询，不允许回退到上一行、最近行、文末或默认L7。焦点由`Node UUID + Node内偏移`表示，视野锚点由TextKit2真实viewport、Node UUID和实际行矩形表示。缺少真实依据时保持当前状态，不执行猜测性移动。
+
+样式事务只处理验证通过的Node范围，不再先给全文套默认正文样式。输入法组合、普通输入、快捷替换和结构编辑先形成候选源码、候选Node列表及候选选区，三者通过同一验证后再提交；事务失败则恢复开始前的Node快照，禁止从包含公式或图片附件的显示字符串反向重建源码。
+
+允许的生成行为只有明确的新建操作：回车或插入新Node时生成新UUID，level按产品规定的1至12边界处理。字体缺少字符时使用系统字体回退属于字形显示能力，不属于Node数据推测。生产路径不得使用预估行高、坐标试探、固定扫描行数或崩溃断言来掩盖状态不一致。
+
+## NodeMarkdown新管线输入法事务
+
+新管线把第三方输入法的拼音组合和正式Node修改分成两个阶段。`NodeMarkdownTextKit2TextView`在`setMarkedText`开始时保存稳定源码和原替换范围；组合期间`NSTextStorage`可以暂时比源码快照长，但Coordinator不得重建源码、解析层级、安装公式附件、刷新Node样式、发布SwiftUI绑定或运行稳定状态断言。
+
+输入法通过`insertText`或`unmarkText`结束组合后，TextView根据事务开始时的源码、原替换范围和最终存储长度提取正式文字，在下一轮主线程一次性提交。Coordinator把它作为一次局部编辑处理：普通字符只更新当前Node并平移后续地址，出现换行等结构变化时才重建行结构。稳定快照提交完成后，一致性断言仍必须验证存储长度、源码长度、行范围和选择范围完全相同。
+
+首屏装饰依赖TextKit2真实视口。视图初建时SwiftUI可能尚未提供有效宽度，因而第一次绘制无法取得开头行的文字片段。`prepareViewport`在同步和下一轮真实尺寸布局后都只对当前可见区执行`ensureLayout`并请求重画背景条、高亮和编号；该流程不得触发全文布局或修改正文。
+
+滚动与装饰时序诊断统一使用`【诊断-19】`。它监听`NSClipView`滚动和尺寸变化，记录事件前后的`draw`序号、TextKit2 viewport字符及行范围，并在每次实际绘制后比较viewport行、生产候选行、有几何的行和背景条、高亮、编号的期望/实画数量。诊断不得调用`layoutViewport`、`ensureLayout`或`setNeedsDisplay`，避免旁观行为改变问题本身。
+
+背景条、高亮和编号的生产绘制必须共用TextKit2 `textViewportLayoutController.viewportRange`换算出的Node范围，并向上下各扩展两行后再用`dirtyRect`裁剪几何。禁止在自绘编号沟槽内调用`characterIndexForInsertion(at:)`推断可见行：首帧或回到文首时，该空白位置可能被TextKit2命中文档尾部，导致顶部装饰全部漏画。viewport尚未生成时允许短暂使用坐标兜底，但横坐标必须处于实际正文列内。这个选择过程只能二分定位范围，不得扫描整篇Node。
+
+新管线快捷输入属于同一次原生编辑事务的第二段修改。Coordinator必须把原始按键长度差与快捷替换的长度差相加，再更新当前行和后续行地址；不能只使用触发快捷输入的最后一次按键长度差。快捷替换包含换行时必须走结构更新路径。
+
+NodeMarkdown旧管线的普通字符输入以活动Node事务为边界。稳定行范围只代表进入该Node时的结构坐标；输入期间仅保存当前Node实时范围与长度差。查询当前行或后续行时，`NodeMarkdownLegacyRowRangeIndex`通过稳定范围加单个长度差计算有效范围，并二分定位行号。英文按键、marked text候选和中文定字均不得重建全文行范围，也不得遍历移动所有后续行。只有换行、跨行删除、撤销结构变化和明确外部全文替换才允许重建结构索引。
+
+视口稳定不能靠多次`setBoundsOrigin`强行补偿。普通Node输入、拼音定字、活动行局部样式切换和`Command+S`保存都不得写入`NSClipView`坐标。这些事务只能在必要的同步窗口内禁止`NSTextView.scrollRangeToVisible`的选区自动滚动，完成后恢复系统行为。只有明确的搜索定位、用户请求的结构焦点跳转和外部结构替换可以使用语义视口锚点。
 
 NodeMarkdown样式数据始终是`H1...H6 + body1...body5 + comment`十二个独立角色。旧JSON只有共享`body`时，解码层把它复制到五个正文角色；界面和后续保存不得再把五级正文合并。`NodeMarkdownRenderContract`统一规定每级固定缩进步长、固定编号宽度和固定编号间距，编辑器、HTML及PDF应从同一契约取值。
 
@@ -49,6 +86,16 @@ NodeMarkdown样式数据始终是`H1...H6 + body1...body5 + comment`十二个独
 NodeMarkdown旧TextKit管线把中文输入法的marked text视为独立的未提交事务。组合期只重建UTF-16行坐标并记录所在Node，不写段落属性、不进入Node切换、不提交编辑草稿、不执行异步样式刷新。候选文字造成排版几何变化时，只使用`ensureLayout(forBoundingRect:in:)`完成可见区布局，再重画自绘的编号、背景条、高亮和下划线。只有定字后的文本才进入普通字符提交流程。
 
 拼音组合边界必须同时约束协调器内部和SwiftUI外部入口。`updateNSView`在任何样式、搜索、元数据或正文同步之前先检查`hasMarkedText`；`applyStyle`也要独立检查，不能依赖调用者自律。候选期不向父页重复发布未变化的活动行。旧管线的对象链固定为`NSTextStorage -> NSLayoutManager -> NSTextContainer -> NSTextView`，不允许预建TextKit 2对象后再依赖`NSTextView`暗中替换。
+
+NodeMarkdown新TextKit2管线不能只用`markedRange.location != NSNotFound`判断拼音组合。AppKit在TextView成为第一响应者的过渡期可能给出位置有效但长度为0的空标记；有效组合态必须同时满足位置有效且长度大于0。同步、输入委托和样式系统统一读取TextView上的同一个判断。唯一TextStorage为空而外部正文非空时，首次正文安装必须优先执行，任何临时焦点或空输入法状态都不得阻断。诊断时若看到binding非空而TextStorage为0，应先查看`【诊断】同步入口`的marked range与同步退出原因。
+
+新TextKit2管线的编辑行切换遵守最小失效原则：只有旧编辑行和新编辑行需要在源码态与渲染态之间转换；相邻Node没有状态变化，禁止恢复其附件锚点、清除属性或重新挂载样式。局部样式事务完成后应先确保可见区布局，再一次性请求装饰层重画，背景条和行内高亮不能等待滚动事件补画。
+
+`NSTextView.font`与`NSTextView.textColor`不是无副作用的默认值配置接口：正文存在时调用会改写TextStorage中的全文字体和颜色。新管线只允许在空TextView创建阶段设置它们；文档安装完成后，`updateNSView`、保存状态、焦点同步和工具栏状态更新都不得再次调用。正文视觉属性只有一个所有者，即逐Node样式事务。SwiftUI的活动行与焦点回调也不得在`updateNSView`调用栈内同步修改状态，必须在本轮视图更新结束后投递并丢弃过期值。
+
+AppKit编辑器向SwiftUI回报活动行和焦点时，外层视图必须再设置一道更新期边界，兼容新旧管线以及未来不同的回调来源。活动行引发的脏包列表、新包列表、选中集合和计数更新属于同一个状态事务，应整体推迟，禁止把每个`@State`赋值分别排队，否则会产生可见的中间状态。
+
+公式附件为了保持源码字符位置不变，只能把第一个字符变成附件锚点，其余字符保留为透明占位。禁止使用`NSFont.systemFont(ofSize: 0)`压缩占位，因为AppKit会把0解释为默认字号。新管线统一使用明确的0.001pt字体，使隐藏源码宽度降到亚像素级；公式行的可见宽度由附件的实测渲染宽度决定。相关诊断必须报告源码UTF-16长度、附件宽高和透明源码字号。
 
 自绘层不能假设`textDidChange`一定早于绘图。`setMarkedText`可以先改变字符长度并触发绘图，因此编号、背景条和下划线必须在每次绘制中验证行索引是否覆盖当前存储全长。缓存过期时使用当前存储的只读临时索引解析level，不得因旧字符坐标匹配失败而降级为正文。
 
@@ -287,6 +334,8 @@ Debug验收必须覆盖：`NSTextView`、`NSTextStorage`、`NSTextContentStorage
 
 结构命令同时修改正文与行元数据：Enter 保留原 Node 身份并为拆出的后一行生成新 UUID；行首 Backspace 保留前一 Node 并回收后一 Node；Tab/Shift+Tab 只改 level。受保护 H3 的行首合并仍被禁止，H3 上的 Tab/Shift+Tab 按既定规则生成 H4/H2 空 Node。撤销快照必须将正文和元数据作为一个整体恢复。
 
+回车的行元数据投影必须是纯位置事务：只在源Node后插入新身份，源Node之前与新行之后的旧Node逐项原样保留。尤其是后缀Node的UUID、level、SourceID和SourceFile不得通过正文、邻行或样式重新推断。结构插入会使所有按行号建立的层级、段落和正则缓存失效，必须统一作废；随后只按真实Node元数据重建可见区。编辑会话中行数不同的旧SwiftUI快照属于过期回灌，除非携带明确的外部同步版本，否则不得覆盖本地结构事务。
+
 `NodeMarkdownPrefixCodec` 仍是文件边界协议：读旧 CSV 时把 `Prefix` 解码为 level，写 CSV 时由 level 生成 `Prefix`。它不得再参与编辑器的焦点、选择和文本变更。
 
 ## 1. 主要文件
@@ -311,13 +360,15 @@ NodeMarkdown 的核心思想是：文档由一组节点组成。每个节点至�
 
 文本管线回写 Node 时，每个旧 UUID 在一次解析中只能被一行领取。编辑器明确传回的行身份优先并提前预留；位置后备不得重复领取身份，也不得让 H3 与非 H3 跨边界继承身份。写盘和同步前必须验证整篇 UUID 唯一；非 H3 不得携带来源；来源完整的 H3 必须满足节点 UUID 与 `SourceID` 相同。旧文件中只有一半来源信息的 H3 可以暂存并交给同步流程修复。检查失败时保留内存和原文件，禁止继续写盘或向母本传播。
 
-全库历史身份修复由`TeachingLessonWashService`负责。服务必须先读完全部正式教案、随堂笔记和完成清单，在内存中形成确定的旧身份到新身份映射，然后才能写盘。正式教案的Node UUID要求全库唯一；不同学生随堂笔记中的同一母本包允许共享母本UUID，但每一份随堂笔记内部必须唯一。
+全库历史身份修复由`TeachingLessonWashService`负责。服务必须先读完全部正式教案和随堂笔记，在内存中形成确定的旧身份到新身份映射，然后才能写盘。正式教案的Node UUID要求全库唯一；不同学生随堂笔记中的同一母本包允许共享母本UUID，但每一份随堂笔记内部必须唯一。
 
-重复H3不能只按UUID迁移，因为损坏数据中同一个UUID可能属于多个正式H3。匹配顺序是：`SourceFile+SourceID`、包含文件的旧身份映射、H3根UUID、全库唯一标题、全包内容唯一。任何阶段出现多个候选都停止自动处理。成功匹配后必须同时令随堂根UUID、SourceID和母本H3 UUID相等，并修正SourceFile。
+重复H3不能只按UUID迁移，因为损坏数据中同一个UUID可能属于多个正式H3。对于至少保留一项来源信息的随堂H3，匹配顺序是：`SourceFile+SourceID`、包含文件的旧身份映射、H3根UUID、全库唯一标题、全包内容唯一。任何阶段出现多个候选都停止自动处理。成功匹配后必须同时令随堂根UUID、SourceID和母本H3 UUID相等，并修正SourceFile。母本H3在身份计划中换UUID后，所有按旧`SourceFile+SourceID`定位到它的随堂H3必须在同一轮内完成这三项更新。
 
-`上课收集/上课收集.CSV`是洗教案过程的只读边界。无法唯一迁回正式教案的上课收集包必须保留并进入报告，不能沿用旧SSC工具的自动删除规则。完成清单应从清洗后的母本重新生成，旧Status通过同一身份映射继承；清洗后随堂笔记里实际存在的正式H3也必须标为完成。无法找到所属正式教案文件夹时禁止写入空清单。
+`SourceID`和`SourceFile`同时为空的随堂H3是未入库新包，不参与标题、摘要或UUID猜测。清洗器为全部正式母本Node建立保留集合，再按稳定文件顺序检查所有随堂新包：新包根或子Node撞上任意母本Node、其他随堂新包或本文件既有Node时，只给新包冲突节点生成新UUID。这样既不破坏母本引用，也能避免新包入库时因子Node撞车导致整包写入失败。随堂笔记内其他非H3重复身份可直接换新UUID；同一母本包在不同学生文件中共享母本身份仍然合法。
 
-清洗后的正式母本写盘前必须通过全库UUID检查；随堂笔记逐文件通过`NodeMarkdownIdentityPolicy`检查。不能通过检查的文件保持原样，并在`系统/暂存/洗教案/`报告中列出。
+`上课收集/上课收集.CSV`和完成清单都是洗教案过程的不写边界。无法唯一迁回正式教案的上课收集包必须保留并进入报告，不能沿用旧SSC工具的自动删除规则。洗教案不枚举、不重建、不写入完成清单；它由每次开课前的专用流程根据当时的母本和学生状态完整重建。
+
+清洗后的正式母本写盘前必须通过全库UUID检查；随堂笔记逐文件通过`NodeMarkdownIdentityPolicy`检查。每份随堂笔记使用临时身份注册表完成计算，只有验证通过才把新包身份占用合并到全局计划；不能通过检查的文件保持原样，也不能影响后续文件，并在`系统/暂存/洗教案/`报告中列出。报告同时保存随堂重连和UUID更换的文件、行号、节点层级、新旧UUID及原因。
 
 - 节点 ID
 - 层级
@@ -1194,6 +1245,33 @@ Mac的`NSTextView`在进入窗口后可能先成为第一响应者，随后异�
 
 当前平台边界必须明确：Mac使用`NSTextStorage -> NSTextContentStorage -> NSTextLayoutManager -> NSTextContainer -> NSTextView`的新管线；iOS分支目前仍是SwiftUI `TextEditor`兜底。iPhone能显示正文不等于已经运行新TextKit2管线，后续移动端原生化需要单独实现和验收。
 
+## TextKit2新管线的模块边界
+
+新管线不再把`NSTextStorage`、SwiftUI绑定和行元数据三者同时当作事实源。模块边界固定如下：
+
+1. `NodeMarkdownTextKit2DocumentState`是Node身份事实源，保存UUID、层级、正文、来源和文档修订号；UUID到行号使用索引查询。
+2. `NodeMarkdownTextKit2ActiveNodeSession`只管理一个正在编辑的Node。连续字符和拼音组合只更新该草稿，切行、保存或结构操作前统一提交。
+3. `NodeMarkdownTextKit2NodeSession`负责把草稿按UUID写回Node状态，并通过旧管线共用的单Node提交和文档快照契约通知上层。
+4. `NodeMarkdownTextKit2HeightIndex`保存各行估算高度的前缀累计值，用于按纵坐标快速定位行；它不是持久数据，也不能改变Node身份。
+5. `NodeMarkdownTextKit2Viewport`只准备TextKit2当前可见区域。滚动和绘制不允许调用整篇`ensureLayout`。
+6. `NodeMarkdownTextKit2RenderCache`的缓存键必须包含Node UUID、Node修订号、样式修订号和可用宽度；任何一项变化只作废对应结果。
+7. 文本输入事务和结构事务严格分开。普通字符只更新当前行；回车、跨行删除、层级调整、多行操作和撤销才生成结构快照。
+8. 外部同步必须服从本地草稿优先原则。活动草稿存在时不能用迟到的文件状态覆盖；保存前必须先提交草稿，再取得统一快照。
+
+性能验收不以“使用TextKit2”本身为标准，而以工作量边界为标准：普通打字不能解析全文、重建全部行样式、重新渲染公式图片、向SwiftUI发布全文或强制全文布局。文档长度增长后，允许内存缓存增长，但单次普通输入的主要工作必须保持在活动行和可见区。
+
+TextKit2视口还有一个严格的首帧规则：`NSViewRepresentable.makeNSView`执行时，SwiftUI可能尚未给`NSScrollView`最终尺寸，此时`contentSize`不能作为正文容器宽度。TextView必须先保持有效安全尺寸，等下一轮主线程取得真实`contentView.bounds.width`后，再统一更新TextView frame和TextContainer宽度。把创建阶段的零尺寸钳制成1点并不安全，它会让正文存在于TextStorage却完全不可见。
+
+---
+
+# 三十、设置中心视觉组件
+
+设置中心的一级目录和二级页面必须使用同一套结构，不能让首页使用定制圆角设计、子页却回到平台默认Form。
+
+`AppSettingsVisualComponents.swift`提供四个边界：`AppSettingsPage`负责页面背景、标题、滚动和最大宽度；`AppSettingsCard`负责功能分组；`AppSettingsNavigationRow`负责带说明的子页入口；`AppSettingsStatusMessage`负责保存和错误反馈。设置业务页只组合这些组件，不重复定义背景和窗口尺寸。
+
+Mac设置首页固定单列，最大内容宽度820点。二级页同样按单列纵向排列，整个页面负责滚动，不给PDF、背景、备份或Debug设置固定窗口高度。iPhone复用相同二级组件，由可用宽度自然压缩。
+
 ---
 
 # 二十九、旧TextKit管线的Node编辑事务
@@ -1220,3 +1298,21 @@ Mac的`NSTextView`在进入窗口后可能先成为第一响应者，随后异�
 输入事件顺序固定为：消费原生编辑事务、同步行元数据、更新或重建文字范围、根据新范围确认活动行、设置输入属性、恢复当前行源码显示。marked text组合阶段没有可靠的普通替换回调，因此直接从当前正文重建范围。正文不再包含源码层级前缀后，禁止检测“行首若干字符可能改变层级”。
 
 输入法组合与普通按键是互斥事务。检测到marked text后必须立即废弃此前可能登记的普通字符替换，组合期间每次按当前存储重建范围；从拼音确认成中文的第一次非marked回调也必须重建，不能使用组合开始时第一个字母留下的字符差。没有`PendingEdit`的文字回调只影响当前活动行，不得默认扩大到相邻行。
+
+---
+
+# 三十、TextKit2全文安装与诊断
+
+新管线只有一个全文安装入口。视图工厂负责创建对象，Coordinator负责业务状态，TextSystemController负责将完整文档安装进唯一TextStorage。三者不得互相代替：视图创建时隐式装正文、Coordinator连接时隐式建空布局、同步层自行替换Storage，都会制造首帧时序分叉。
+
+全文安装采用固定事务：写正文和Node状态时标记外部写入；完成后解除标记，再重建行布局和样式。样式阶段如果仍处于外部写入状态会主动跳过，因此解除标记必须发生在样式入口之前。
+
+Debug诊断统一通过`NodeMarkdownTextKit2Diagnostics`输出，每行以`【诊断】`开头。判断空白页面时按以下顺序阅读：
+
+1. binding、源码快照和TextStorage长度是否一致且大于零。
+2. NSTextView持有的Storage、ContentStorage和LayoutManager是否与唯一对象链相同。
+3. metadata数量、rowLayouts数量是否与正文行数一致。
+4. TextView frame、ClipView和TextContainer宽度是否有效。
+5. viewportRange和首个TextLayoutFragment是否存在，片段frame是否进入可见区。
+6. 首字符颜色、字号以及透明字符统计是否说明样式把正文隐藏。
+7. `draw`诊断是否实际发生；没有draw说明问题位于SwiftUI/AppKit视图层，而不是Node解析或样式层。

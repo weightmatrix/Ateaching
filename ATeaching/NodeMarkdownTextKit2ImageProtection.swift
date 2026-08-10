@@ -17,8 +17,11 @@ extension NodeMarkdownTextKit2Coordinator {
     ) -> ProtectedImageTokenEdit? {
         let sourceText = textView.documentString() as NSString
         guard sourceText.length > 0 else { return nil }
-        let safeRange = affectedRange.clamped(toLength: sourceText.length) ?? NSRange(location: sourceText.length, length: 0)
-        let probeRange = imageTokenProbeRange(for: safeRange, in: sourceText)
+        guard let exactRange = affectedRange.exact(toLength: sourceText.length) else {
+            NodeMarkdownTextKit2Diagnostics.log("拒绝图片保护检查：编辑范围不在真实正文内。")
+            return nil
+        }
+        let probeRange = imageTokenProbeRange(for: exactRange, in: sourceText)
         guard probeRange.length > 0 else { return nil }
 
         let probeText = sourceText.substring(with: probeRange)
@@ -27,19 +30,19 @@ extension NodeMarkdownTextKit2Coordinator {
                 location: probeRange.location + token.sourceRange.location,
                 length: token.sourceRange.length
             )
-            guard editRange(safeRange, touchesImageTokenRange: tokenRange) else { continue }
+            guard editRange(exactRange, touchesImageTokenRange: tokenRange) else { continue }
             if imageWidthEditIsAllowed(
                 token: token,
                 tokenRange: tokenRange,
-                affectedRange: safeRange,
+                affectedRange: exactRange,
                 replacement: replacement
             ) {
                 return nil
             }
-            let replacementRange = safeRange.length > 0 ? NSUnionRange(safeRange, tokenRange) : tokenRange
+            let replacementRange = exactRange.length > 0 ? NSUnionRange(exactRange, tokenRange) : tokenRange
             return ProtectedImageTokenEdit(
                 replacementRange: replacementRange,
-                replacement: safeRange.length > 0 ? replacement : ""
+                replacement: exactRange.length > 0 ? replacement : ""
             )
         }
         return nil
@@ -49,9 +52,11 @@ extension NodeMarkdownTextKit2Coordinator {
         let textLength = sourceText.length
         guard textLength > 0 else { return NSRange(location: 0, length: 0) }
         if affectedRange.length > 0 {
-            return sourceText.lineRange(for: affectedRange.clamped(toLength: textLength) ?? affectedRange)
+            return sourceText.lineRange(for: affectedRange)
         }
-        let anchor = max(0, min(affectedRange.location, textLength - 1))
+        let anchor = affectedRange.location == textLength
+            ? textLength - 1
+            : affectedRange.location
         return sourceText.lineRange(for: NSRange(location: anchor, length: 0))
     }
 

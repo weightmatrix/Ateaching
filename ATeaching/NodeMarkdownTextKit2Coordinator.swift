@@ -7,6 +7,9 @@ import AppKit
 
 #if os(macOS)
 final class NodeMarkdownTextKit2Coordinator: NSObject, NSTextViewDelegate {
+    let documentState: NodeMarkdownTextKit2DocumentState
+    var lifecycleState: NodeMarkdownTextKit2LifecycleState = .empty
+    var activeNodeSession: NodeMarkdownTextKit2ActiveNodeSession?
     var text: Binding<String>
     var workingDirectoryURL: URL?
     var documentStyle: NodeMarkdownDocumentStyle
@@ -41,6 +44,9 @@ final class NodeMarkdownTextKit2Coordinator: NSObject, NSTextViewDelegate {
     var onRequestOpenDrawingBoardAtRow: ((Int) -> Void)?
     var onActiveRowChange: ((Int?) -> Void)?
     var onFocusLocationChange: ((NodeMarkdownTextFocusLocation?) -> Void)?
+    var onDocumentSnapshot: ((NodeMarkdownLegacyDocumentSnapshot) -> Void)?
+    var onCommitEditingNode: ((NodeMarkdownLegacyEditingNodeDraft) -> Void)?
+    var onEditingDraftDirtyChange: ((Bool) -> Void)?
     var onInputSessionStateChange: ((Bool) -> Void)?
     var isApplyingExternalText = false
     var isApplyingStyleUpdate = false
@@ -61,7 +67,10 @@ final class NodeMarkdownTextKit2Coordinator: NSObject, NSTextViewDelegate {
         lastPublishedLocalText != nil
     }
     var pendingFocusAnchor: NodeMarkdownTextKit2FocusAnchor?
-    private weak var textView: NodeMarkdownTextKit2TextView?
+    weak var textView: NodeMarkdownTextKit2TextView?
+    private weak var draftCommitController: NodeMarkdownLegacyDraftCommitController?
+    let documentSnapshotSessionID = UUID()
+    var documentSnapshotRevision: UInt64 = 0
 
     init(
         text: Binding<String>,
@@ -74,6 +83,7 @@ final class NodeMarkdownTextKit2Coordinator: NSObject, NSTextViewDelegate {
         rowMetadata: [NodeMarkdownTextKitRowMetadata],
         externalTextSyncToken: Int,
         quickInputSettings: MarkdownQuickInputSettings,
+        draftCommitController: NodeMarkdownLegacyDraftCommitController?,
         onTextChange: ((String) -> Void)?,
         onTextChangeWithRowMetadata: ((String, [NodeMarkdownTextKitRowMetadata]) -> Void)?,
         onRequestInsertImageAtRow: ((Int) -> String?)?,
@@ -85,8 +95,12 @@ final class NodeMarkdownTextKit2Coordinator: NSObject, NSTextViewDelegate {
         onRequestOpenDrawingBoardAtRow: ((Int) -> Void)?,
         onActiveRowChange: ((Int?) -> Void)?,
         onFocusLocationChange: ((NodeMarkdownTextFocusLocation?) -> Void)?,
+        onDocumentSnapshot: ((NodeMarkdownLegacyDocumentSnapshot) -> Void)?,
+        onCommitEditingNode: ((NodeMarkdownLegacyEditingNodeDraft) -> Void)?,
+        onEditingDraftDirtyChange: ((Bool) -> Void)?,
         onInputSessionStateChange: ((Bool) -> Void)?
     ) {
+        documentState = NodeMarkdownTextKit2DocumentState(text: text.wrappedValue, rowMetadata: rowMetadata)
         self.text = text
         self.workingDirectoryURL = workingDirectoryURL
         self.documentStyle = documentStyle
@@ -108,14 +122,30 @@ final class NodeMarkdownTextKit2Coordinator: NSObject, NSTextViewDelegate {
         self.onRequestOpenDrawingBoardAtRow = onRequestOpenDrawingBoardAtRow
         self.onActiveRowChange = onActiveRowChange
         self.onFocusLocationChange = onFocusLocationChange
+        self.onDocumentSnapshot = onDocumentSnapshot
+        self.onCommitEditingNode = onCommitEditingNode
+        self.onEditingDraftDirtyChange = onEditingDraftDirtyChange
         self.onInputSessionStateChange = onInputSessionStateChange
+        self.draftCommitController = draftCommitController
     }
 
     func attach(_ textView: NodeMarkdownTextKit2TextView) {
         self.textView = textView
-        if rowCharacterRanges.isEmpty {
-            rebuildRowLayouts(from: textView)
-        }
+        draftCommitController?.install(
+            commit: { [weak self] in self?.commitActiveNodeSession() },
+            focusRowEnd: { [weak self, weak textView] row in
+                guard let self, let textView, self.rowLayouts.indices.contains(row) else { return }
+                let location = NSMaxRange(self.rowLayouts[row].contentRange)
+                textView.setSelectedRange(NSRange(location: location, length: 0))
+                self.enterEditingRow(row, from: textView)
+            }
+        )
+        NodeMarkdownTextKit2Diagnostics.report(
+            stage: "Coordinator连接TextView",
+            textView: textView,
+            metadataCount: rowMetadata.count,
+            rowLayoutCount: rowLayouts.count
+        )
     }
 
 }

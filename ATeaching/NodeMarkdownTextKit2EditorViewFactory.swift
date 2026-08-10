@@ -8,10 +8,7 @@ extension NodeMarkdownTextKit2Representable {
     func makeConfiguredTextView(context: Context) -> NodeMarkdownTextKit2TextView {
         let textView = NodeMarkdownTextKit2TextView()
         textView.delegate = context.coordinator
-        textView.replaceDocumentText(text, documentStyle: documentStyle)
-        let baseStyle = documentStyle.style(forLevel: 7)
-        textView.font = NSFont(name: baseStyle.fontName, size: baseStyle.fontSize) ?? NSFont.monospacedSystemFont(ofSize: baseStyle.fontSize, weight: .regular)
-        textView.textColor = NSColor(baseStyle.renderedColor)
+        // 正文安装前不预设任何Node层级样式。载入后只由逐Node真实level设置。
         textView.insertionPointColor = .controlAccentColor
         textView.drawsBackground = false
         textView.isRichText = true
@@ -30,6 +27,13 @@ extension NodeMarkdownTextKit2Representable {
         textView.textContainer?.widthTracksTextView = true
         textView.textContainer?.heightTracksTextView = false
         textView.autoresizingMask = [.width]
+        textView.postsFrameChangedNotifications = true
+        NodeMarkdownTextKit2Diagnostics.report(
+            stage: "视图属性配置完成，尚未安装正文",
+            textView: textView,
+            bindingText: text,
+            metadataCount: rowMetadata.count
+        )
         return textView
     }
 
@@ -41,6 +45,11 @@ extension NodeMarkdownTextKit2Representable {
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
         scrollView.documentView = textView
+        textView.installNodeMarkdownDiagnostics19(in: scrollView)
+        // NSViewRepresentable刚创建时尚未获得SwiftUI分配的尺寸，contentSize此时可能接近0。
+        // 不得用这个临时值覆盖TextView的有效初始frame，否则整篇正文会被排进1pt容器而不可见。
+        textView.minSize = .zero
+        NodeMarkdownTextKit2Diagnostics.report(stage: "ScrollView连接完成", textView: textView)
         return scrollView
     }
 }

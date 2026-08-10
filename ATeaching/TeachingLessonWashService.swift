@@ -1,6 +1,6 @@
 import Foundation
 
-// MARK: - 洗教案结果 - 汇总母本、随堂笔记、完成清单和人工待办
+// MARK: - 洗教案结果 - 汇总母本、随堂笔记和人工待办
 
 struct TeachingLessonWashUnresolvedItem: Hashable {
     let category: String
@@ -27,6 +27,18 @@ struct TeachingLessonWashSkippedFile: Hashable {
     }
 }
 
+struct TeachingLessonWashIdentityChange: Hashable {
+    let category: String
+    let student: String
+    let file: String
+    let row: Int
+    let level: Int
+    let title: String
+    let oldUUID: String
+    let newUUID: String
+    let reason: String
+}
+
 struct TeachingLessonWashReport: Hashable {
     var lessonFileCount = 0
     var duplicateH3GroupCount = 0
@@ -37,15 +49,18 @@ struct TeachingLessonWashReport: Hashable {
     var removedLegacyImageSizeLineCount = 0
     var notebookFileCount = 0
     var rebuiltNotebookPackageCount = 0
+    var relinkedNotebookH3Count = 0
+    var reassignedNotebookNewH3Count = 0
+    var reassignedNotebookOtherNodeCount = 0
     var removedDuplicateNotebookPackageCount = 0
-    var completionChecklistCount = 0
     var unresolvedItems: [TeachingLessonWashUnresolvedItem] = []
     var skippedFiles: [TeachingLessonWashSkippedFile] = []
+    var identityChanges: [TeachingLessonWashIdentityChange] = []
     var mappingFileURL: URL?
     var reportFileURL: URL?
 }
 
-// MARK: - 洗教案服务 - 一次扫描形成映射，再统一修复母本、随堂和完成清单
+// MARK: - 洗教案服务 - 一次扫描形成映射，再统一修复母本和随堂笔记
 
 enum TeachingLessonWashService {
     private static let collectorRelativePath = "上课收集/上课收集.CSV"
@@ -113,8 +128,31 @@ enum TeachingLessonWashService {
     private struct NotebookResult {
         var document: NodeMarkdownDocument
         var rebuiltCount = 0
+        var relinkedH3Count = 0
+        var reassignedNewH3Count = 0
+        var reassignedOtherNodeCount = 0
         var removedDuplicateCount = 0
         var unresolved: [TeachingLessonWashUnresolvedItem] = []
+        var identityChanges: [TeachingLessonWashIdentityChange] = []
+    }
+
+    /// 正式母本中的UUID可以在多个学生的同一H3包中重复出现，这是引用关系；
+    /// 无来源新包则尚无这种关系，它的每个Node都必须避开全部母本和其他新包。
+    private struct NotebookIdentityRegistry {
+        var reservedForUnlinkedPackages: Set<UUID>
+
+        mutating func reserve(_ id: UUID) {
+            reservedForUnlinkedPackages.insert(id)
+        }
+
+        mutating func freshID(alsoAvoiding localIDs: Set<UUID>) -> UUID {
+            var candidate = UUID()
+            while reservedForUnlinkedPackages.contains(candidate) || localIDs.contains(candidate) {
+                candidate = UUID()
+            }
+            reservedForUnlinkedPackages.insert(candidate)
+            return candidate
+        }
     }
 
     static func run() throws -> TeachingLessonWashReport {
@@ -132,7 +170,6 @@ enum TeachingLessonWashService {
             normalizePath(relativePath(of: $0, under: lessonRoot)) != normalizePath(collectorRelativePath)
         }
         let notebookFiles = try listNotebookFiles(in: studentsRoot, fileManager: fileManager)
-        let completionFiles = try listCompletionChecklistFiles(in: studentsRoot, fileManager: fileManager)
 
         let loadedLessonStates: [LessonState] = try formalLessonFiles.map { (fileURL: URL) -> LessonState in
             let payload = try NodeMarkdownFileManager.read(fileURL: fileURL)
@@ -182,9 +219,13 @@ enum TeachingLessonWashService {
             occurrences: occurrences,
             identityTargets: identityPlan.targets
         )
+        var notebookIdentityRegistry = NotebookIdentityRegistry(
+            reservedForUnlinkedPackages: Set(
+                lessonStates.flatMap { state in state.document.nodes.map(\.id) }
+            )
+        )
 
         var notebookWrites: [(url: URL, document: NodeMarkdownDocument, meta: NodeMarkdownFileMeta)] = []
-        var notebookByStudentFolder: [String: NodeMarkdownDocument] = [:]
         for notebookURL in notebookFiles {
             guard let payload = notebookPayloads[notebookURL.path] else {
                 report.skippedFiles.append(
@@ -197,22 +238,27 @@ enum TeachingLessonWashService {
                 continue
             }
             let studentName = notebookURL.deletingLastPathComponent().lastPathComponent
+            var candidateIdentityRegistry = notebookIdentityRegistry
             let result = rebuildNotebook(
                 payload.0,
                 studentName: studentName,
                 notebookFile: notebookURL.path,
-                canonicalIndex: canonicalIndex
+                canonicalIndex: canonicalIndex,
+                identityRegistry: &candidateIdentityRegistry
             )
             do {
                 try NodeMarkdownIdentityPolicy.validateForPersistence(result.document)
+                notebookIdentityRegistry = candidateIdentityRegistry
                 notebookWrites.append((notebookURL, result.document, payload.1))
-                notebookByStudentFolder[notebookURL.deletingLastPathComponent().standardizedFileURL.path] = result.document
                 report.notebookFileCount += 1
                 report.rebuiltNotebookPackageCount += result.rebuiltCount
+                report.relinkedNotebookH3Count += result.relinkedH3Count
+                report.reassignedNotebookNewH3Count += result.reassignedNewH3Count
+                report.reassignedNotebookOtherNodeCount += result.reassignedOtherNodeCount
                 report.removedDuplicateNotebookPackageCount += result.removedDuplicateCount
                 report.unresolvedItems.append(contentsOf: result.unresolved)
+                report.identityChanges.append(contentsOf: result.identityChanges)
             } catch {
-                notebookByStudentFolder[notebookURL.deletingLastPathComponent().standardizedFileURL.path] = payload.0
                 report.skippedFiles.append(
                     TeachingLessonWashSkippedFile(
                         category: "随堂笔记",
@@ -224,55 +270,6 @@ enum TeachingLessonWashService {
             }
         }
 
-        var checklistWrites: [(url: URL, rows: [ChecklistTemplateRow], meta: ChecklistDocumentMeta)] = []
-        for checklistURL in completionFiles {
-            do {
-                let oldPayload = try ArchiveStorage.readChecklistDocument(fileURL: checklistURL)
-                guard let folderID = lessonFolderID(fromCompletionFileName: checklistURL.lastPathComponent) else {
-                    report.skippedFiles.append(
-                        TeachingLessonWashSkippedFile(
-                            category: "完成清单",
-                            file: checklistURL.path,
-                            reason: "无法识别所属教案"
-                        )
-                    )
-                    continue
-                }
-                let folderKey = normalizePath(folderID)
-                guard lessonStates.contains(where: { firstPathComponent($0.relativePath) == folderKey }) else {
-                    report.skippedFiles.append(
-                        TeachingLessonWashSkippedFile(
-                            category: "完成清单",
-                            file: checklistURL.path,
-                            reason: "找不到正式教案文件夹"
-                        )
-                    )
-                    continue
-                }
-                let rebuilt = rebuildCompletionRows(
-                    folderID: folderID,
-                    oldRows: oldPayload.0,
-                    checklistFile: checklistURL.path,
-                    notebookDocument: notebookByStudentFolder[
-                        checklistURL.deletingLastPathComponent().standardizedFileURL.path
-                    ],
-                    lessonStates: lessonStates,
-                    canonicalIndex: canonicalIndex
-                )
-                checklistWrites.append((checklistURL, rebuilt.rows, oldPayload.1))
-                report.unresolvedItems.append(contentsOf: rebuilt.unresolved)
-                report.completionChecklistCount += 1
-            } catch {
-                report.skippedFiles.append(
-                    TeachingLessonWashSkippedFile(
-                        category: "完成清单",
-                        file: checklistURL.path,
-                        reason: error.localizedDescription
-                    )
-                )
-            }
-        }
-
         try validateFormalLessons(lessonStates)
         for state in lessonStates {
             try NodeMarkdownFileManager.write(document: state.document, meta: state.meta, to: state.url)
@@ -280,10 +277,6 @@ enum TeachingLessonWashService {
         for write in notebookWrites {
             try NodeMarkdownFileManager.write(document: write.document, meta: write.meta, to: write.url)
         }
-        for write in checklistWrites {
-            try ArchiveStorage.writeChecklistDocument(fileURL: write.url, rows: write.rows, meta: write.meta)
-        }
-
         let reportURLs = try writeReports(
             report: report,
             mappings: identityPlan.mappingRecords,
@@ -602,7 +595,8 @@ enum TeachingLessonWashService {
         _ document: NodeMarkdownDocument,
         studentName: String,
         notebookFile: String,
-        canonicalIndex: CanonicalIndex
+        canonicalIndex: CanonicalIndex,
+        identityRegistry: inout NotebookIdentityRegistry
     ) -> NotebookResult {
         var result = NotebookResult(document: document)
         let ranges = TeachingCoursePackageContentSignature.packageRanges(in: result.document.nodes)
@@ -610,8 +604,15 @@ enum TeachingLessonWashService {
             guard result.document.nodes.indices.contains(range.start) else { continue }
             let package = Array(result.document.nodes[range.start..<range.end])
             guard let root = package.first else { continue }
+            let sourceID = root.sourceID.trimmingCharacters(in: .whitespacesAndNewlines)
+            let sourceFile = root.sourceFile.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            // 两项来源都为空就是尚未入库的新包。即使标题或UUID碰巧和母本相同，
+            // 也不能把它猜成母本包；身份碰撞会在后面的新包清洗中换新UUID。
+            if sourceID.isEmpty && sourceFile.isEmpty {
+                continue
+            }
             guard let canonical = resolveCanonicalH3(root: root, package: package, index: canonicalIndex) else {
-                let sourceFile = root.sourceFile.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !sourceFile.isEmpty {
                     let reason: String
                     if normalizePath(sourceFile).contains("上课收集") {
@@ -639,6 +640,24 @@ enum TeachingLessonWashService {
             }
             var replacement = canonical.package
             guard !replacement.isEmpty else { continue }
+            if root.id != canonical.id
+                || sourceID.caseInsensitiveCompare(canonical.id.uuidString) != .orderedSame
+                || normalizePath(sourceFile) != normalizePath(canonical.sourceFile) {
+                result.relinkedH3Count += 1
+                result.identityChanges.append(
+                    TeachingLessonWashIdentityChange(
+                        category: "随堂H3重连",
+                        student: studentName,
+                        file: notebookFile,
+                        row: range.start + 1,
+                        level: 3,
+                        title: root.text,
+                        oldUUID: root.id.uuidString,
+                        newUUID: canonical.id.uuidString,
+                        reason: "母本H3身份更新，随堂UUID与SourceID同步改为母本UUID"
+                    )
+                )
+            }
             replacement[0].id = canonical.id
             replacement[0].sourceID = canonical.id.uuidString
             replacement[0].sourceFile = canonical.sourceFile
@@ -668,7 +687,12 @@ enum TeachingLessonWashService {
             result.document.nodes.removeSubrange(range)
             result.removedDuplicateCount += 1
         }
-        makeNotebookNonH3IDsUnique(in: &result.document)
+        repairNotebookIdentityConflicts(
+            result: &result,
+            studentName: studentName,
+            notebookFile: notebookFile,
+            identityRegistry: &identityRegistry
+        )
         _ = result.document.ensureTrailingBlankLine(defaultLevel: 1)
         return result
     }
@@ -719,103 +743,112 @@ enum TeachingLessonWashService {
         return values.filter { seen.insert($0.identityKey).inserted }
     }
 
-    private static func makeNotebookNonH3IDsUnique(in document: inout NodeMarkdownDocument) {
-        let h3IDs = Set(document.nodes.filter { $0.level == 3 }.map(\.id))
-        var used = h3IDs
-        for index in document.nodes.indices where document.nodes[index].level != 3 {
-            document.nodes[index].sourceID = ""
-            document.nodes[index].sourceFile = ""
-            if used.contains(document.nodes[index].id) {
-                document.nodes[index].id = freshUUID(avoiding: &used)
+    private static func repairNotebookIdentityConflicts(
+        result: inout NotebookResult,
+        studentName: String,
+        notebookFile: String,
+        identityRegistry: inout NotebookIdentityRegistry
+    ) {
+        let ranges = TeachingCoursePackageContentSignature.packageRanges(in: result.document.nodes)
+        var unlinkedNodeIndexes: Set<Int> = []
+        var unlinkedRootIndexes: Set<Int> = []
+        for range in ranges {
+            let root = result.document.nodes[range.start]
+            let sourceID = root.sourceID.trimmingCharacters(in: .whitespacesAndNewlines)
+            let sourceFile = root.sourceFile.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard sourceID.isEmpty && sourceFile.isEmpty else { continue }
+            unlinkedRootIndexes.insert(range.start)
+            unlinkedNodeIndexes.formUnion(range.start..<range.end)
+        }
+
+        // 先固定所有既有结构和已连接母本包。这样新包与任何既有Node撞车时，
+        // 永远只更换新包一侧，不会破坏已经建立的母本引用。
+        var localUsed: Set<UUID> = []
+        for index in result.document.nodes.indices where !unlinkedNodeIndexes.contains(index) {
+            if result.document.nodes[index].level != 3 {
+                result.document.nodes[index].sourceID = ""
+                result.document.nodes[index].sourceFile = ""
+            }
+            let oldID = result.document.nodes[index].id
+            guard localUsed.contains(oldID) else {
+                localUsed.insert(oldID)
+                continue
+            }
+            guard result.document.nodes[index].level != 3 else { continue }
+            let newID = identityRegistry.freshID(alsoAvoiding: localUsed)
+            result.document.nodes[index].id = newID
+            localUsed.insert(newID)
+            result.reassignedOtherNodeCount += 1
+            result.identityChanges.append(
+                identityChange(
+                    category: "随堂普通Node换UUID",
+                    studentName: studentName,
+                    notebookFile: notebookFile,
+                    rowIndex: index,
+                    node: result.document.nodes[index],
+                    oldID: oldID,
+                    newID: newID,
+                    reason: "随堂笔记内非H3节点UUID重复"
+                )
+            )
+        }
+
+        for index in result.document.nodes.indices where unlinkedNodeIndexes.contains(index) {
+            result.document.nodes[index].sourceID = ""
+            result.document.nodes[index].sourceFile = ""
+            let oldID = result.document.nodes[index].id
+            let conflicts = localUsed.contains(oldID)
+                || identityRegistry.reservedForUnlinkedPackages.contains(oldID)
+            if conflicts {
+                let newID = identityRegistry.freshID(alsoAvoiding: localUsed)
+                result.document.nodes[index].id = newID
+                localUsed.insert(newID)
+                let isRoot = unlinkedRootIndexes.contains(index)
+                if isRoot {
+                    result.reassignedNewH3Count += 1
+                } else {
+                    result.reassignedOtherNodeCount += 1
+                }
+                result.identityChanges.append(
+                    identityChange(
+                        category: isRoot ? "随堂新包换UUID" : "随堂新包子Node换UUID",
+                        studentName: studentName,
+                        notebookFile: notebookFile,
+                        rowIndex: index,
+                        node: result.document.nodes[index],
+                        oldID: oldID,
+                        newID: newID,
+                        reason: "未入库新包与母本、其他新包或本随堂笔记发生UUID冲突"
+                    )
+                )
             } else {
-                used.insert(document.nodes[index].id)
+                localUsed.insert(oldID)
+                identityRegistry.reserve(oldID)
             }
         }
     }
 
-    // MARK: 完成清单重建
-
-    private static func rebuildCompletionRows(
-        folderID: String,
-        oldRows: [ChecklistTemplateRow],
-        checklistFile: String,
-        notebookDocument: NodeMarkdownDocument?,
-        lessonStates: [LessonState],
-        canonicalIndex: CanonicalIndex
-    ) -> (rows: [ChecklistTemplateRow], unresolved: [TeachingLessonWashUnresolvedItem]) {
-        var completedH3: Set<String> = []
-        var completedStructural: Set<String> = []
-        var unresolved: [TeachingLessonWashUnresolvedItem] = []
-        for row in oldRows where row.status != 0 {
-            if row.level == 3 {
-                let nodeID = UUID(uuidString: row.id) ?? UUID(uuidString: row.sourceID) ?? UUID()
-                let root = NodeMarkdownNode(
-                    id: nodeID,
-                    level: 3,
-                    text: row.task,
-                    sourceID: row.sourceID,
-                    sourceFile: row.sourceFile
-                )
-                if let canonical = resolveCanonicalH3(root: root, package: [root], index: canonicalIndex) {
-                    completedH3.insert(canonical.identityKey)
-                } else {
-                    unresolved.append(
-                        TeachingLessonWashUnresolvedItem(
-                            category: "完成清单H3",
-                            student: URL(fileURLWithPath: checklistFile).deletingLastPathComponent().lastPathComponent,
-                            file: checklistFile,
-                            title: row.task,
-                            uuid: row.id,
-                            sourceID: row.sourceID,
-                            sourceFile: row.sourceFile,
-                            reason: "已完成项目无法唯一确认正式母本"
-                        )
-                    )
-                }
-            } else {
-                completedStructural.insert("\(row.level)#\(normalizeTitle(row.task))")
-            }
-        }
-
-        if let notebookDocument {
-            for range in TeachingCoursePackageContentSignature.packageRanges(in: notebookDocument.nodes) {
-                let package = Array(notebookDocument.nodes[range.start..<range.end])
-                guard let root = package.first,
-                      let canonical = resolveCanonicalH3(root: root, package: package, index: canonicalIndex) else {
-                    continue
-                }
-                completedH3.insert(canonical.identityKey)
-            }
-        }
-
-        var result: [ChecklistTemplateRow] = []
-        let folderKey = normalizePath(folderID)
-        for state in lessonStates where firstPathComponent(state.relativePath) == folderKey {
-            for node in state.document.nodes where (1...3).contains(node.level) {
-                let task = node.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !task.isEmpty else { continue }
-                let sourceFile = node.level == 3 ? state.relativePath : ""
-                let sourceID = node.level == 3 ? node.id.uuidString : ""
-                let status: Int
-                if node.level == 3 {
-                    let key = "\(normalizePath(state.relativePath))#\(node.id.uuidString.lowercased())"
-                    status = completedH3.contains(key) ? 1 : 0
-                } else {
-                    status = completedStructural.contains("\(node.level)#\(normalizeTitle(task))") ? 1 : 0
-                }
-                result.append(
-                    ChecklistTemplateRow(
-                        id: node.id.uuidString,
-                        task: task,
-                        level: node.level,
-                        status: status,
-                        sourceFile: sourceFile,
-                        sourceID: sourceID
-                    )
-                )
-            }
-        }
-        return (result, unresolved)
+    private static func identityChange(
+        category: String,
+        studentName: String,
+        notebookFile: String,
+        rowIndex: Int,
+        node: NodeMarkdownNode,
+        oldID: UUID,
+        newID: UUID,
+        reason: String
+    ) -> TeachingLessonWashIdentityChange {
+        TeachingLessonWashIdentityChange(
+            category: category,
+            student: studentName,
+            file: notebookFile,
+            row: rowIndex + 1,
+            level: node.level,
+            title: node.text,
+            oldUUID: oldID.uuidString,
+            newUUID: newID.uuidString,
+            reason: reason
+        )
     }
 
     // MARK: 验证、报告和文件枚举
@@ -874,8 +907,10 @@ enum TeachingLessonWashService {
             "- 清理公式旧链接：\(report.removedFormulaLinkCount)",
             "- 写入随堂笔记：\(report.notebookFileCount)",
             "- 重建随堂H3包：\(report.rebuiltNotebookPackageCount)",
+            "- 随母本重连随堂H3：\(report.relinkedNotebookH3Count)",
+            "- 更换随堂新包H3 UUID：\(report.reassignedNotebookNewH3Count)",
+            "- 更换随堂其他Node UUID：\(report.reassignedNotebookOtherNodeCount)",
             "- 删除随堂重复H3包：\(report.removedDuplicateNotebookPackageCount)",
-            "- 重建完成清单：\(report.completionChecklistCount)",
             "",
             "## 待人工处理",
             ""
@@ -889,6 +924,26 @@ enum TeachingLessonWashService {
                 markdownTableRow([
                     item.category, item.student, item.file, item.title,
                     item.uuid, item.sourceID, item.sourceFile, item.reason
+                ])
+            })
+        }
+        lines.append(contentsOf: ["", "## 随堂笔记身份改动", ""])
+        if report.identityChanges.isEmpty {
+            lines.append("无")
+        } else {
+            lines.append("| 类型 | 学生 | 文件 | 行 | 层级 | 内容 | 旧UUID | 新UUID | 原因 |")
+            lines.append("|---|---|---|---:|---:|---|---|---|---|")
+            lines.append(contentsOf: report.identityChanges.map { change in
+                markdownTableRow([
+                    change.category,
+                    change.student,
+                    change.file,
+                    String(change.row),
+                    String(change.level),
+                    change.title,
+                    change.oldUUID,
+                    change.newUUID,
+                    change.reason
                 ])
             })
         }
@@ -953,22 +1008,9 @@ enum TeachingLessonWashService {
         }
     }
 
-    private static func listCompletionChecklistFiles(in studentsRoot: URL, fileManager: FileManager) throws -> [URL] {
-        try csvFilesRecursively(in: studentsRoot, fileManager: fileManager).filter {
-            $0.lastPathComponent.hasPrefix("教案_") && $0.lastPathComponent.contains("_完成情况_")
-        }
-    }
-
     private static func isLessonDocument(_ url: URL) -> Bool {
         let type = (ArchiveStorage.readMetaType(fileURL: url) ?? "").lowercased()
         return type == "lessonplan" || type == "nodemarkdown" || type == "nodesmarkdown"
-    }
-
-    private static func lessonFolderID(fromCompletionFileName name: String) -> String? {
-        guard name.hasPrefix("教案_"), let range = name.range(of: "_完成情况_") else { return nil }
-        let start = name.index(name.startIndex, offsetBy: "教案_".count)
-        let value = String(name[start..<range.lowerBound])
-        return value.isEmpty ? nil : value
     }
 
     private static func relativePath(of url: URL, under root: URL) -> String {
@@ -976,10 +1018,6 @@ enum TeachingLessonWashService {
         let prefix = root.standardizedFileURL.path + "/"
         guard full.hasPrefix(prefix) else { return url.lastPathComponent }
         return String(full.dropFirst(prefix.count)).replacingOccurrences(of: "\\", with: "/")
-    }
-
-    private static func firstPathComponent(_ path: String) -> String {
-        normalizePath(path.split(separator: "/").first.map(String.init) ?? "")
     }
 
     private static func normalizePath(_ value: String) -> String {

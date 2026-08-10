@@ -79,7 +79,9 @@ struct NodeMarkdownTextKitEditor: View {
                 rowMetadata: rowMetadata,
                 externalTextSyncToken: externalTextSyncToken,
                 quickInputSettings: quickInputSettings,
+                draftCommitController: legacyDraftCommitController,
                 onTextChange: onTextChange,
+                onTextChangeWithRowMetadata: onTextChangeWithRowMetadata,
                 onRequestInsertImageAtRow: onRequestInsertImageAtRow,
                 onRequestDeleteNodePackageAtRow: onRequestDeleteNodePackageAtRow,
                 onRequestCutNodePackageAtRow: onRequestCutNodePackageAtRow,
@@ -89,6 +91,9 @@ struct NodeMarkdownTextKitEditor: View {
                 onRequestOpenDrawingBoardAtRow: onRequestOpenDrawingBoardAtRow,
                 onActiveRowChange: onActiveRowChange,
                 onFocusLocationChange: nil,
+                onDocumentSnapshot: onLegacyDocumentSnapshot,
+                onCommitEditingNode: onCommitEditingNode,
+                onEditingDraftDirtyChange: onEditingDraftDirtyChange,
                 onInputSessionStateChange: onInputSessionStateChange
             )
         } else {
@@ -316,7 +321,10 @@ private struct NodeMarkdownTextKitRepresentable: NSViewRepresentable {
             context.coordinator.prepareForExternalDocumentReplacement()
         }
         let didChangeDocumentStyle = context.coordinator.updateDocumentStyle(documentStyle)
-        let changedMetadataRows = context.coordinator.updateRowMetadata(rowMetadata)
+        let changedMetadataRows = context.coordinator.updateRowMetadata(
+            rowMetadata,
+            permitsStructuralReplacement: hasExternalTextSync
+        )
         context.coordinator.updateActiveRowIndex(activeRowIndex, in: textView)
         context.coordinator.updateActiveMatchLocationInRow(activeMatchLocationInRow, in: textView)
         context.coordinator.updateSearchQuery(searchQuery, in: textView)
@@ -795,6 +803,16 @@ private struct NodeMarkdownTextKitRepresentable: NSViewRepresentable {
             return result.filter { rowCharacterRanges.indices.contains($0) }
         }
 
+        /// 行插入或删除会让所有后续“行号 -> 缓存”映射失效。缓存内容本身没有错，
+        /// 但继续挂在旧行号上就会把上一Node的层级、正则结果和段落样式画到下一Node。
+        private func resetRowIndexedCachesAfterStructureChange() {
+            linePrefixCache.removeAll(keepingCapacity: true)
+            lineRegexCache.removeAll(keepingCapacity: true)
+            rowRegexDirtyVersions.removeAll(keepingCapacity: true)
+            editingParagraphStyleCache.removeAll(keepingCapacity: true)
+            regexDirtyVersionCounter &+= 1
+        }
+
         private func registerUndoSnapshot(for textView: NSTextView) {
             guard let undoManager = textView.undoManager else { return }
             let snapshot = sourceTextPreservingAttachmentTokens(from: textView)
@@ -1129,7 +1147,10 @@ private struct NodeMarkdownTextKitRepresentable: NSViewRepresentable {
             refreshSearchHighlights(in: textView)
         }
 
-        func updateRowMetadata(_ value: [NodeMarkdownTextKitRowMetadata]) -> Set<Int> {
+        func updateRowMetadata(
+            _ value: [NodeMarkdownTextKitRowMetadata],
+            permitsStructuralReplacement: Bool = false
+        ) -> Set<Int> {
             var resolved = value
             let currentIDs = rowMetadata.map(\.nodeID).filter { !$0.isEmpty }
             let incomingIDs = value.map(\.nodeID).filter { !$0.isEmpty }
@@ -1140,6 +1161,15 @@ private struct NodeMarkdownTextKitRepresentable: NSViewRepresentable {
 
             // 无源码前缀后，缺失身份的第7级占位元数据没有资格覆盖一份完整Node快照。
             if currentHasStableIdentity, !value.isEmpty, !incomingHasStableIdentity {
+                return []
+            }
+            // 本地回车已经先完成行身份投影。SwiftUI随后可能短暂送回结构编辑前的
+            // 旧行数快照；它只能是过期值，不能覆盖新结构。真正的外部替换由同步
+            // token明确放行，本地结构快照则会携带与当前缓冲区相同的行数。
+            if !permitsStructuralReplacement,
+               editorLifecycleState == .editing,
+               !rowMetadata.isEmpty,
+               value.count != rowMetadata.count {
                 return []
             }
             if let draft = activeNodeTransaction?.draft,
@@ -2388,6 +2418,22 @@ private struct NodeMarkdownTextKitRepresentable: NSViewRepresentable {
             restoreVisibleOrigin(originalOrigin, in: scrollView, clipView: clipView)
         }
 
+        /// 普通Node编辑不修改视口坐标。局部属性变化期间只阻止
+        /// NSTextView因选区自动滚动，完成后继续交给系统管理视口。
+        private func performWithoutAutomaticSelectionScrolling(
+            in textView: NSTextView,
+            _ updates: () -> Void
+        ) {
+            guard let styledTextView = textView as? NodeMarkdownStyledTextView else {
+                updates()
+                return
+            }
+            let wasSuppressed = styledTextView.suppressesAutomaticSelectionScrolling
+            styledTextView.suppressesAutomaticSelectionScrolling = true
+            updates()
+            styledTextView.suppressesAutomaticSelectionScrolling = wasSuppressed
+        }
+
         /// 全文确实发生结构变化时，以屏幕顶部第一个有效Node作为视觉锚点。
         /// 绝对Y坐标在上方删行后已经失去意义，UUID与屏内偏移才代表用户看到的位置。
         func captureVisualViewportAnchor(in textView: NSTextView) -> VisualViewportAnchor? {
@@ -2487,7 +2533,7 @@ private struct NodeMarkdownTextKitRepresentable: NSViewRepresentable {
                 commitEditedRowsToRenderedState(on: textView, rows: [previousRow])
                 editingParagraphStyleCache.removeValue(forKey: previousRow)
             }
-            performPreservingVisibleOrigin(in: textView) {
+            performWithoutAutomaticSelectionScrolling(in: textView) {
                 isProgrammaticUpdate = true
                 defer { isProgrammaticUpdate = false }
                 applyStyle(
@@ -2607,58 +2653,21 @@ private struct NodeMarkdownTextKitRepresentable: NSViewRepresentable {
         /// 保存事务的同步入口。不让NSTextView失焦，只把当前Node草稿提交给父文档，
         /// 然后以已提交内容重建基线，保存完成后可以在原焦点继续输入。
         func commitPendingEditingForPersistence(in textView: NSTextView) {
-            // Command+S只提交数据，绝不承担“把焦点滚到可见处”的职责。
-            // 草稿回写会同步触发SwiftUI与AppKit两轮布局。保存事务期间禁止
-            // NSTextView为了选择区域自动滚动，并在两轮主队列布局后恢复原视野。
+            // Command+S只提交活动Node，不读取、不写入任何视口坐标。
+            // 保存回调可能引起一轮SwiftUI更新，这一轮只禁止选区自动滚动。
             let styledTextView = textView as? NodeMarkdownStyledTextView
             styledTextView?.suppressesAutomaticSelectionScrolling = true
-            let scrollView = textView.enclosingScrollView
-            let originalOrigin = scrollView?.contentView.bounds.origin
-            performPreservingVisibleOrigin(in: textView) {
-                if isMarkedTextCompositionActive(in: textView) {
-                    textView.unmarkText()
-                }
-                let row = activeSourceModeRowIndex ?? currentRowIndex(in: textView)
-                updateEditingNodeDraftContent(row: row, in: textView)
-                commitEditingNodeDraft()
-                if let row {
-                    beginEditingNodeDraftIfNeeded(row: row, in: textView)
-                }
+            if isMarkedTextCompositionActive(in: textView) {
+                textView.unmarkText()
             }
-            preservePersistenceViewport(
-                origin: originalOrigin,
-                scrollView: scrollView,
-                textView: styledTextView
-            )
-        }
-
-        private func preservePersistenceViewport(
-            origin: NSPoint?,
-            scrollView: NSScrollView?,
-            textView: NodeMarkdownStyledTextView?
-        ) {
-            guard let origin, let scrollView, let textView else {
-                textView?.suppressesAutomaticSelectionScrolling = false
-                return
+            let row = activeSourceModeRowIndex ?? currentRowIndex(in: textView)
+            updateEditingNodeDraftContent(row: row, in: textView)
+            commitEditingNodeDraft()
+            if let row {
+                beginEditingNodeDraftIfNeeded(row: row, in: textView)
             }
-            let restore = {
-                let clipView = scrollView.contentView
-                clipView.setBoundsOrigin(origin)
-                scrollView.reflectScrolledClipView(clipView)
-            }
-            restore()
-            DispatchQueue.main.async { [weak scrollView, weak textView] in
-                guard let scrollView, let textView else { return }
-                let clipView = scrollView.contentView
-                clipView.setBoundsOrigin(origin)
-                scrollView.reflectScrolledClipView(clipView)
-                DispatchQueue.main.async { [weak scrollView, weak textView] in
-                    guard let scrollView, let textView else { return }
-                    let clipView = scrollView.contentView
-                    clipView.setBoundsOrigin(origin)
-                    scrollView.reflectScrolledClipView(clipView)
-                    textView.suppressesAutomaticSelectionScrolling = false
-                }
+            DispatchQueue.main.async { [weak styledTextView] in
+                styledTextView?.suppressesAutomaticSelectionScrolling = false
             }
         }
 
@@ -2708,7 +2717,7 @@ private struct NodeMarkdownTextKitRepresentable: NSViewRepresentable {
                 return rows
             }()
             guard !rows.isEmpty else { return }
-            performPreservingVisibleOrigin(in: textView) {
+            performWithoutAutomaticSelectionScrolling(in: textView) {
                 isProgrammaticUpdate = true
                 defer { isProgrammaticUpdate = false }
                 applyStyle(
@@ -2828,7 +2837,7 @@ private struct NodeMarkdownTextKitRepresentable: NSViewRepresentable {
                         }
                     }
                     if self.editorLifecycleState == .editing || source == .textChanged {
-                        self.performPreservingVisibleOrigin(in: textView, applyUpdate)
+                        self.performWithoutAutomaticSelectionScrolling(in: textView, applyUpdate)
                     } else {
                         applyUpdate()
                     }
@@ -3131,15 +3140,17 @@ private struct NodeMarkdownTextKitRepresentable: NSViewRepresentable {
             }
             // AppKit已经完成字符写入。先让活动Node事务读取当前行的真实范围，
             // 再解释此次编辑属于哪一行，禁止使用上一按键留下的字符偏移。
-            _ = synchronizeActiveNodeRange(in: textView)
+            let didSynchronizeActiveNodeRange = synchronizeActiveNodeRange(in: textView)
             let targetRows = consumeEditedRows(in: textView, fallbackRow: fallbackRow)
-            if wasMarkedTextComposing
-                || pendingEditBeforeConsume == nil
-                || lastConsumedEditChangedStructure
+            if lastConsumedEditChangedStructure
                 || lastConsumedDeletionImpact != .character {
                 rebuildRowCharacterRanges(from: textView)
-            } else {
+            } else if pendingEditBeforeConsume != nil {
                 updateRowCharacterRangesAfterCharacterEdit(in: textView)
+            } else if !didSynchronizeActiveNodeRange {
+                // 只有活动Node身份已经失效时才允许全文重建。
+                // 输入法定字没有PendingEdit，但它仍是普通的本Node字符变化。
+                rebuildRowCharacterRanges(from: textView)
             }
             let structuralFocusLocation = consumeStructuralFocusAnchor(in: textView)
             let currentRow = currentRowIndex(in: textView) ?? fallbackRow
@@ -3157,26 +3168,29 @@ private struct NodeMarkdownTextKitRepresentable: NSViewRepresentable {
             )
             markRegexDirty(rows: targetRows)
             if lastConsumedEditChangedStructure {
-                let expandedRows: Set<Int>
-                if let minimum = targetRows.min(), let maximum = targetRows.max(), minimum <= maximum {
-                    expandedRows = Set(minimum...maximum)
-                } else {
-                    expandedRows = targetRows
-                }
+                resetRowIndexedCachesAfterStructureChange()
+                let maxRowIndex = max(0, rowCharacterRanges.count - 1)
+                let visibleRows = visibleRowSet(
+                    in: textView,
+                    maxRowIndex: maxRowIndex,
+                    overscan: 2
+                )
                 pendingAttachmentDirtyRows.removeAll(keepingCapacity: true)
-                let dirtyRows = rowsIncludingFollowingParagraph(for: expandedRows)
-                markEditedRows(dirtyRows)
+                markEditedRows(targetRows)
                 ensureEditingRowVisibleSourceAttributes(in: textView, editingRow: currentRow)
                 TeachingDebugLogStore.append(
-                    "structure-change incremental expandedRows=\(expandedRows.count) targetRows=\(targetRows.count) dirtyRows=\(dirtyRows.count)",
+                    "structure-change identity-preserving targetRows=\(targetRows.count) visibleRows=\(visibleRows.count)",
                     category: "NodeMarkdown.Structure"
                 )
-                let rowsNeedingRefresh = dirtyRows.subtracting(currentRow.map { [$0] } ?? [])
+                // NSTextStorage插入换行时会继承源段落属性。结构事务结束后，当前可见
+                // 的未编辑行必须按各自Node元数据重建一次；不可见区按需渲染时再读取
+                // 同一份元数据。这里只重绘可见区，不扫描也不改写全文Node。
+                let rowsNeedingRefresh = visibleRows.subtracting(currentRow.map { [$0] } ?? [])
                 if !rowsNeedingRefresh.isEmpty {
                     scheduleTextChangedStyleRefresh(
                         on: textView,
                         rows: rowsNeedingRefresh,
-                        delay: 0.01,
+                        delay: 0,
                         editingRow: currentRow
                     )
                 }
@@ -3207,6 +3221,13 @@ private struct NodeMarkdownTextKitRepresentable: NSViewRepresentable {
                 }
                 #endif
                 imeCommitSelectionGuardUntil = CFAbsoluteTimeGetCurrent() + 0.12
+                if let styledTextView = textView as? NodeMarkdownStyledTextView {
+                    styledTextView.transientEditedRowIndex = activeNodeTransaction?.rowIndex
+                    styledTextView.transientCharacterDelta = activeNodeTransaction?.characterDelta ?? 0
+                    DispatchQueue.main.async { [weak styledTextView] in
+                        styledTextView?.suppressesAutomaticSelectionScrolling = false
+                    }
+                }
             }
             let requiresStructuralPublish = lastConsumedEditChangedStructure
                 || lastConsumedDeletionImpact != .character
@@ -3368,24 +3389,23 @@ private struct NodeMarkdownTextKitRepresentable: NSViewRepresentable {
             // 同一Node内回车无论是系统插入换行，还是本编辑器把整行拆成
             // “左侧 + 换行 + 右侧”，原Node身份都必须留在上半行。
             if deletedNewlineCount == 0, insertedNewlineCount > 0 {
-                var result = rowMetadata
-                let insertionIndex = min(result.count, sourceRow + 1)
                 let insertedLevel = rowMetadata.indices.contains(sourceRow)
                     ? NodeMarkdownLegacyStructurePolicy.insertedLevel(after: rowMetadata[sourceRow])
                     : inheritedLevel
-                let freshRows = (0..<insertedNewlineCount).map { _ in
-                    NodeMarkdownTextKitRowMetadata.fresh(level: insertedLevel)
-                }
-                result.insert(contentsOf: freshRows, at: insertionIndex)
+                let result = NodeMarkdownLegacyMetadataProjection.insertingRows(
+                    count: insertedNewlineCount,
+                    after: sourceRow,
+                    into: rowMetadata,
+                    insertedLevel: insertedLevel
+                )
                 return normalizedRowMetadata(result, forPlainText: projectedText)
             }
             if insertedNewlineCount == 0, deletedNewlineCount > 0 {
-                var result = rowMetadata
-                let removalStart = min(result.count, sourceRow + 1)
-                let removalEnd = min(result.count, removalStart + deletedNewlineCount)
-                if removalStart < removalEnd {
-                    result.removeSubrange(removalStart..<removalEnd)
-                }
+                let result = NodeMarkdownLegacyMetadataProjection.removingRows(
+                    count: deletedNewlineCount,
+                    after: sourceRow,
+                    from: rowMetadata
+                )
                 return normalizedRowMetadata(result, forPlainText: projectedText)
             }
 
@@ -4412,14 +4432,12 @@ private struct NodeMarkdownTextKitRepresentable: NSViewRepresentable {
                   NSMaxRange(contentRange) <= storage.length else { return }
 
             let styledTextView = textView as? NodeMarkdownStyledTextView
-            let scrollView = textView.enclosingScrollView
-            let originalOrigin = scrollView?.contentView.bounds.origin
             styledTextView?.suppressesAutomaticSelectionScrolling = true
 
             registerUndoSnapshot(for: textView)
             beginEditingNodeDraftIfNeeded(row: rowIndex, in: textView)
             noteDocumentMutation()
-            performPreservingVisibleOrigin(in: textView) {
+            performWithoutAutomaticSelectionScrolling(in: textView) {
                 isProgrammaticUpdate = true
                 storage.beginEditing()
                 storage.replaceCharacters(in: contentRange, with: updatedRowText)
@@ -4439,11 +4457,9 @@ private struct NodeMarkdownTextKitRepresentable: NSViewRepresentable {
             publishTextChange(sourceTextPreservingAttachmentTokens(from: textView))
             updateTypingAttributes(for: textView)
             notifyActiveRowChange(rowIndex)
-            preservePersistenceViewport(
-                origin: originalOrigin,
-                scrollView: scrollView,
-                textView: styledTextView
-            )
+            DispatchQueue.main.async { [weak styledTextView] in
+                styledTextView?.suppressesAutomaticSelectionScrolling = false
+            }
         }
 
         func requestDeleteNodePackage(at rowIndex: Int) {
@@ -5107,6 +5123,10 @@ private final class NodeMarkdownStyledTextView: NSTextView, NSLayoutManagerDeleg
         selectedRange: NSRange,
         replacementRange: NSRange
     ) {
+        // 候选字与定字都属于当前Node的一次输入事务。这期间
+        // AppKit不得因marked range变化自动搬动视口；Coordinator在
+        // 定字通知处恢复默认行为。
+        suppressesAutomaticSelectionScrolling = true
         let redrawRect = visibleRect.insetBy(dx: -24, dy: -32)
         let compositionRow = transientEditedRowIndex ?? currentRowIndexForSelection()
         let stableTextLength = rowCharacterRanges.last.map(NSMaxRange) ?? 0

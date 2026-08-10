@@ -9,19 +9,11 @@
 /* Begin PBXBuildFile section */
 		8800A9AA2F9D136D00B96C59 /* SwiftMath in Frameworks */ = {isa = PBXBuildFile; productRef = 8800A9A92F9D136D00B96C59 /* SwiftMath */; };
 		8843ECEA2FA4EC7B00626F5B /* TeachingCoursePackageChangeTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8843ECE92FA4EC7B00626F5B /* TeachingCoursePackageChangeTracker.swift */; };
-		88E477572FE80FFA00B9AF01 /* NodeMarkdownTextKit2VerticalMoveCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88E477562FE80FFA00B9AF01 /* NodeMarkdownTextKit2VerticalMoveCommands.swift */; };
-		88E477592FE810E400B9AF01 /* NodeMarkdownTextKit2EditorViewFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88E477582FE810E400B9AF01 /* NodeMarkdownTextKit2EditorViewFactory.swift */; };
-		88E4775B2FE8119100B9AF01 /* NodeMarkdownTextKit2EditorCoordinatorFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88E4775A2FE8119100B9AF01 /* NodeMarkdownTextKit2EditorCoordinatorFactory.swift */; };
-		88E4775D2FE811E100B9AF01 /* NodeMarkdownTextKit2EditorLifecycle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88E4775C2FE811E100B9AF01 /* NodeMarkdownTextKit2EditorLifecycle.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		8843ECE92FA4EC7B00626F5B /* TeachingCoursePackageChangeTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TeachingCoursePackageChangeTracker.swift; sourceTree = "<group>"; };
 		88C3760F2F95267100093CC3 /* ATeaching.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ATeaching.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		88E477562FE80FFA00B9AF01 /* NodeMarkdownTextKit2VerticalMoveCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeMarkdownTextKit2VerticalMoveCommands.swift; sourceTree = "<group>"; };
-		88E477582FE810E400B9AF01 /* NodeMarkdownTextKit2EditorViewFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeMarkdownTextKit2EditorViewFactory.swift; sourceTree = "<group>"; };
-		88E4775A2FE8119100B9AF01 /* NodeMarkdownTextKit2EditorCoordinatorFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeMarkdownTextKit2EditorCoordinatorFactory.swift; sourceTree = "<group>"; };
-		88E4775C2FE811E100B9AF01 /* NodeMarkdownTextKit2EditorLifecycle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeMarkdownTextKit2EditorLifecycle.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -50,10 +42,6 @@
 				88C376112F95267100093CC3 /* ATeaching */,
 				88C376102F95267100093CC3 /* Products */,
 				8843ECE92FA4EC7B00626F5B /* TeachingCoursePackageChangeTracker.swift */,
-				88E477562FE80FFA00B9AF01 /* NodeMarkdownTextKit2VerticalMoveCommands.swift */,
-				88E477582FE810E400B9AF01 /* NodeMarkdownTextKit2EditorViewFactory.swift */,
-				88E4775A2FE8119100B9AF01 /* NodeMarkdownTextKit2EditorCoordinatorFactory.swift */,
-				88E4775C2FE811E100B9AF01 /* NodeMarkdownTextKit2EditorLifecycle.swift */,
 			);
 			sourceTree = "<group>";
 		};
@@ -143,10 +131,6 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				88E477572FE80FFA00B9AF01 /* NodeMarkdownTextKit2VerticalMoveCommands.swift in Sources */,
-				88E4775D2FE811E100B9AF01 /* NodeMarkdownTextKit2EditorLifecycle.swift in Sources */,
-				88E4775B2FE8119100B9AF01 /* NodeMarkdownTextKit2EditorCoordinatorFactory.swift in Sources */,
-				88E477592FE810E400B9AF01 /* NodeMarkdownTextKit2EditorViewFactory.swift in Sources */,
 				8843ECEA2FA4EC7B00626F5B /* TeachingCoursePackageChangeTracker.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -292,7 +276,7 @@
 				CODE_SIGN_ENTITLEMENTS = ATeaching/ATeaching.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2608082146;
+				CURRENT_PROJECT_VERSION = 2608102257;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = F4L9P953MQ;
 				ENABLE_APP_SANDBOX = YES;
@@ -317,7 +301,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.2608082146;
+				MARKETING_VERSION = 1.2608102257;
 				PRODUCT_BUNDLE_IDENTIFIER = Han.ATeaching;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -340,7 +324,7 @@
 				CODE_SIGN_ENTITLEMENTS = ATeaching/ATeaching.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2608082146;
+				CURRENT_PROJECT_VERSION = 2608102257;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = F4L9P953MQ;
 				ENABLE_APP_SANDBOX = YES;
@@ -365,7 +349,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.2608082146;
+				MARKETING_VERSION = 1.2608102257;
 				PRODUCT_BUNDLE_IDENTIFIER = Han.ATeaching;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;

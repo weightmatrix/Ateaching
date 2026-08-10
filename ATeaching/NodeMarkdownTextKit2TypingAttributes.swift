@@ -5,13 +5,6 @@ import SwiftUI
 import AppKit
 
 extension NodeMarkdownTextKit2TextView {
-    func defaultTypingAttributes(documentStyle: NodeMarkdownDocumentStyle) -> [NSAttributedString.Key: Any] {
-        Self.baseAttributes(for: documentStyle).merging(
-            [.paragraphStyle: Self.defaultParagraphStyle(documentStyle: documentStyle)],
-            uniquingKeysWith: { _, new in new }
-        )
-    }
-
     func typingAttributes(
         for layout: NodeMarkdownTextKit2RowLayout,
         documentStyle: NodeMarkdownDocumentStyle

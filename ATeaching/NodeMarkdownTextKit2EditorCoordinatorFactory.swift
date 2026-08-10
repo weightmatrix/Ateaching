@@ -17,6 +17,7 @@ extension NodeMarkdownTextKit2Representable {
             rowMetadata: rowMetadata,
             externalTextSyncToken: externalTextSyncToken,
             quickInputSettings: quickInputSettings,
+            draftCommitController: draftCommitController,
             onTextChange: onTextChange,
             onTextChangeWithRowMetadata: onTextChangeWithRowMetadata,
             onRequestInsertImageAtRow: onRequestInsertImageAtRow,
@@ -28,6 +29,9 @@ extension NodeMarkdownTextKit2Representable {
             onRequestOpenDrawingBoardAtRow: onRequestOpenDrawingBoardAtRow,
             onActiveRowChange: onActiveRowChange,
             onFocusLocationChange: onFocusLocationChange,
+            onDocumentSnapshot: onDocumentSnapshot,
+            onCommitEditingNode: onCommitEditingNode,
+            onEditingDraftDirtyChange: onEditingDraftDirtyChange,
             onInputSessionStateChange: onInputSessionStateChange
         )
     }

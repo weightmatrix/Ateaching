@@ -162,6 +162,42 @@ enum NodeMarkdownLegacyStructurePolicy {
     }
 }
 
+/// 结构编辑只改变发生编辑的边界。插入新行时，旧行的身份数组按位置整体后移；
+/// 删除换行时，只回收被合并行的身份。边界之后每个Node的UUID、层级和Source信息
+/// 必须逐项保持不变，禁止根据邻行样式或正文重新推断。
+enum NodeMarkdownLegacyMetadataProjection {
+    static func insertingRows(
+        count: Int,
+        after sourceRow: Int,
+        into metadata: [NodeMarkdownTextKitRowMetadata],
+        insertedLevel: Int
+    ) -> [NodeMarkdownTextKitRowMetadata] {
+        guard count > 0 else { return metadata }
+        var result = metadata
+        let insertionIndex = max(0, min(result.count, sourceRow + 1))
+        result.insert(
+            contentsOf: (0..<count).map { _ in .fresh(level: insertedLevel) },
+            at: insertionIndex
+        )
+        return result
+    }
+
+    static func removingRows(
+        count: Int,
+        after sourceRow: Int,
+        from metadata: [NodeMarkdownTextKitRowMetadata]
+    ) -> [NodeMarkdownTextKitRowMetadata] {
+        guard count > 0, !metadata.isEmpty else { return metadata }
+        var result = metadata
+        let removalStart = max(0, min(result.count, sourceRow + 1))
+        let removalEnd = min(result.count, removalStart + count)
+        if removalStart < removalEnd {
+            result.removeSubrange(removalStart..<removalEnd)
+        }
+        return result
+    }
+}
+
 /// TextKit缓冲区不再保存`### `等层级前缀，所以每行必须单独携带Node身份与层级。
 struct NodeMarkdownTextKitRowMetadata: Equatable {
     let nodeID: String

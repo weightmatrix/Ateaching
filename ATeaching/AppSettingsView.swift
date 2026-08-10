@@ -65,18 +65,12 @@ struct AppSettingsView: View {
                 Text("设置")
                     .font(.system(size: 30, weight: .bold))
 
-                ViewThatFits(in: .horizontal) {
-                    HStack(alignment: .top, spacing: 18) {
-                        primarySettingsSection
-                        functionSettingsSection
-                    }
-                    VStack(spacing: 18) {
-                        primarySettingsSection
-                        functionSettingsSection
-                    }
+                VStack(spacing: 18) {
+                    primarySettingsSection
+                    functionSettingsSection
                 }
             }
-            .frame(maxWidth: 1100, alignment: .leading)
+            .frame(maxWidth: 820, alignment: .leading)
             .padding(.horizontal, 24)
             .padding(.vertical, 22)
             .frame(maxWidth: .infinity, alignment: .top)

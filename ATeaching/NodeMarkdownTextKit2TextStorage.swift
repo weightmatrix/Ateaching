@@ -12,20 +12,24 @@ extension NodeMarkdownTextKit2TextView {
         documentStyle: NodeMarkdownDocumentStyle,
         selectedRanges: [NSValue]? = nil
     ) {
-        let attributed = NSAttributedString(
-            string: value,
-            attributes: Self.baseAttributes(for: documentStyle)
-        )
+        NodeMarkdownTextKit2Diagnostics.log("TextStorage准备替换全文，输入UTF16长度=\((value as NSString).length)，替换前storage长度=\(nodeTextStorage.length)。")
+        let attributed = NSAttributedString(string: value)
         nodeTextContentStorage.performEditingTransaction {
             nodeTextStorage.setAttributedString(attributed)
         }
         nodeSourceTextSnapshot = value
+        NodeMarkdownTextKit2Diagnostics.report(
+            stage: "TextStorage全文替换完成",
+            textView: self,
+            bindingText: value
+        )
 
         if let selectedRanges {
             let textLength = (value as NSString).length
-            self.selectedRanges = selectedRanges.compactMap { value in
-                guard let range = value.rangeValue.clamped(toLength: textLength) else { return nil }
-                return NSValue(range: range)
+            if selectedRanges.allSatisfy({ $0.rangeValue.exact(toLength: textLength) != nil }) {
+                self.selectedRanges = selectedRanges
+            } else {
+                NodeMarkdownTextKit2Diagnostics.log("全文替换后不恢复旧选区：旧选区不在新文档真实范围内。")
             }
         }
     }
@@ -36,18 +40,21 @@ extension NodeMarkdownTextKit2TextView {
         selectedRange: NSRange,
         documentStyle: NodeMarkdownDocumentStyle
     ) {
-        guard let safeRange = range.clamped(toLength: nodeTextStorage.length) else { return }
+        guard let safeRange = range.exact(toLength: nodeTextStorage.length),
+              let projected = projectedSourceText(replacing: safeRange, with: replacement),
+              selectedRange.exact(toLength: (projected as NSString).length) != nil else {
+            NodeMarkdownTextKit2Diagnostics.log("拒绝替换正文：替换范围不在真实TextStorage内。")
+            return
+        }
         let replacementText = NSAttributedString(
             string: replacement,
-            attributes: Self.baseAttributes(for: documentStyle)
+            attributes: typingAttributes
         )
         nodeTextContentStorage.performEditingTransaction {
             nodeTextStorage.replaceCharacters(in: safeRange, with: replacementText)
         }
-        replaceSourceTextSnapshot(in: safeRange, with: replacement)
-        if let safeSelection = selectedRange.clamped(toLength: nodeTextStorage.length) {
-            self.selectedRange = safeSelection
-        }
+        nodeSourceTextSnapshot = projected
+        self.selectedRange = selectedRange
     }
 
     func documentString() -> String {
@@ -59,13 +66,9 @@ extension NodeMarkdownTextKit2TextView {
         nodeSourceTextSnapshot = value
     }
 
-    func rebuildSourceTextSnapshotFromStorage() {
-        nodeSourceTextSnapshot = sourceTextPreservingAttachmentTokens(from: nodeTextStorage)
-    }
-
     func projectedSourceText(replacing range: NSRange, with replacement: String) -> String? {
         let source = nodeSourceTextSnapshot as NSString
-        guard let safeRange = range.clamped(toLength: source.length) else { return nil }
+        guard let safeRange = range.exact(toLength: source.length) else { return nil }
         return source.replacingCharacters(in: safeRange, with: replacement)
     }
 
@@ -76,6 +79,10 @@ extension NodeMarkdownTextKit2TextView {
         #endif
     }
 
+    func sourceSnapshotMatchesStorage() -> Bool {
+        sourceTextPreservingAttachmentTokens(from: nodeTextStorage) == nodeSourceTextSnapshot
+    }
+
     func displayedAttributedString() -> NSAttributedString {
         assertSingleTextStorage()
         return NSAttributedString(attributedString: nodeTextStorage)
@@ -84,8 +91,10 @@ extension NodeMarkdownTextKit2TextView {
     /// 渲染态只把源码首字符临时换成附件占位符；回到源码态时也只做1:1原位恢复。
     /// 该操作不改变UTF-16长度、换行和任何选择位置。
     func restoreAttachmentSourceAnchors(in requestedRange: NSRange) {
-        let fullRange = NSRange(location: 0, length: nodeTextStorage.length)
-        let safeRange = NSIntersectionRange(requestedRange, fullRange)
+        guard let safeRange = requestedRange.exact(toLength: nodeTextStorage.length) else {
+            NodeMarkdownTextKit2Diagnostics.log("拒绝恢复附件源码锚点：请求范围与真实TextStorage不一致。")
+            return
+        }
         guard safeRange.length > 0 else { return }
 
         struct Replacement {
@@ -118,7 +127,7 @@ extension NodeMarkdownTextKit2TextView {
         }
     }
 
-    private func sourceTextPreservingAttachmentTokens(from attributedString: NSAttributedString) -> String {
+    private func sourceTextPreservingAttachmentTokens(from attributedString: NSAttributedString) -> String? {
         let nsText = attributedString.string as NSString
         guard nsText.length > 0 else { return "" }
 
@@ -131,22 +140,21 @@ extension NodeMarkdownTextKit2TextView {
             if let token = attributes[nodeMarkdownTextKit2AttachmentSourceTokenKey] as? String,
                !token.isEmpty {
                 output.append(token)
-                let tokenLength = max(1, (token as NSString).length)
-                index = min(nsText.length, effectiveRange.location + tokenLength)
+                let nextIndex = NSMaxRange(effectiveRange)
+                guard effectiveRange.location == index,
+                      nextIndex > index,
+                      nextIndex <= nsText.length else { return nil }
+                index = nextIndex
                 continue
             }
+            guard effectiveRange.location == index,
+                  effectiveRange.length > 0,
+                  NSMaxRange(effectiveRange) <= nsText.length else { return nil }
             output.append(nsText.substring(with: effectiveRange))
-            index = effectiveRange.location + max(1, effectiveRange.length)
+            index = NSMaxRange(effectiveRange)
         }
         return output
     }
 
-    private func replaceSourceTextSnapshot(in range: NSRange, with replacement: String) {
-        guard let projected = projectedSourceText(replacing: range, with: replacement) else {
-            rebuildSourceTextSnapshotFromStorage()
-            return
-        }
-        nodeSourceTextSnapshot = projected
-    }
 }
 #endif

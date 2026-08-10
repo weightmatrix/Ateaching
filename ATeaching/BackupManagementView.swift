@@ -11,8 +11,11 @@ struct BackupManagementView: View {
     @State private var didLoad = false
 
     var body: some View {
-        List {
-            Section("操作") {
+        AppSettingsPage(
+            title: "备份管理",
+            subtitle: "创建全量备份并查看最近的备份快照"
+        ) {
+            AppSettingsCard(title: "操作", systemImage: "externaldrive.badge.icloud") {
                 if isRunningBackup {
                     VStack(alignment: .leading, spacing: 8) {
                         ProgressView(value: backupProgress?.fractionCompleted ?? 0)
@@ -38,10 +41,11 @@ struct BackupManagementView: View {
                         Label("全量备份（马上执行）", systemImage: "externaldrive.badge.plus")
                     }
                     .disabled(isRunningBackup)
+                    .appGlassButtonStyle(.prominent)
                 }
             }
 
-            Section("备份快照（最多100份）") {
+            AppSettingsCard(title: "备份快照（最多100份）", systemImage: "clock.arrow.circlepath") {
                 if snapshots.isEmpty {
                     Text("暂无备份")
                         .foregroundStyle(.secondary)
@@ -50,24 +54,39 @@ struct BackupManagementView: View {
                         NavigationLink {
                             BackupSnapshotDetailView(snapshot: snapshot)
                         } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(Self.dateFormatter.string(from: snapshot.createdAt))
-                                    .font(.body)
-                                Text("\(snapshot.trigger.displayName) · 文件\(snapshot.fileCount) · 目录\(snapshot.directoryCount)")
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
-                                Text("体积 \(Self.byteFormatter.string(fromByteCount: snapshot.totalBytes)) · 耗时 \(Self.durationString(snapshot.durationSeconds))")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                            HStack(spacing: 14) {
+                                Image(systemName: "archivebox")
+                                    .font(.system(size: 20, weight: .semibold))
+                                    .foregroundStyle(appHighlightBlue)
+                                    .frame(width: 32)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(Self.dateFormatter.string(from: snapshot.createdAt))
+                                        .font(.system(size: 16, weight: .semibold))
+                                    Text("\(snapshot.trigger.displayName) · 文件\(snapshot.fileCount) · 目录\(snapshot.directoryCount)")
+                                        .font(.footnote)
+                                        .foregroundStyle(.secondary)
+                                    Text("体积 \(Self.byteFormatter.string(fromByteCount: snapshot.totalBytes)) · 耗时 \(Self.durationString(snapshot.durationSeconds))")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer(minLength: 8)
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(.tertiary)
                             }
+                            .padding(.vertical, 6)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        if snapshot.id != snapshots.last?.id {
+                            AppSettingsDivider()
                         }
                     }
                 }
             }
 
-            TeachingStatusMessageSection(message: statusMessage)
+            AppSettingsStatusMessage(message: statusMessage)
         }
-        .navigationTitle("备份管理")
         .task {
             guard !didLoad else { return }
             didLoad = true

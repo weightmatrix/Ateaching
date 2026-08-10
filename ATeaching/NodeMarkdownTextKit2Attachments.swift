@@ -5,6 +5,7 @@ import SwiftUI
 import AppKit
 
 extension NodeMarkdownTextKit2TextView {
+    private static var imageCache: [String: (modifiedAt: Date?, image: NSImage)] = [:]
     func maxImageWidth(for layout: NodeMarkdownTextKit2RowLayout) -> CGFloat {
         let containerWidth = textContainer?.containerSize.width ?? bounds.width
         let usableWidth: CGFloat
@@ -80,7 +81,7 @@ extension NodeMarkdownTextKit2TextView {
                 baseDirectoryURL: baseDirectoryURL
               ),
               FileManager.default.fileExists(atPath: imageURL.path),
-              let image = NSImage(contentsOf: imageURL),
+              let image = cachedImage(at: imageURL),
               image.size.width > 0,
               image.size.height > 0 else {
             return nil
@@ -90,6 +91,16 @@ extension NodeMarkdownTextKit2TextView {
         let width = min(maxWidth, requestedWidth)
         let height = max(1, width * (image.size.height / image.size.width))
         return NodeMarkdownTextKit2ImageAttachment(image: image, width: width, height: height)
+    }
+
+    private static func cachedImage(at url: URL) -> NSImage? {
+        let modifiedAt = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+        if let cached = imageCache[url.path], cached.modifiedAt == modifiedAt {
+            return cached.image
+        }
+        guard let image = NSImage(contentsOf: url) else { return nil }
+        imageCache[url.path] = (modifiedAt, image)
+        return image
     }
 
     private static func prepareImageTokenForAttachment(
