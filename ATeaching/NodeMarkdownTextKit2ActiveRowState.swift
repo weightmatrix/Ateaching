@@ -23,7 +23,7 @@ extension NodeMarkdownTextKit2Coordinator {
         if let normalizedRowIndex {
             beginNodeSessionIfNeeded(at: normalizedRowIndex)
         } else {
-            commitActiveNodeSession()
+            commitActiveNodeSession(reason: "选区离开有效Node")
         }
 
         guard normalizedRowIndex != editingRowIndex else {
@@ -47,7 +47,7 @@ extension NodeMarkdownTextKit2Coordinator {
     }
 
     func clearEditingRow(in textView: NodeMarkdownTextKit2TextView) {
-        commitActiveNodeSession()
+        commitActiveNodeSession(reason: "ESC/文本视图失焦")
         let previousRowIndex = editingRowIndex
         editingRowIndex = nil
         editingParagraphStyleCache.removeAll(keepingCapacity: true)

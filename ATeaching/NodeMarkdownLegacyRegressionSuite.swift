@@ -27,6 +27,7 @@ enum NodeMarkdownLegacyRegressionSuite {
         testMeasuredFormulaVerticalAlignment()
         testPersistenceSignatureResolvesImagePaths()
         testCourseInsertAnchorRequiresEditingSession()
+        testCourseInsertPlacementUsesOwningStructure()
         testSourceMetadataDoesNotChangeLayoutIdentity()
         testActiveNodeTransactionOwnsOnlyItsRow()
         testProtectedH3ReturnCreatesH4()
@@ -345,6 +346,25 @@ enum NodeMarkdownLegacyRegressionSuite {
         assert(TeachingCourseInsertAnchor.resolve(isEditing: true, activeNodeID: nodeID) == .node(nodeID))
         assert(TeachingCourseInsertAnchor.resolve(isEditing: false, activeNodeID: nodeID) == .documentEnd)
         assert(TeachingCourseInsertAnchor.resolve(isEditing: true, activeNodeID: nil) == .documentEnd)
+    }
+
+    private static func testCourseInsertPlacementUsesOwningStructure() {
+        let document = NodeMarkdownDocument(nodes: [
+            NodeMarkdownNode(level: 1, text: "H1"),
+            NodeMarkdownNode(level: 2, text: "H2"),
+            NodeMarkdownNode(level: 3, text: "H3-A"),
+            NodeMarkdownNode(level: 4, text: "A-1"),
+            NodeMarkdownNode(level: 5, text: "A-2"),
+            NodeMarkdownNode(level: 3, text: "H3-B"),
+            NodeMarkdownNode(level: 4, text: "B-1")
+        ])
+        assert(TeachingCourseInsertPlacementPolicy.insertionIndex(document: document, activeRowIndex: nil) == 7)
+        assert(TeachingCourseInsertPlacementPolicy.insertionIndex(document: document, activeRowIndex: 1) == 2)
+        assert(TeachingCourseInsertPlacementPolicy.insertionIndex(document: document, activeRowIndex: 3) == 5)
+        assert(TeachingCourseInsertPlacementPolicy.insertionIndex(document: document, activeRowIndex: 6) == 7)
+
+        let malformed = NodeMarkdownDocument(nodes: [NodeMarkdownNode(level: 4, text: "orphan")])
+        assert(TeachingCourseInsertPlacementPolicy.insertionIndex(document: malformed, activeRowIndex: 0) == 1)
     }
 
     private static func testSourceMetadataDoesNotChangeLayoutIdentity() {

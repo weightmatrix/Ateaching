@@ -9,10 +9,6 @@ struct NodeMarkdownTextKit2QuickInputEdit {
     let range: NSRange
     let replacement: String
 
-    var characterDelta: Int {
-        (replacement as NSString).length - range.length
-    }
-
     var changesLineStructure: Bool {
         let removed = sourceBeforeReplacement.substring(with: range)
         return removed.contains("\n")

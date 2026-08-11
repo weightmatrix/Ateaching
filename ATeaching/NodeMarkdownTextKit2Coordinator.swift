@@ -47,13 +47,13 @@ final class NodeMarkdownTextKit2Coordinator: NSObject, NSTextViewDelegate {
     var onDocumentSnapshot: ((NodeMarkdownLegacyDocumentSnapshot) -> Void)?
     var onCommitEditingNode: ((NodeMarkdownLegacyEditingNodeDraft) -> Void)?
     var onEditingDraftDirtyChange: ((Bool) -> Void)?
+    var onRequestSave: (() -> Void)?
     var onInputSessionStateChange: ((Bool) -> Void)?
     var isApplyingExternalText = false
     var isApplyingStyleUpdate = false
     var shouldRefreshCurrentRowAfterTextChange = true
     var pendingTextEditImpact: EditorDeletionImpact = .document
     var pendingTextEditAffectedRange: NSRange?
-    var pendingTextEditCharacterDelta = 0
     var pendingProjectedRowMetadata: [NodeMarkdownTextKitRowMetadata]?
     var pendingProjectedSourceText: String?
     /// 原生编辑会话期间，TextKit2正文与行元数据是唯一权威；SwiftUI回写只能确认，不能反向覆盖。
@@ -98,6 +98,7 @@ final class NodeMarkdownTextKit2Coordinator: NSObject, NSTextViewDelegate {
         onDocumentSnapshot: ((NodeMarkdownLegacyDocumentSnapshot) -> Void)?,
         onCommitEditingNode: ((NodeMarkdownLegacyEditingNodeDraft) -> Void)?,
         onEditingDraftDirtyChange: ((Bool) -> Void)?,
+        onRequestSave: (() -> Void)?,
         onInputSessionStateChange: ((Bool) -> Void)?
     ) {
         documentState = NodeMarkdownTextKit2DocumentState(text: text.wrappedValue, rowMetadata: rowMetadata)
@@ -125,6 +126,7 @@ final class NodeMarkdownTextKit2Coordinator: NSObject, NSTextViewDelegate {
         self.onDocumentSnapshot = onDocumentSnapshot
         self.onCommitEditingNode = onCommitEditingNode
         self.onEditingDraftDirtyChange = onEditingDraftDirtyChange
+        self.onRequestSave = onRequestSave
         self.onInputSessionStateChange = onInputSessionStateChange
         self.draftCommitController = draftCommitController
     }
@@ -132,11 +134,22 @@ final class NodeMarkdownTextKit2Coordinator: NSObject, NSTextViewDelegate {
     func attach(_ textView: NodeMarkdownTextKit2TextView) {
         self.textView = textView
         draftCommitController?.install(
-            commit: { [weak self] in self?.commitActiveNodeSession() },
+            commit: { [weak self] in
+                self?.commitActiveNodeSession(reason: "保存/同步/导出前", keepingSession: true)
+            },
             focusRowEnd: { [weak self, weak textView] row in
                 guard let self, let textView, self.rowLayouts.indices.contains(row) else { return }
                 let location = NSMaxRange(self.rowLayouts[row].contentRange)
-                textView.setSelectedRange(NSRange(location: location, length: 0))
+                let before = textView.selectedRange()
+                let requested = NSRange(location: location, length: 0)
+                textView.setSelectedRange(requested)
+                NodeMarkdownDiagnostic31.recordSelectionWrite(
+                    "draftCommitController.focusRowEnd row=\(row)",
+                    before: before,
+                    requested: requested,
+                    in: textView,
+                    rowLayouts: self.rowLayouts
+                )
                 self.enterEditingRow(row, from: textView)
             }
         )

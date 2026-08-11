@@ -27,7 +27,17 @@ extension NodeMarkdownTextKit2TextView {
         if let selectedRanges {
             let textLength = (value as NSString).length
             if selectedRanges.allSatisfy({ $0.rangeValue.exact(toLength: textLength) != nil }) {
+                let before = selectedRange()
                 self.selectedRanges = selectedRanges
+                if let requested = selectedRanges.first?.rangeValue {
+                    NodeMarkdownDiagnostic31.recordSelectionWrite(
+                        "replaceDocumentText恢复选区",
+                        before: before,
+                        requested: requested,
+                        in: self,
+                        rowLayouts: nodeMarkdownRowLayouts
+                    )
+                }
             } else {
                 NodeMarkdownTextKit2Diagnostics.log("全文替换后不恢复旧选区：旧选区不在新文档真实范围内。")
             }
@@ -54,7 +64,15 @@ extension NodeMarkdownTextKit2TextView {
             nodeTextStorage.replaceCharacters(in: safeRange, with: replacementText)
         }
         nodeSourceTextSnapshot = projected
+        let before = self.selectedRange()
         self.selectedRange = selectedRange
+        NodeMarkdownDiagnostic31.recordSelectionWrite(
+            "replaceSourceText写选区",
+            before: before,
+            requested: selectedRange,
+            in: self,
+            rowLayouts: nodeMarkdownRowLayouts
+        )
     }
 
     func documentString() -> String {

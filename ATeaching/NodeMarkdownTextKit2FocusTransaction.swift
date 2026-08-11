@@ -46,22 +46,21 @@ extension NodeMarkdownTextKit2Coordinator {
     @discardableResult
     func restoreRememberedFocus(in textView: NodeMarkdownTextKit2TextView) -> Bool {
         guard let anchor = pendingFocusAnchor else { return false }
+        // 焦点锚点只属于一次结构事务。普通输入后的SwiftUI回写不能反复使用旧锚点。
+        pendingFocusAnchor = nil
         let rowIndex = rowMetadata.firstIndex { $0.nodeID == anchor.nodeID }
         guard let rowIndex, rowLayouts.indices.contains(rowIndex) else {
-            pendingFocusAnchor = nil
             return false
         }
 
         let contentRange = rowLayouts[rowIndex].contentRange
         guard anchor.contentOffset >= 0,
               anchor.contentOffset <= contentRange.length else {
-            pendingFocusAnchor = nil
             return false
         }
         let location = contentRange.location + anchor.contentOffset
         guard anchor.selectionLength >= 0,
               anchor.selectionLength <= NSMaxRange(contentRange) - location else {
-            pendingFocusAnchor = nil
             return false
         }
         let length = anchor.selectionLength
@@ -70,10 +69,17 @@ extension NodeMarkdownTextKit2Coordinator {
         isApplyingStyleUpdate = true
         guard let editableSelection = textView.clampedEditableSelection(restoredSelection) else {
             isApplyingStyleUpdate = false
-            pendingFocusAnchor = nil
             return false
         }
+        let selectionBeforeRestore = textView.selectedRange()
         textView.setSelectedRange(editableSelection)
+        NodeMarkdownDiagnostic31.recordSelectionWrite(
+            "restoreRememberedFocus Node=\(String(anchor.nodeID.prefix(8))) offset=\(anchor.contentOffset)",
+            before: selectionBeforeRestore,
+            requested: editableSelection,
+            in: textView,
+            rowLayouts: rowLayouts
+        )
         isApplyingStyleUpdate = false
         enterEditingRow(rowIndex, from: textView)
         reportActiveRowIfNeeded(from: textView)

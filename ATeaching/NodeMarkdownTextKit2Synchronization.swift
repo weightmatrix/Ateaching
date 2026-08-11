@@ -20,6 +20,11 @@ extension NodeMarkdownTextKit2Coordinator {
         externalText: String,
         externalTextSyncToken: Int
     ) {
+        NodeMarkdownDiagnostic31.record(
+            "synchronize进入 external/storage=\((externalText as NSString).length)/\(textView.nodeTextStorage.length) token=\(externalTextSyncToken)/\(lastExternalTextSyncToken) localRevision=\(localEditRevision)/\(lastAcknowledgedLocalRevision) unack=\(hasUnacknowledgedLocalText) pendingFocus=\(pendingFocusAnchor != nil)",
+            in: textView,
+            rowLayouts: rowLayouts
+        )
         let markedRange = textView.markedRange()
         let hasActiveComposition = textView.hasActiveInputMethodComposition
         NodeMarkdownTextKit2Diagnostics.log("同步入口：外部应用中=\(isApplyingExternalText)，markedRange=\(NSStringFromRange(markedRange))，有效输入法组合=\(hasActiveComposition)，storage长度=\(textView.nodeTextStorage.length)，外部长度=\((externalText as NSString).length)。")
@@ -46,6 +51,7 @@ extension NodeMarkdownTextKit2Coordinator {
             )
         }()
         if currentText == externalText {
+            NodeMarkdownDiagnostic31.record("synchronize分支=正文相同", in: textView, rowLayouts: rowLayouts)
             NodeMarkdownTextKit2Diagnostics.log("同步分支=正文相同，不替换TextStorage。")
             if lastPublishedLocalText == externalText {
                 lastAcknowledgedLocalRevision = localEditRevision
@@ -53,15 +59,19 @@ extension NodeMarkdownTextKit2Coordinator {
             }
             _ = consumeExternalTextSyncToken(externalTextSyncToken)
             rebuildRowLayoutsIfNeeded(from: textView)
-            restoreRememberedFocus(in: textView)
+            // 正文没有被替换，TextKit当前选区就是唯一真实焦点。
+            forgetRememberedFocus()
         } else if hasUnacknowledgedLocalText && !hasExplicitExternalSync {
+            NodeMarkdownDiagnostic31.record("synchronize分支=保留本地正文", in: textView, rowLayouts: rowLayouts)
             NodeMarkdownTextKit2Diagnostics.log("同步分支=保留未确认本地正文，拒绝迟到的普通外部回写。")
             // 只有真正发布且尚未被SwiftUI确认的正文才能阻止外部回写。
             // NSTextView刚挂入窗口时可能已经获得焦点；“正在编辑”不等于“正文已经改变”，
             // 否则磁盘正文首次载入会被空的初始文本挡住，Mac端只剩一块空白编辑器。
             rebuildRowLayoutsIfNeeded(from: textView)
-            restoreRememberedFocus(in: textView)
+            // 迟到的SwiftUI回写不能用输入前记录的行内偏移覆盖原生输入焦点。
+            forgetRememberedFocus()
         } else {
+            NodeMarkdownDiagnostic31.record("synchronize分支=安装外部正文", in: textView, rowLayouts: rowLayouts)
             NodeMarkdownTextKit2Diagnostics.log("同步分支=安装外部正文。")
             _ = consumeExternalTextSyncToken(externalTextSyncToken)
             let selectedRanges = textView.selectedRanges
@@ -81,6 +91,11 @@ extension NodeMarkdownTextKit2Coordinator {
         }
         refreshSearchHighlightsIfNeeded(in: textView)
         updateTypingAttributes(for: textView)
+        NodeMarkdownDiagnostic31.record(
+            "synchronize完成 pendingFocus=\(pendingFocusAnchor != nil) editingRow=\(editingRowIndex.map(String.init) ?? "nil")",
+            in: textView,
+            rowLayouts: rowLayouts
+        )
     }
 
     private func captureVisualViewportAnchor(

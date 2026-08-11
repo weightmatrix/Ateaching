@@ -23,6 +23,7 @@ extension NodeMarkdownTextKit2TextView {
         let textLength = (currentText as NSString).length
         let nsText = currentText as NSString
         let selectedRanges = self.selectedRanges
+        NodeMarkdownDiagnostic31.record("全文样式事务前", in: self, rowLayouts: rowLayouts)
         let fullRange = NSRange(location: 0, length: nodeTextStorage.length)
         guard rowLayouts.allSatisfy({ $0.range.exact(toLength: textLength) != nil }),
               selectedRanges.allSatisfy({ $0.rangeValue.exact(toLength: textLength) != nil }) else {
@@ -49,8 +50,25 @@ extension NodeMarkdownTextKit2TextView {
                     textLength: textLength
                 )
             }
+            for layout in rowLayouts.dropFirst() {
+                Self.applyTextAttributesOfFollowingRowToPrecedingSeparator(
+                    in: nodeTextStorage,
+                    followingLayout: layout
+                )
+            }
         }
+        let selectionBeforeRestore = selectedRange()
         self.selectedRanges = selectedRanges
+        if let requested = selectedRanges.first?.rangeValue {
+            NodeMarkdownDiagnostic31.recordSelectionWrite(
+                "applyNodeMarkdownStyles恢复选区",
+                before: selectionBeforeRestore,
+                requested: requested,
+                in: self,
+                rowLayouts: rowLayouts
+            )
+        }
+        NodeMarkdownDiagnostic31.record("全文样式恢复选区后", in: self, rowLayouts: rowLayouts)
         setNeedsDisplay(bounds)
     }
 
@@ -74,6 +92,7 @@ extension NodeMarkdownTextKit2TextView {
 
         let nsText = currentText as NSString
         let selectedRanges = self.selectedRanges
+        NodeMarkdownDiagnostic31.record("单行样式事务前 row=\(rowIndex)", in: self, rowLayouts: rowLayouts)
         guard selectedRanges.allSatisfy({ $0.rangeValue.exact(toLength: textLength) != nil }) else {
             NodeMarkdownTextKit2Diagnostics.log("拒绝单行样式事务：选区与真实正文不一致。")
             return
@@ -93,8 +112,31 @@ extension NodeMarkdownTextKit2TextView {
                 editingRowIndex: editingRowIndex,
                 textLength: textLength
             )
+            if rowLayouts.indices.contains(rowIndex + 1) {
+                Self.applyTextAttributesOfFollowingRowToPrecedingSeparator(
+                    in: nodeTextStorage,
+                    followingLayout: rowLayouts[rowIndex + 1]
+                )
+            }
+            if rowIndex > 0 {
+                Self.applyTextAttributesOfFollowingRowToPrecedingSeparator(
+                    in: nodeTextStorage,
+                    followingLayout: layout
+                )
+            }
         }
+        let selectionBeforeRestore = selectedRange()
         self.selectedRanges = selectedRanges
+        if let requested = selectedRanges.first?.rangeValue {
+            NodeMarkdownDiagnostic31.recordSelectionWrite(
+                "refreshNodeMarkdownRowStyle恢复选区 row=\(rowIndex)",
+                before: selectionBeforeRestore,
+                requested: requested,
+                in: self,
+                rowLayouts: rowLayouts
+            )
+        }
+        NodeMarkdownDiagnostic31.record("单行样式恢复选区后 row=\(rowIndex)", in: self, rowLayouts: rowLayouts)
     }
 
 }

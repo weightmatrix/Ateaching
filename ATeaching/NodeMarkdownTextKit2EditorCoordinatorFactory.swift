@@ -32,6 +32,7 @@ extension NodeMarkdownTextKit2Representable {
             onDocumentSnapshot: onDocumentSnapshot,
             onCommitEditingNode: onCommitEditingNode,
             onEditingDraftDirtyChange: onEditingDraftDirtyChange,
+            onRequestSave: onRequestSave,
             onInputSessionStateChange: onInputSessionStateChange
         )
     }

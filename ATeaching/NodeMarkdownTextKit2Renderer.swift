@@ -33,7 +33,19 @@ extension NodeMarkdownTextKit2TextView {
         nodeTextLayoutManager.ensureLayout(for: visibleTextContainerRect(in: dirtyRect))
         for layout in visibleRowLayouts(in: dirtyRect) {
             guard let lineRect = firstLineRect(for: layout, documentStart: documentStart) else { continue }
-            let markerRect = markerDrawingRect(for: layout, lineRect: lineRect)
+            let markerRect = markerDrawingRect(
+                for: layout,
+                lineRect: lineRect,
+                documentStart: documentStart
+            )
+            let baselineY = textBaselineY(for: layout, documentStart: documentStart)
+            NodeMarkdownDiagnostic31.recordGeometry(
+                in: self,
+                layout: layout,
+                lineRect: lineRect,
+                markerRect: markerRect,
+                baselineY: baselineY
+            )
             guard markerRect.intersects(dirtyRect) else { continue }
             drawMarker(for: layout, in: markerRect)
             drawnCount += 1
@@ -106,142 +118,6 @@ extension NodeMarkdownTextKit2TextView {
         return drawnCount
     }
 
-    func installNodeMarkdownDiagnostics19(in scrollView: NSScrollView) {
-        #if DEBUG
-        for observer in diagnostic19Observers {
-            NotificationCenter.default.removeObserver(observer)
-        }
-        diagnostic19Observers.removeAll()
-
-        let clipView = scrollView.contentView
-        clipView.postsBoundsChangedNotifications = true
-        clipView.postsFrameChangedNotifications = true
-        let center = NotificationCenter.default
-        diagnostic19Observers.append(
-            center.addObserver(
-                forName: NSView.boundsDidChangeNotification,
-                object: clipView,
-                queue: .main
-            ) { [weak self] _ in
-                MainActor.assumeIsolated {
-                    self?.recordNodeMarkdownViewportEvent19(reason: "滚动")
-                }
-            }
-        )
-        diagnostic19Observers.append(
-            center.addObserver(
-                forName: NSView.frameDidChangeNotification,
-                object: clipView,
-                queue: .main
-            ) { [weak self] _ in
-                MainActor.assumeIsolated {
-                    self?.recordNodeMarkdownViewportEvent19(reason: "视口尺寸变化")
-                }
-            }
-        )
-        #endif
-    }
-
-    func diagnoseNodeMarkdownDecorations19(
-        stage: String,
-        dirtyRect: NSRect,
-        drawnBackgrounds: Int,
-        drawnHighlights: Int,
-        drawnMarkers: Int
-    ) {
-        #if DEBUG
-        guard nodeTextStorage.length > 0, !nodeMarkdownRowLayouts.isEmpty else { return }
-        let candidates = visibleRowLayouts(in: dirtyRect)
-        let candidateRows = candidates.map(\.rowIndex)
-        let viewportRows = diagnostic19ViewportRows()
-        let documentStart = nodeTextContentStorage.documentRange.location
-        var rowsWithLineGeometry: [Int] = []
-        var expectedBackgrounds = 0
-        var expectedMarkers = 0
-        var expectedHighlights = 0
-
-        for layout in candidates {
-            guard let lineRect = firstLineRect(for: layout, documentStart: documentStart) else { continue }
-            rowsWithLineGeometry.append(layout.rowIndex)
-            if layout.lineStyle.hasBackgroundBar,
-               let textRect = rowTextRect(for: layout, documentStart: documentStart),
-               backgroundBarRect(for: layout, textRect: textRect).intersects(dirtyRect) {
-                expectedBackgrounds += 1
-            }
-            if !layout.lineStyle.iconGlyph.isEmpty,
-               markerDrawingRect(for: layout, lineRect: lineRect).intersects(dirtyRect) {
-                expectedMarkers += 1
-            }
-            if let safeRange = layout.range.exact(toLength: nodeTextStorage.length), safeRange.length > 0 {
-                nodeTextStorage.enumerateAttribute(
-                    Self.inlineHighlightBackgroundColorKey,
-                    in: safeRange,
-                    options: []
-                ) { value, range, _ in
-                    guard value is NSColor,
-                          let rect = inlineHighlightRect(
-                            for: range,
-                            in: nodeTextStorage,
-                            layout: layout,
-                            lineRect: lineRect
-                          ),
-                          rect.intersects(dirtyRect) else { return }
-                    expectedHighlights += 1
-                }
-            }
-        }
-
-        let candidateRowSet = Set(candidateRows)
-        let mismatch = expectedBackgrounds != drawnBackgrounds
-            || expectedHighlights != drawnHighlights
-            || expectedMarkers != drawnMarkers
-            || !Set(viewportRows).isSubset(of: candidateRowSet)
-        NodeMarkdownTextKit2Diagnostics.log19(
-            "\(stage)，dirty=\(NSStringFromRect(dirtyRect))，visible=\(NSStringFromRect(visibleRect))，viewport字符=\(diagnostic19ViewportCharacterRangeDescription())，viewport行=\(viewportRows)，候选行=\(candidateRows)，有行几何=\(rowsWithLineGeometry)，期望/实画=背景\(expectedBackgrounds)/\(drawnBackgrounds)、高亮\(expectedHighlights)/\(drawnHighlights)、编号\(expectedMarkers)/\(drawnMarkers)，不一致=\(mismatch)。"
-        )
-        #endif
-    }
-
-    private func recordNodeMarkdownViewportEvent19(reason: String) {
-        guard nodeTextStorage.length > 0, diagnostic19EventSequence < 80 else { return }
-        diagnostic19EventSequence += 1
-        let event = diagnostic19EventSequence
-        let drawSequenceAtEvent = diagnostic19DrawSequence
-        NodeMarkdownTextKit2Diagnostics.log19(
-            "事件-\(event)=\(reason)，clip=\(NSStringFromRect(enclosingScrollView?.contentView.bounds ?? .zero))，visible=\(NSStringFromRect(visibleRect))，viewport字符=\(diagnostic19ViewportCharacterRangeDescription())，viewport行=\(diagnostic19ViewportRows())，当时draw序号=\(drawSequenceAtEvent)，needsDisplay=\(needsDisplay)。"
-        )
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
-            guard let self else { return }
-            NodeMarkdownTextKit2Diagnostics.log19(
-                "事件-\(event)后80ms，draw序号=\(self.diagnostic19DrawSequence)，发生新draw=\(self.diagnostic19DrawSequence != drawSequenceAtEvent)，needsDisplay=\(self.needsDisplay)，viewport字符=\(self.diagnostic19ViewportCharacterRangeDescription())，viewport行=\(self.diagnostic19ViewportRows())。"
-            )
-        }
-    }
-
-    private func diagnostic19ViewportCharacterRange() -> NSRange? {
-        guard let viewportRange = nodeTextLayoutManager.textViewportLayoutController.viewportRange else {
-            return nil
-        }
-        let documentStart = nodeTextContentStorage.documentRange.location
-        let start = nodeTextContentStorage.offset(from: documentStart, to: viewportRange.location)
-        let end = nodeTextContentStorage.offset(from: documentStart, to: viewportRange.endLocation)
-        guard start >= 0, end >= start else { return nil }
-        return NSRange(location: start, length: end - start)
-    }
-
-    private func diagnostic19ViewportCharacterRangeDescription() -> String {
-        diagnostic19ViewportCharacterRange().map(NSStringFromRange) ?? "nil"
-    }
-
-    private func diagnostic19ViewportRows() -> [Int] {
-        guard let range = diagnostic19ViewportCharacterRange() else { return [] }
-        return nodeMarkdownRowLayouts.compactMap { layout in
-            let intersects = NSIntersectionRange(layout.range, range).length > 0
-                || (layout.range.length == 0 && NSLocationInRange(layout.range.location, range))
-            return intersects ? layout.rowIndex : nil
-        }
-    }
-
     private func visibleTextContainerRect(in dirtyRect: NSRect) -> NSRect {
         dirtyRect.offsetBy(dx: -textContainerOrigin.x, dy: -textContainerOrigin.y)
     }
@@ -296,7 +172,7 @@ extension NodeMarkdownTextKit2TextView {
             width: lineBounds.width,
             height: lineBounds.height
         )
-        if layout.range.length == 0 {
+        if layout.contentRange.length == 0 {
             let font = Self.resolvedFont(for: layout.lineStyle.roleStyle)
             let paragraphStyle = Self.paragraphStyle(for: layout, font: font)
             let minHeight = paragraphStyle.minimumLineHeight
@@ -348,7 +224,11 @@ extension NodeMarkdownTextKit2TextView {
         return rect
     }
 
-    private func markerDrawingRect(for layout: NodeMarkdownTextKit2RowLayout, lineRect: NSRect) -> NSRect {
+    private func markerDrawingRect(
+        for layout: NodeMarkdownTextKit2RowLayout,
+        lineRect: NSRect,
+        documentStart: any NSTextLocation
+    ) -> NSRect {
         let markerFont = Self.markerFont(for: layout.lineStyle.roleStyle)
         let marker = layout.lineStyle.iconGlyph
         let attributes: [NSAttributedString.Key: Any] = [.font: markerFont]
@@ -357,12 +237,46 @@ extension NodeMarkdownTextKit2TextView {
             options: [.usesLineFragmentOrigin, .usesFontLeading]
         )
         let markerSize = (marker as NSString).size(withAttributes: attributes)
+        let baselineY = textBaselineY(for: layout, documentStart: documentStart)
+        let visualCenterY = Self.markerVisualCenterY(
+            textBaselineY: baselineY,
+            font: markerFont,
+            fallback: lineRect.midY
+        )
         return NSRect(
             x: textContainerOrigin.x + layout.lineStyle.markerX,
-            y: lineRect.midY - measured.midY,
+            y: visualCenterY - measured.midY,
             width: Self.markerDisplayWidth(for: layout),
             height: markerSize.height
         )
+    }
+
+    static func markerVisualCenterY(
+        textBaselineY: CGFloat?,
+        font: NSFont,
+        fallback: CGFloat
+    ) -> CGFloat {
+        guard let textBaselineY else { return fallback }
+        return textBaselineY - (font.ascender + font.descender) * 0.5
+    }
+
+    private func textBaselineY(
+        for layout: NodeMarkdownTextKit2RowLayout,
+        documentStart: any NSTextLocation
+    ) -> CGFloat? {
+        guard let location = nodeTextContentStorage.location(
+            documentStart,
+            offsetBy: layout.range.location
+        ),
+        let fragment = nodeTextLayoutManager.textLayoutFragment(for: location),
+        let lineFragment = fragment.textLineFragment(
+            for: location,
+            isUpstreamAffinity: false
+        ) else { return nil }
+        return textContainerOrigin.y
+            + fragment.layoutFragmentFrame.minY
+            + lineFragment.typographicBounds.minY
+            + lineFragment.glyphOrigin.y
     }
 
     private func drawMarker(for layout: NodeMarkdownTextKit2RowLayout, in rect: NSRect) {

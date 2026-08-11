@@ -18,10 +18,6 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
 
     static let formulaRenderScale: CGFloat = 2
     static var backgroundGradientCache: [NodeMarkdownTextKit2BackgroundGradientCacheKey: NSGradient] = [:]
-    let diagnosticSessionID = UUID()
-    var diagnostic19DrawSequence = 0
-    var diagnostic19EventSequence = 0
-    var diagnostic19Observers: [NSObjectProtocol] = []
     /// 唯一TextKit2对象链。NSTextView子类不能调用AppKit的便利初始化器，
     /// 因此由此处一次性显式组装，并用assertSingleTextStorage证明视图没有替换其中任何对象。
     let nodeTextStorage: NSTextStorage
@@ -47,10 +43,16 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
     var onHandleVerticalMove: ((Int) -> Bool)?
     var onHandleCancelOperation: (() -> Bool)?
     var onHandlePrimaryClick: (() -> Void)?
+    var onRequestSave: (() -> Void)?
     var onInputMethodCommit: ((InputMethodCommit) -> Void)?
     var onInputMethodTransactionFailure: ((String) -> Void)?
     var quickInputSettings = MarkdownQuickInputSettings()
     var isApplyingQuickInputReplacement = false
+    var isEnforcingInputMethodAttributes = false
+    /// 当前Node的标准输入样式。NSTextView.typingAttributes可能被输入法临时改写，
+    /// 因此组合文字不能把它当作唯一来源。
+    var nodeMarkdownTypingAttributes: [NSAttributedString.Key: Any] = [:]
+    var diagnostic31Transaction: NodeMarkdownDiagnostic31.Transaction?
     var suppressesAutomaticSelectionScrolling = false
     var usesScreenMinimumFormulaFontSize = true
     private var inputMethodTransactionActive = false
@@ -124,26 +126,10 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        let backgroundCount = drawNodeMarkdownBackgroundBars(in: dirtyRect)
-        let highlightCount = drawNodeMarkdownInlineHighlights(in: dirtyRect)
+        _ = drawNodeMarkdownBackgroundBars(in: dirtyRect)
+        _ = drawNodeMarkdownInlineHighlights(in: dirtyRect)
         super.draw(dirtyRect)
-        let markerCount = drawNodeMarkdownMarkers(in: dirtyRect)
-        if nodeTextStorage.length > 0, diagnostic19DrawSequence < 80 {
-            diagnostic19DrawSequence += 1
-            diagnoseNodeMarkdownDecorations19(
-                stage: "draw-\(diagnostic19DrawSequence)",
-                dirtyRect: dirtyRect,
-                drawnBackgrounds: backgroundCount,
-                drawnHighlights: highlightCount,
-                drawnMarkers: markerCount
-            )
-        }
-    }
-
-    deinit {
-        for observer in diagnostic19Observers {
-            NotificationCenter.default.removeObserver(observer)
-        }
+        _ = drawNodeMarkdownMarkers(in: dirtyRect)
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -157,21 +143,97 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
         selectedRange: NSRange,
         replacementRange: NSRange
     ) {
+        NodeMarkdownDiagnostic31.record(
+            "setMarkedText前 selectedRange=\(NSStringFromRange(selectedRange)) replacementRange=\(NSStringFromRange(replacementRange))",
+            in: self,
+            rowLayouts: nodeMarkdownRowLayouts
+        )
         guard beginInputMethodTransactionIfNeeded(replacementRange: replacementRange) else {
             NSSound.beep()
             return
         }
+        let canonicalAttributes = nodeMarkdownTypingAttributes.isEmpty
+            ? typingAttributes
+            : nodeMarkdownTypingAttributes
         super.setMarkedText(
-            string,
+            Self.markedText(string, applying: canonicalAttributes),
             selectedRange: selectedRange,
             replacementRange: replacementRange
         )
+        enforceCanonicalAttributesOnMarkedText(canonicalAttributes)
         updateInputMethodRenderingLayouts()
+        NodeMarkdownDiagnostic31.record("setMarkedText后", in: self, rowLayouts: nodeMarkdownRowLayouts)
+    }
+
+    func enforceCanonicalAttributesOnMarkedText(
+        _ canonicalAttributes: [NSAttributedString.Key: Any]? = nil
+    ) {
+        let range = markedRange()
+        guard range.location != NSNotFound,
+              range.length > 0,
+              let safeRange = range.exact(toLength: nodeTextStorage.length) else { return }
+        let attributes = canonicalAttributes ?? nodeMarkdownTypingAttributes
+        guard !attributes.isEmpty else { return }
+
+        isEnforcingInputMethodAttributes = true
+        defer { isEnforcingInputMethodAttributes = false }
+        nodeTextContentStorage.performEditingTransaction {
+            Self.applyControlledTypingAttributes(
+                attributes,
+                to: nodeTextStorage,
+                range: safeRange
+            )
+        }
+        typingAttributes = attributes
+    }
+
+    static func markedText(
+        _ value: Any,
+        applying typingAttributes: [NSAttributedString.Key: Any]
+    ) -> NSAttributedString {
+        let markedText: NSMutableAttributedString
+        if let attributed = value as? NSAttributedString {
+            markedText = NSMutableAttributedString(attributedString: attributed)
+        } else {
+            markedText = NSMutableAttributedString(string: String(describing: value))
+        }
+        guard markedText.length > 0 else { return markedText }
+
+        // 输入法自己的下划线、分词和候选标记必须保留；只把会改变行高
+        // 和行颜色的三项属性锁定为当前Node的真实设置。
+        applyControlledTypingAttributes(
+            typingAttributes,
+            to: markedText,
+            range: NSRange(location: 0, length: markedText.length)
+        )
+        return markedText
+    }
+
+    static func applyControlledTypingAttributes(
+        _ typingAttributes: [NSAttributedString.Key: Any],
+        to text: NSMutableAttributedString,
+        range: NSRange
+    ) {
+        let controlledKeys: [NSAttributedString.Key] = [
+            .font,
+            .foregroundColor,
+            .paragraphStyle
+        ]
+        let controlledAttributes = controlledKeys.reduce(into: [NSAttributedString.Key: Any]()) {
+            if let attribute = typingAttributes[$1] {
+                $0[$1] = attribute
+            }
+        }
+        guard !controlledAttributes.isEmpty,
+              range.exact(toLength: text.length) != nil else { return }
+        text.addAttributes(controlledAttributes, range: range)
     }
 
     override func unmarkText() {
         let wasActive = inputMethodTransactionActive
+        NodeMarkdownDiagnostic31.record("unmarkText前", in: self, rowLayouts: nodeMarkdownRowLayouts)
         super.unmarkText()
+        NodeMarkdownDiagnostic31.record("unmarkText后", in: self, rowLayouts: nodeMarkdownRowLayouts)
         if wasActive {
             scheduleInputMethodCommit()
         }
@@ -179,7 +241,13 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
 
     override func insertText(_ insertString: Any, replacementRange: NSRange) {
         let wasActive = inputMethodTransactionActive
+        NodeMarkdownDiagnostic31.record(
+            "insertText前 replacementRange=\(NSStringFromRange(replacementRange))",
+            in: self,
+            rowLayouts: nodeMarkdownRowLayouts
+        )
         super.insertText(insertString, replacementRange: replacementRange)
+        NodeMarkdownDiagnostic31.record("insertText后", in: self, rowLayouts: nodeMarkdownRowLayouts)
         if wasActive {
             updateInputMethodRenderingLayouts()
             scheduleInputMethodCommit()

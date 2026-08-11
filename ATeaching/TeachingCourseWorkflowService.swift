@@ -301,6 +301,34 @@ enum TeachingCourseInsertAnchor: Sendable, Equatable {
     }
 }
 
+/// 随堂插入位置的纯数据规则，便于回归检查，不依赖窗口焦点或字符位置。
+enum TeachingCourseInsertPlacementPolicy {
+    static func insertionIndex(
+        document: NodeMarkdownDocument,
+        activeRowIndex: Int?
+    ) -> Int {
+        guard let activeRowIndex, document.nodes.indices.contains(activeRowIndex) else {
+            return document.nodes.count
+        }
+        if let ownerH3Index = document.owningH3Index(for: activeRowIndex) {
+            var end = ownerH3Index + 1
+            while end < document.nodes.count {
+                let level = document.nodes[end].level
+                if level > 0 && level <= 3 { break }
+                end += 1
+            }
+            return end
+        }
+        if let ownerHeadingIndex = stride(from: activeRowIndex, through: 0, by: -1).first(where: {
+            let level = document.nodes[$0].level
+            return level == 1 || level == 2
+        }) {
+            return min(ownerHeadingIndex + 1, document.nodes.count)
+        }
+        return document.nodes.count
+    }
+}
+
 private struct TeachingCourseTransactionLogEntry: Codable {
     var timestamp: String
     var transactionID: String
@@ -1359,6 +1387,120 @@ enum TeachingCourseWorkflowService {
             studentFolder.appendingPathComponent("教案_\(folderID)_完成情况_\(student.name).CSV", isDirectory: false)
         }
         return files.filter { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
+    /// 随堂笔记真正删掉已入库H3包后，立即把该学生完成清单中的对应行退回未完成。
+    /// 只根据已绑定的母本身份匹配，不会把同名H3或未入库新包误改。
+    @discardableResult
+    static func markLessonPackagesIncomplete(
+        student: TeachingStudentItem,
+        removedH3Roots: [NodeMarkdownNode]
+    ) throws -> Int {
+        let roots = removedH3Roots.filter { node in
+            node.level == 3
+                && !node.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && !node.sourceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && !node.sourceFile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        guard !roots.isEmpty else { return 0 }
+
+        let sourceIDs = Set(roots.map { $0.sourceID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
+        let packageKeys = Set(roots.compactMap {
+            lessonPackageKey(sourceFile: $0.sourceFile, sourceID: $0.sourceID)
+        })
+        var resetCount = 0
+
+        for checklistURL in try lessonCompletionChecklistFiles(student: student) {
+            var payload = try ArchiveStorage.readChecklistDocument(fileURL: checklistURL)
+            var changed = false
+            for index in payload.0.indices where payload.0[index].level == 3 {
+                let row = payload.0[index]
+                let rowSourceID = row.sourceID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                let rowKey = lessonPackageKey(sourceFile: row.sourceFile, sourceID: row.sourceID)
+                let matches = sourceIDs.contains(rowSourceID)
+                    || rowKey.map { packageKeys.contains($0) } == true
+                guard matches, payload.0[index].status != 0 else { continue }
+                payload.0[index].status = 0
+                resetCount += 1
+                changed = true
+            }
+            if changed {
+                try ArchiveStorage.writeChecklistDocument(
+                    fileURL: checklistURL,
+                    rows: payload.0,
+                    meta: payload.1
+                )
+            }
+        }
+        return resetCount
+    }
+
+    /// 章教案之间移动H3包时UUID永远不变，只迁移所有随堂笔记H3根的SourceFile。
+    /// 所有待写文件先留内存备份；任何一份写入失败时恢复本次已改文件。
+    @discardableResult
+    static func relinkNotebookPackagesAfterLessonMove(
+        h3RootIDs: Set<UUID>,
+        destinationLessonFileURL: URL
+    ) throws -> Int {
+        guard !h3RootIDs.isEmpty else { return 0 }
+        let lessonRoot = try lessonPlanRootURL().standardizedFileURL
+        let destination = destinationLessonFileURL.standardizedFileURL
+        let prefix = lessonRoot.path.hasSuffix("/") ? lessonRoot.path : lessonRoot.path + "/"
+        guard destination.path.hasPrefix(prefix) else {
+            throw NSError(
+                domain: "TeachingCourseWorkflowService",
+                code: 7838,
+                userInfo: [NSLocalizedDescriptionKey: "粘贴目标不是系统教案中的章教案。"]
+            )
+        }
+        let newSourceFile = String(destination.path.dropFirst(prefix.count))
+        let archiveRoot = try ArchiveStorage.ensureArchiveRoot()
+        let notebookURLs = try collectRegularFilesRecursively(root: archiveRoot).filter {
+            $0.pathExtension.caseInsensitiveCompare("csv") == .orderedSame
+                && $0.lastPathComponent.lowercased().hasPrefix("随堂笔记_")
+        }
+
+        var writes: [(url: URL, document: NodeMarkdownDocument, meta: NodeMarkdownFileMeta, oldData: Data)] = []
+        var relinkedCount = 0
+        for notebookURL in notebookURLs {
+            guard let oldData = try? Data(contentsOf: notebookURL),
+                  let payload = try? NodeMarkdownFileManager.read(fileURL: notebookURL) else { continue }
+            var nextDocument = payload.0
+            var changed = false
+            for index in nextDocument.nodes.indices where nextDocument.nodes[index].level == 3 {
+                let nodeID = nextDocument.nodes[index].id
+                let linkedID = UUID(uuidString: nextDocument.nodes[index].sourceID.trimmingCharacters(in: .whitespacesAndNewlines))
+                guard h3RootIDs.contains(nodeID)
+                        || linkedID.map({ h3RootIDs.contains($0) }) == true else { continue }
+                let canonicalID = linkedID.flatMap { h3RootIDs.contains($0) ? $0 : nil } ?? nodeID
+                nextDocument.nodes[index].sourceID = canonicalID.uuidString
+                nextDocument.nodes[index].sourceFile = newSourceFile
+                relinkedCount += 1
+                changed = true
+            }
+            if changed {
+                writes.append((notebookURL, nextDocument, payload.1, oldData))
+            }
+        }
+
+        var written: [(url: URL, oldData: Data)] = []
+        do {
+            for write in writes {
+                try NodeMarkdownFileManager.write(document: write.document, meta: write.meta, to: write.url)
+                written.append((write.url, write.oldData))
+                NotificationCenter.default.post(
+                    name: .teachingNotebookDidPersistChange,
+                    object: nil,
+                    userInfo: ["filePath": write.url.path, "reason": "lessonPackageMove"]
+                )
+            }
+        } catch {
+            for item in written.reversed() {
+                try? item.oldData.write(to: item.url, options: .atomic)
+            }
+            throw error
+        }
+        return relinkedCount
     }
 
     private static func prepareForSession(
@@ -2422,23 +2564,10 @@ enum TeachingCourseWorkflowService {
         document: NodeMarkdownDocument,
         activeRowIndex: Int?
     ) -> Int {
-        guard let activeRowIndex, document.nodes.indices.contains(activeRowIndex) else {
-            return document.nodes.count
-        }
-
-        if let ownerH3Index = document.owningH3Index(for: activeRowIndex) {
-            let end = nodePackageEndIndex(in: document.nodes, startIndex: ownerH3Index)
-            return max(0, min(end, document.nodes.count))
-        }
-
-        let activeLevel = document.nodes[activeRowIndex].level
-        if activeLevel == 1 || activeLevel == 2 {
-            return min(activeRowIndex + 1, document.nodes.count)
-        }
-
-        // 合法随堂结构中的H4及以下必然属于H3包。若旧数据结构残缺，
-        // 仍然紧跟焦点Node，不能悄悄退回章末或文末。
-        return min(activeRowIndex + 1, document.nodes.count)
+        TeachingCourseInsertPlacementPolicy.insertionIndex(
+            document: document,
+            activeRowIndex: activeRowIndex
+        )
     }
 
     /// 无焦点时，插包必须落在最后一个有效Node之后。尾部普通空行全部清掉，
@@ -2451,20 +2580,6 @@ enum TeachingCourseWorkflowService {
               last.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             document.nodes.removeLast()
         }
-    }
-
-    private static func nodePackageEndIndex(in nodes: [NodeMarkdownNode], startIndex: Int) -> Int {
-        guard nodes.indices.contains(startIndex) else { return nodes.count }
-        let rootLevel = max(1, min(12, nodes[startIndex].level))
-        var end = startIndex + 1
-        while end < nodes.count {
-            let level = nodes[end].level
-            if level > 0 && level <= rootLevel {
-                break
-            }
-            end += 1
-        }
-        return end
     }
 
     private static func appendToCollector(packageNodes: [NodeMarkdownNode]) throws -> (sourceFile: String, sourceID: String) {

@@ -4,6 +4,68 @@
 
 ---
 
+# 2-33 包事务、插入锚点与教案移动
+
+包删除以删除前快照为依据，从被删范围收集所有非空、同时拥有`SourceFile`和`SourceID`的H3根。剩余文档仍有相同来源键时不回退完成状态；否则在当前学生完成清单中将精确匹配行的`Status`写为0。任务失败必须显示错误，不能用“已删除”掩盖清单未回退。
+
+`TeachingCourseInsertAnchor`只存Node UUID或文末，不存行号和字符坐标。`TeachingCourseInsertPlacementPolicy`在最新落盘文档中重新定位UUID：无有效编辑会话为文末；H3子节点为完整H3包末尾；其他行向前归属到最近H1/H2节点。找不到结构归属的损坏数据回退文末。视口恢复使用操作前可视Node UUID及真实几何偏移，不以插入点为滚动目标。
+
+跨教案剪切使用进程内单份包事务，保存源文件、源窗口、原位置和全部Node。剪切先持久化源教案，粘贴再验证UUID冲突并持久化目标教案。成功后递归扫描随堂笔记，仅对包内H3 UUID匹配的根节点改写`SourceFile`和`SourceID`，UUID本身永不改变。重链使用文件级旧数据回滚；失败后目标教案恢复，源端剪切负载保留供重试。
+
+目录重排对上课和教案编辑共用同一包移动入口。L1视图的展开结果在数据层限制为`level <= 3`。拖动自动滚动使用目录行在命名坐标系中的真实框，进入底部56点后周期性滚动到后续真实Node，离开热区或结束拖动立即取消。
+
+`NodeMarkdownDiagnostic33`只记录删除、剪切、粘贴、目录移动和插入锚点的身份与结果。诊断不读写TextStorage、焦点、选区、视口或布局。
+
+# 2-32 空Node焦点与编号基线
+
+`【诊断·31】`证明输入法正式提交完成时，选区已经位于新文字末尾。错误发生在随后一次无外部正文安装的`updateNSView`：同步分支保留了本地正文，却调用`restoreRememberedFocus`，用进入空Node时保存的行内偏移0覆盖原生选区。焦点锚点因此被限定为一次性结构事务数据；普通绑定确认和迟到回写不再恢复它，真正的外部正文替换仍在新行表安装后按Node UUID恢复。
+
+NodeMarkdown行范围包含结尾换行符，所以空Node的`range.length`通常是1，不能作为空内容判断。生产渲染统一使用`contentRange.length == 0`。空Node因此会按照自身层级的真实字体和段落最小高度建立首行矩形，而不是落入普通非空分支。
+
+编号纵向位置不再以`lineRect.midY`为权威，因为空行生成首字、输入法组合和高公式都可能改变行框。渲染器读取TextKit2实际采用的字形基线，并用`baseline - (ascender + descender) / 2`取得该层级字体的视觉中心。编号、普通文字和公式由此共享同一个实测中心；只有TextKit尚未提供片段时才临时使用真实行框中线，后续布局完成后自然重画。
+
+# 2-31 空行首字诊断与Markdown落盘
+
+诊断文件的真实位置是`/Users/Witten/Library/Containers/Han.ATeaching/Data/Library/Application Support/ATeaching/诊断/ATeaching诊断记录.MD`。macOS沙盒中的`Application Support`位于应用容器内，不能用非沙盒的`~/Library/Application Support`代替。文件创建后会立即反读校验；每条追加都独立打开并关闭文件，保持随时可读，但不强制磁盘同步以免改变输入时序。以后诊断分析直接读这一份物理文件。
+
+`NodeMarkdownDiagnostic31`只在Debug构建且空Node第一次插入非换行文字时建立事务。它不调用`ensureLayout`、不写TextStorage、不设置选区，也不参与Node发布；所有几何数据来自编辑器本来就会执行的真实绘制过程。
+
+事务以TextView实例保存，包含事务号、目标Node UUID、目标行、原选区、根据最终提交文字动态计算的预期位置、上一选区和上一份几何。观测点覆盖`shouldChangeText`、`setMarkedText`、`insertText`、`unmarkText`、`textDidChange`、输入法正式提交、正文发布、样式事务、SwiftUI同步和选区通知。正式提交后观察下一轮主队列、50毫秒、250毫秒及1秒状态，以捕获延迟发生的焦点回跳。
+
+真实绘制阶段记录首视觉行矩形、编号矩形、TextKit2文字基线、字体名称、字号、ascender与descender。它不为了诊断主动生成片段，因此不会把“诊断触发的新布局”误当成应用原本行为。选区由非0位置跳到文首时会输出`跳到文首=true`，前一条阶段记录用于定位写入者。
+
+连续完全相同的事件只写一条，并在下一条中说明省略数量，不再使用80条硬上限。每条同时对照Coordinator官方行表、TextView临时行表和焦点附近源文/显示文本。主动写选区的入口必须记录原值、请求值、结果和写入原因；系统自发选区变化则由选区通知记录。
+
+# 2-30 公式视觉中心统一
+
+`【测试·29】`取得了同一个Node的完整对照：55点幼圆字体`ascender=45.12`、`descender=-9.88`，无公式及源码状态的`baselineFromLineTop=49`，公式状态则为`125`。公式旧附件范围为`-37.064...97.818`，其中心比字体框中心高约`12.76`点；TextKit2据此重排行框，造成同行文字视觉下沉。编号又独立按整个162点高行框居中，因此比文字和公式更高。
+
+生产规则改为`NodeMarkdownRenderContract.centeredInlineAttachmentBounds`。它以`(fontAscender + fontDescender) / 2`取得字体相对基线的真实中心，以SwiftMath图片真实高度的一半确定附件上下边界。公式附件、行高计算和编号对齐共用这份结果，不再从x高度、数学轴或固定常数推测位置。示例公式的真实新范围为`-49.821...85.061`，附件中心与字体中心严格相等。
+
+正文不使用整行`baselineOffset`补偿。这样公式出现在自动换行后的某一视觉行时，不会改变同Node其他视觉行的文字。编号绘制只在第一视觉行确有公式附件时读取该行TextKit2真实基线，并对齐字体中心；后续视觉行中的公式不影响首行编号。段落最小高度仍由附件真实上边界和下边界共同决定，负责防止分式与根式覆盖相邻Node。
+
+回归检查使用诊断中的真实字体和公式尺寸，同时覆盖较矮附件，断言附件中心始终等于字体中心。基础行样式显式写入`baselineOffset=0`，保证渲染态与源码态反复切换不会遗留旧偏移。`NodeMarkdownDiagnostic29`及普通Markdown临时测量入口已经全部删除。
+
+公式附件缓存键必须包含基础字体名称、`ascender`和`descender`，不能只使用公式源码、字号和颜色。相同字号的幼圆、楷体等字体具有不同的视觉中心；复用另一字体生成的附件度量会使公式再次偏移。
+
+# 2-29 公式纵向几何诊断
+
+普通Markdown的TextKit2公式附件使用图片真实宽高且`bounds.origin.y = 0`，交给TextKit2按默认附件规则排版。NodeMarkdown新管线则从SwiftMath读取`mathAscent`与`mathDescent`，以行字体的`xHeight / 2`作为行内公式目标数学轴，计算附件`originY`，并用公式上方和下方占用值扩大段落最小行高。这两条路径不同，仅凭截图无法区分公式轴偏高、文字基线偏低或编号按扩大后的行框居中。
+
+`NodeMarkdownDiagnostic29`只在Debug构建输出真实测量值，不调用`ensureLayout`、不请求重画、不修改属性。公式生成阶段记录字体度量、SwiftMath度量、图片尺寸、目标轴、图片轴、附件偏移和上下占用；附件回调记录TextKit2提供的`lineFrag`与`position`以及实际返回的`bounds`；整行绘制阶段记录layout fragment、line fragment、glyph origin、换算后的文字基线、行框和编号框。普通Markdown公式附件同时记录对应回调，形成同公式对照。
+
+诊断按公式内容与几何组合去重。本轮只负责取得真实数据，后续结论和生产修复记录在`2-30 公式视觉中心统一`。
+
+首轮真实数据中，55点幼圆字体的`ascender=45.12`、`descender=-9.88`，公式行的文字基线距行顶却为`125`点，证明文字在公式扩大的行框中处于明显偏下位置。后续诊断扩展到所有可见非空Node，统一记录`baselineFromLineTop`，用于与下一条相同层级、相同字体的无公式Node直接相减。编号通过`draw(in:)`独立绘制并按整条行框居中，不在TextKit正文布局中，因此只记录真实`markerRect`与编号字体度量，不声明不存在的系统基线。
+
+# 2-28 快捷输入行边界修复
+
+`【诊断·28】`证明快捷输入后的错样式不是样式选择错误，而是后续行字符地址被重复移动。`\\fr`替换为`\\frac{}{}`时，原生编辑和当前行投影已经反映新增字符；旧流程又累计一次事件长度差，使真实起点`106`被写成`113`。样式层按错误范围正常执行后，视觉上就表现为下一Node继承上一Node的背景、字体和颜色。
+
+新管线不再保存或累计“待应用字符长度差”。局部行更新先从当前源码重建改动行，再比较该行真实结束位置与现有下一行真实起点，求出当前状态仍然需要的唯一偏移。偏移为零说明输入法或TextKit2已经完成地址投影；非零时才整体移动后续行一次。结果必须连续、无空洞、无重叠并恰好覆盖文档，否则局部更新失败并交给完整重建入口。
+
+回归检查必须同时构造两种输入：后续行仍保留旧地址时应移动一次；后续行已经带有新地址时必须保持不动。这样普通输入、拼音确认和快捷替换共用同一条真实边界规则，不再依赖事件到达顺序。结论确认后，`【诊断·28】`及其采样代码已经删除；`NodeMarkdownDiagnostic26`和旧通用诊断保留空接口但不打印。
+
 # 一、项目定位
 
 ATeaching 是一个以 macOS 为主，同时兼顾 iPadOS / iOS 的授课管理系统。它不是单一编辑器，而是由多个子系统组成：
@@ -55,11 +117,11 @@ ATeaching 是一个以 macOS 为主，同时兼顾 iPadOS / iOS 的授课管理�
 
 首屏装饰依赖TextKit2真实视口。视图初建时SwiftUI可能尚未提供有效宽度，因而第一次绘制无法取得开头行的文字片段。`prepareViewport`在同步和下一轮真实尺寸布局后都只对当前可见区执行`ensureLayout`并请求重画背景条、高亮和编号；该流程不得触发全文布局或修改正文。
 
-滚动与装饰时序诊断统一使用`【诊断-19】`。它监听`NSClipView`滚动和尺寸变化，记录事件前后的`draw`序号、TextKit2 viewport字符及行范围，并在每次实际绘制后比较viewport行、生产候选行、有几何的行和背景条、高亮、编号的期望/实画数量。诊断不得调用`layoutViewport`、`ensureLayout`或`setNeedsDisplay`，避免旁观行为改变问题本身。
+旧的`【诊断-19】`滚动与装饰诊断已经停止输出。任何新诊断都不得调用`layoutViewport`、`ensureLayout`或`setNeedsDisplay`，避免旁观行为改变问题本身。
 
 背景条、高亮和编号的生产绘制必须共用TextKit2 `textViewportLayoutController.viewportRange`换算出的Node范围，并向上下各扩展两行后再用`dirtyRect`裁剪几何。禁止在自绘编号沟槽内调用`characterIndexForInsertion(at:)`推断可见行：首帧或回到文首时，该空白位置可能被TextKit2命中文档尾部，导致顶部装饰全部漏画。viewport尚未生成时允许短暂使用坐标兜底，但横坐标必须处于实际正文列内。这个选择过程只能二分定位范围，不得扫描整篇Node。
 
-新管线快捷输入属于同一次原生编辑事务的第二段修改。Coordinator必须把原始按键长度差与快捷替换的长度差相加，再更新当前行和后续行地址；不能只使用触发快捷输入的最后一次按键长度差。快捷替换包含换行时必须走结构更新路径。
+新管线快捷输入属于同一次原生编辑事务，但不得累加原始按键与快捷替换的字符长度差来推测后续行地址。当前行从实际源码重建，后续行是否需要移动由当前行真实结束位置和下一行真实起点决定。快捷替换包含换行时必须走结构更新路径。
 
 NodeMarkdown旧管线的普通字符输入以活动Node事务为边界。稳定行范围只代表进入该Node时的结构坐标；输入期间仅保存当前Node实时范围与长度差。查询当前行或后续行时，`NodeMarkdownLegacyRowRangeIndex`通过稳定范围加单个长度差计算有效范围，并二分定位行号。英文按键、marked text候选和中文定字均不得重建全文行范围，也不得遍历移动所有后续行。只有换行、跨行删除、撤销结构变化和明确外部全文替换才允许重建结构索引。
 
@@ -1316,3 +1378,57 @@ Debug诊断统一通过`NodeMarkdownTextKit2Diagnostics`输出，每行以`【�
 5. viewportRange和首个TextLayoutFragment是否存在，片段frame是否进入可见区。
 6. 首字符颜色、字号以及透明字符统计是否说明样式把正文隐藏。
 7. `draw`诊断是否实际发生；没有draw说明问题位于SwiftUI/AppKit视图层，而不是Node解析或样式层。
+
+---
+
+# 三十一、TextKit2输入法字体与行边界样式
+
+`NSTextInputClient.setMarkedText`收到的临时组合文本可能携带输入法自己的字体。这个字体若高于当前Node，TextKit2会按临时字体扩大真实行框，从而在拼音候选期间造成页面上下跳动。新管线在每次`setMarkedText`入口将`.font`、`.foregroundColor`和`.paragraphStyle`替换为当前Node的`typingAttributes`，其余输入法属性原样保留。不得在组合期间重建全文或重设后续Node样式。
+
+TextKit的插入属性会参考光标前的换行符。因此换行符同时有两种责任：`.paragraphStyle`仍属于它结束的上一Node；但`.font`、`.foregroundColor`和下划线状态必须指向下一Node，保证下一段新输入继承自己的样式。全文样式事务会依次写入全部边界；单行刷新同时修复它的前一个和后一个边界，不依赖上一行颜色猜测当前层级。
+
+L9与L10的样式只能经过`NodeMarkdownStyleRole.role(forLevel:)`映射到`body3`和`body4`。Debug回归检查使用两种明显不同的颜色验证这个映射，并验证临时拼音必须使用当前Node字体而不能丢失输入法下划线。
+
+颜色测试不得对SwiftUI与AppKit产生的颜色包装对象直接使用`==`作为视觉相等的依据。两边必须先转换到同一RGB色彩空间，再在小容差内比较RGBA分量；样式映射本身则直接比较完整`NodeMarkdownRoleStyle`。
+# NodeMarkdown TextKit2活动Node与H3包收集
+
+TextKit2新管线的普通字符输入只改变当前Node的内存草稿、TextStorage和保存状态，不在每次按键时判定脏包或新包。每个活动会话的基线固定携带Node UUID、level、content、SourceID和SourceFile。切换Node、ESC、文本视图失焦、保存、关闭、同步和导出使用同一个提交入口。
+
+提交时先按UUID将草稿写回原Node，再将提交前后的文档交给`TeachingCoursePackageChangeTracker.recordDocumentMutation`。追踪器通过H3包的真实节点范围与内容摘要判定脏包。H1、H2或不属于H3包的Node虽然会正常保存，但不进入包名单。
+
+新H3在Tab、Shift+Tab、回车等结构事务中只安装Node和UUID，`collectNewPackages`为假，不在中间状态提前收集。当Node会话真正提交时，如果level仍为3且SourceID、SourceFile同时为空，追踪器才扫描并加入新包名单。后续降为非H3或删除时，立即移出名单。
+
+Command+S由`NodeMarkdownTextKit2TextView.performKeyEquivalent`直接识别，并调用与工具栏相同的`saveToDisk`入口。保存提交使用`keepingSession`：提交当前草稿后，立即以已提交Node建立新基线，不结束当前编辑状态。因此保存后继续输入的第一个字仍会被记录为新修改。
+
+回车、Tab、Shift+Tab和跨行操作属于结构事务。事务顺序固定为：提交旧活动Node；更新TextStorage与行元数据；验证并安装新Node文档；立即将结构快照交给外层；最后按新Node UUID和Node内偏移恢复选区。不允许在旧Node数组上先建立新行会话。
+
+# NodeMarkdown脏包诊断26
+
+`NodeMarkdownDiagnostic26`保留接口但已经停止输出。旧`NodeMarkdownTextKit2Diagnostics.log/report`仍为空操作；用于快捷输入错行的`NodeMarkdownDiagnostic28`在确认重复偏移根因后已经删除，Console不再输出这些专项信息。
+
+诊断分为三层。第一层位于`NodeMarkdownTextKit2ActiveNodeSession`，记录Node会话基线、草稿是否变化、提交原因和是否触发`onCommitEditingNode`。第二层位于`NodeMarkdownEditorView.commitLegacyEditingNode`，记录UUID是否在外层文档找到、旧新Node内容、所属H3和追踪后名单。第三层位于`TeachingCoursePackageChangeTracker`，记录修改前、修改后与基线的包摘要，以及每次事务最终是否将H3放入脏包集合。
+
+诊断不遍历附件属性或触发布局，但包摘要仍使用生产代码的`TeachingCoursePackageContentSignature`，因此它直接证明生产判定当时看到的真实结果。
+
+# TextKit2输入前Node事务
+
+AppKit不能保证鼠标选区变化通知一定早于第一笔文字修改。若仅在`textViewDidChangeSelection`中建立活动Node会话，可能出现TextStorage已经包含新文字、`documentState`也已局部更新之后才建立会话的情况。此时新文字会被误作基线，内层`dirty`为假，而外层文档仍保留旧内容。
+
+新管线在`shouldChangeTextIn`以及中文输入法的正式确认入口，使用`affectedRange`和现有`rowLayouts`定位真实Node。定位发生在`documentState.updateRow`之前，因此活动会话的基线必定是修改前Node。选区通知随后只负责编辑样式和焦点报告，不再承担数据事务起点。
+
+会话的`isDirty`只用于即时通知界面显示未保存状态。切换Node、ESC、失焦、保存、同步或导出时，无论`isDirty`真假，都把当前Node草稿提交给`NodeMarkdownEditorView`。外层通过UUID索引取得持久文档中的旧Node，只有level、content、SourceID或SourceFile真实变化时才更新文档和H3包追踪器。这样保留了普通输入与文档长度无关的局部路径，同时用第二层比较消除漏保存。
+
+# SwiftMath资源定位
+
+SwiftPM为带资源的包生成`Bundle.module`。该访问器内部使用`fatalError`：如果`SwiftMath_SwiftMath.bundle`没有被复制到增量构建的App中，第一次建立公式字体就会直接终止进程，调用方无法用错误处理恢复。
+
+ATeaching目标的Resources阶段因此明确复制`Vendor/SwiftMath/Sources/SwiftMath/mathFonts.bundle`。SwiftMath内部的`SwiftMathResourceBundle`从`Bundle.main`、代码标记所在Bundle及其父目录查找资源，先支持App根资源中的`mathFonts.bundle`，再兼容标准`SwiftMath_SwiftMath.bundle`内的嵌套资源。`MathFont`与`MTFont`统一通过该定位器读取字体和数学参数表，不再引用`Bundle.module`。
+
+双重资源不是两套运行数据：直接资源是App的可靠保底，SwiftPM包装资源用于保持包的标准构建与测试兼容。全新Mac和iOS构建必须检查最终App中两者均存在；SwiftMath包测试必须覆盖字体实际加载，而不仅是编译通过。
+# TextKit2中文输入法样式事务
+
+TextKit2新管线不能仅依赖`NSTextView.typingAttributes`，因为输入法可在组合过程中改写该属性或重新写入带自己属性的marked text。编辑器因此维护`nodeMarkdownTypingAttributes`，其字体、字号、颜色和段落样式只由当前Node的level与`NodeMarkdownDocumentStyle`解析。
+
+输入法事务开始时，`setMarkedText`先将标准Node样式合并到输入法提供的属性字符串，再交给AppKit。`super.setMarkedText`返回后，以`markedRange()`的真实UTF-16范围为准，在`NSTextContentStorage.performEditingTransaction`中向该范围复写受控属性。组合期间如果输入法再次改写marked text，选区与文字变化回调会再次执行同一校正。
+
+校正只写入`.font`、`.foregroundColor`和`.paragraphStyle`。输入法自己的下划线、选中段、分词和候选信息不删除。属性校正期间使用独立标志阻断重入文字修改回调，不改变源码快照、Node内容、选区和输入法提交事务。

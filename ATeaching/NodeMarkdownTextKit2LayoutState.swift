@@ -62,8 +62,7 @@ extension NodeMarkdownTextKit2Coordinator {
     func updateRowLayoutsAfterCharacterEdit(
         in textView: NodeMarkdownTextKit2TextView,
         value: String,
-        affectedRange: NSRange,
-        characterDelta: Int
+        affectedRange: NSRange
     ) -> Bool {
         guard !rowLayouts.isEmpty, !rowCharacterRanges.isEmpty else { return false }
         let nsText = value as NSString
@@ -97,16 +96,14 @@ extension NodeMarkdownTextKit2Coordinator {
             editingParagraphStyleCache.removeValue(forKey: rowIndex)
             editingParagraphStyleCache.removeValue(forKey: rowIndex + 1)
         }
-        rowLayouts[rowIndex] = rebuiltLayout
-        rowCharacterRanges[rowIndex] = rebuiltLayout.range
-        if characterDelta != 0, rowIndex + 1 < rowLayouts.count {
-            // 普通输入只平移后续Node的字符地址，不重新解析其层级、样式、公式或图片。
-            // 这是单一NSTextStorage过渡期的轻量路径；最终y坐标由高度索引管理。
-            for index in (rowIndex + 1)..<rowLayouts.count {
-                rowLayouts[index] = rowLayouts[index].offsetBy(characterDelta)
-                rowCharacterRanges[index].location += characterDelta
-            }
-        }
+        guard let reconciledLayouts = NodeMarkdownTextKit2RowLayoutReconciler.replacingRow(
+            in: rowLayouts,
+            rowIndex: rowIndex,
+            with: rebuiltLayout,
+            documentLength: nsText.length
+        ) else { return false }
+        rowLayouts = reconciledLayouts
+        rowCharacterRanges = reconciledLayouts.map(\.range)
 
         lastLayoutTextSnapshot = value
         lastLayoutDocumentStyleIdentity = documentStyle.renderIdentity

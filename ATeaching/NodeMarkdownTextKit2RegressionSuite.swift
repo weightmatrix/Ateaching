@@ -1,7 +1,13 @@
 // PIPELINE MARKER: NodeMarkdown TextKit2 new pipeline.
 import Foundation
+import SwiftUI
+
+#if os(macOS)
+import AppKit
+#endif
 
 #if DEBUG
+@MainActor
 enum NodeMarkdownTextKit2RegressionSuite {
     private static var hasRun = false
 
@@ -14,9 +20,15 @@ enum NodeMarkdownTextKit2RegressionSuite {
         testProtectedH3CannotLoseIdentity()
         testHeightIndex()
         testLargeIndexLookup()
+        testCommittedNodeCollectsDirtyAndNewPackages()
         #if os(macOS)
-        testQuickInputUsesCombinedCharacterDelta()
+        testQuickInputReconcilesRealFollowingRowBoundary()
         testInputMethodTemporarilyProjectsFollowingRows()
+        testInputMethodUsesCurrentNodeTypography()
+        testBody3AndBody4UseIndependentStyles()
+        testParagraphBoundaryUsesFollowingNodeTextStyle()
+        testFormulaAndTextShareVisualCenter()
+        testMarkerUsesMeasuredTextBaseline()
         #endif
     }
 
@@ -133,24 +145,105 @@ enum NodeMarkdownTextKit2RegressionSuite {
         }
     }
 
-    #if os(macOS)
-    private static func testQuickInputUsesCombinedCharacterDelta() {
-        let sourceAfterFourthKey = "A====\nB" as NSString
-        let quickEdit = NodeMarkdownTextKit2QuickInputEdit(
-            sourceBeforeReplacement: sourceAfterFourthKey,
-            range: NSRange(location: 1, length: 4),
-            replacement: "分隔线"
+    private static func testCommittedNodeCollectsDirtyAndNewPackages() {
+        let linkedRoot = NodeMarkdownNode(
+            level: 3,
+            text: "已入库包",
+            sourceID: "source",
+            sourceFile: "chapter.csv"
         )
-        let combinedDelta = 1 + quickEdit.characterDelta
-        let sourceBeforeFourthKeyLength = ("A===\nB" as NSString).length
-        let finalLength = sourceAfterFourthKeyLengthAfterApplying(quickEdit)
-        assert(sourceBeforeFourthKeyLength + combinedDelta == finalLength)
+        let child = NodeMarkdownNode(level: 4, text: "原文")
+        let linkedDocument = NodeMarkdownDocument(nodes: [linkedRoot, child])
+        var changedLinkedDocument = linkedDocument
+        changedLinkedDocument.nodes[1].text = "已修改"
+        let tracker = TeachingCoursePackageChangeTracker()
+        tracker.establishBaseline(document: linkedDocument)
+        _ = tracker.recordDocumentMutation(
+            previousDocument: linkedDocument,
+            currentDocument: changedLinkedDocument
+        )
+        assert(tracker.dirtyPackageIDList().contains(linkedRoot.id.uuidString))
+
+        let h1 = NodeMarkdownNode(level: 1, text: "日期")
+        let documentBeforeNewH3 = NodeMarkdownDocument(nodes: [h1])
+        let newRoot = NodeMarkdownNode(level: 3, text: "新包标题")
+        let documentWithNewH3 = NodeMarkdownDocument(nodes: [h1, newRoot])
+        tracker.establishBaseline(document: documentBeforeNewH3)
+        _ = tracker.recordDocumentMutation(
+            previousDocument: documentBeforeNewH3,
+            currentDocument: documentWithNewH3,
+            collectNewPackages: false
+        )
+        assert(!tracker.newPackageIDList().contains(newRoot.id.uuidString))
+        _ = tracker.recordDocumentMutation(
+            previousDocument: documentWithNewH3,
+            currentDocument: documentWithNewH3
+        )
+        assert(tracker.newPackageIDList().contains(newRoot.id.uuidString))
+        let newItems = tracker.newPackageDisplayItems(document: documentWithNewH3)
+        assert(newItems.first(where: { $0.id == newRoot.id.uuidString })?.title == "新包标题")
+
+        var demotedDocument = documentWithNewH3
+        demotedDocument.nodes[1].level = 4
+        _ = tracker.recordDocumentMutation(
+            previousDocument: documentWithNewH3,
+            currentDocument: demotedDocument
+        )
+        assert(!tracker.newPackageIDList().contains(newRoot.id.uuidString))
+
+        let h1Tracker = TeachingCoursePackageChangeTracker()
+        let changedH1Document = NodeMarkdownDocument(
+            nodes: [NodeMarkdownNode(id: h1.id, level: 1, text: "改过的日期")]
+        )
+        h1Tracker.establishBaseline(document: documentBeforeNewH3)
+        _ = h1Tracker.recordDocumentMutation(
+            previousDocument: documentBeforeNewH3,
+            currentDocument: changedH1Document
+        )
+        assert(h1Tracker.dirtyPackageIDList().isEmpty)
+        assert(h1Tracker.newPackageIDList().isEmpty)
     }
 
-    private static func sourceAfterFourthKeyLengthAfterApplying(
-        _ edit: NodeMarkdownTextKit2QuickInputEdit
-    ) -> Int {
-        edit.sourceBeforeReplacement.length + edit.characterDelta
+    #if os(macOS)
+    private static func testQuickInputReconcilesRealFollowingRowBoundary() {
+        let lineStyle = NodeMarkdownRenderContract.default.lineStyle(
+            level: 6,
+            prefix: "",
+            documentStyle: NodeMarkdownDocumentStyle()
+        )
+        func layout(_ row: Int, _ location: Int, _ length: Int) -> NodeMarkdownTextKit2RowLayout {
+            NodeMarkdownTextKit2RowLayout(
+                rowIndex: row,
+                range: NSRange(location: location, length: length),
+                contentRange: NSRange(location: location, length: max(0, length - (row < 2 ? 1 : 0))),
+                prefix: "",
+                level: 6,
+                lineStyle: lineStyle,
+                spacingBefore: 0,
+                isProtectedH3: false
+            )
+        }
+
+        let staleLayouts = [layout(0, 0, 3), layout(1, 3, 2), layout(2, 5, 1)]
+        let rebuiltFirstRow = layout(0, 0, 9)
+        let reconciledFromStale = NodeMarkdownTextKit2RowLayoutReconciler.replacingRow(
+            in: staleLayouts,
+            rowIndex: 0,
+            with: rebuiltFirstRow,
+            documentLength: 12
+        )
+        assert(reconciledFromStale?[1].range.location == 9)
+        assert(reconciledFromStale?[2].range.location == 11)
+
+        let alreadyProjected = [layout(0, 0, 9), layout(1, 9, 2), layout(2, 11, 1)]
+        let reconciledFromProjection = NodeMarkdownTextKit2RowLayoutReconciler.replacingRow(
+            in: alreadyProjected,
+            rowIndex: 0,
+            with: rebuiltFirstRow,
+            documentLength: 12
+        )
+        assert(reconciledFromProjection?[1].range.location == 9)
+        assert(reconciledFromProjection?[2].range.location == 11)
     }
 
     private static func testInputMethodTemporarilyProjectsFollowingRows() {
@@ -190,6 +283,152 @@ enum NodeMarkdownTextKit2RegressionSuite {
         assert(projected?[0].contentRange == NSRange(location: 0, length: 4))
         assert(projected?[1].range == NSRange(location: 5, length: 1))
         assert(projected?[1].level == 9)
+    }
+
+    private static func testInputMethodUsesCurrentNodeTypography() {
+        let font = NSFont.systemFont(ofSize: 19)
+        let color = NSColor.systemTeal
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.minimumLineHeight = 31
+        let original = NSAttributedString(
+            string: "pinyin",
+            attributes: [.underlineStyle: NSUnderlineStyle.single.rawValue]
+        )
+        let result = NodeMarkdownTextKit2TextView.markedText(
+            original,
+            applying: [
+                .font: font,
+                .foregroundColor: color,
+                .paragraphStyle: paragraph
+            ]
+        )
+        assert((result.attribute(.font, at: 0, effectiveRange: nil) as? NSFont) == font)
+        assert((result.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor) == color)
+        assert((result.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle) == paragraph)
+        assert((result.attribute(.underlineStyle, at: 0, effectiveRange: nil) as? Int) == NSUnderlineStyle.single.rawValue)
+
+        let overwritten = NSMutableAttributedString(attributedString: result)
+        overwritten.addAttributes(
+            [.font: NSFont.boldSystemFont(ofSize: 48), .foregroundColor: NSColor.systemBlue],
+            range: NSRange(location: 0, length: overwritten.length)
+        )
+        NodeMarkdownTextKit2TextView.applyControlledTypingAttributes(
+            [.font: font, .foregroundColor: color, .paragraphStyle: paragraph],
+            to: overwritten,
+            range: NSRange(location: 0, length: overwritten.length)
+        )
+        assert((overwritten.attribute(.font, at: 0, effectiveRange: nil) as? NSFont) == font)
+        assert((overwritten.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor) == color)
+        assert((overwritten.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle) == paragraph)
+        assert((overwritten.attribute(.underlineStyle, at: 0, effectiveRange: nil) as? Int) == NSUnderlineStyle.single.rawValue)
+    }
+
+    private static func testBody3AndBody4UseIndependentStyles() {
+        var style = NodeMarkdownDocumentStyle()
+        style.body3.color = .red
+        style.body3.semanticColor = nil
+        style.body4.color = .green
+        style.body4.semanticColor = nil
+
+        let contract = NodeMarkdownRenderContract.default
+        let body3 = contract.lineStyle(level: 9, prefix: "", documentStyle: style)
+        let body4 = contract.lineStyle(level: 10, prefix: "", documentStyle: style)
+        assert(body3.level == NodeMarkdownStyleRole.body3.level)
+        assert(body4.level == NodeMarkdownStyleRole.body4.level)
+        assert(body3.roleStyle == style.body3)
+        assert(body4.roleStyle == style.body4)
+        assert(colorsMatch(NSColor(body3.roleStyle.renderedColor), NSColor(style.body3.renderedColor)))
+        assert(colorsMatch(NSColor(body4.roleStyle.renderedColor), NSColor(style.body4.renderedColor)))
+    }
+
+    private static func testParagraphBoundaryUsesFollowingNodeTextStyle() {
+        var style = NodeMarkdownDocumentStyle()
+        style.body3.color = .red
+        style.body3.semanticColor = nil
+        style.body4.color = .green
+        style.body4.semanticColor = nil
+        let followingStyle = NodeMarkdownRenderContract.default.lineStyle(
+            level: 10,
+            prefix: "",
+            documentStyle: style
+        )
+        let followingLayout = NodeMarkdownTextKit2RowLayout(
+            rowIndex: 1,
+            range: NSRange(location: 2, length: 1),
+            contentRange: NSRange(location: 2, length: 1),
+            prefix: "",
+            level: 10,
+            lineStyle: followingStyle,
+            spacingBefore: 0,
+            isProtectedH3: false
+        )
+        let text = NSMutableAttributedString(
+            string: "A\nB",
+            attributes: [.foregroundColor: NSColor.red]
+        )
+        NodeMarkdownTextKit2TextView.applyTextAttributesOfFollowingRowToPrecedingSeparator(
+            in: text,
+            followingLayout: followingLayout
+        )
+        guard let separatorColor = text.attribute(
+            .foregroundColor,
+            at: 1,
+            effectiveRange: nil
+        ) as? NSColor else {
+            assertionFailure("Paragraph separator is missing the following Node color")
+            return
+        }
+        assert(colorsMatch(separatorColor, NSColor(style.body4.renderedColor)))
+    }
+
+    private static func testFormulaAndTextShareVisualCenter() {
+        let bounds = NodeMarkdownRenderContract.centeredInlineAttachmentBounds(
+            fontAscender: 45.12,
+            fontDescender: -9.88,
+            width: 488.015,
+            height: 134.882
+        )
+        let textCenter = (45.12 - 9.88) * 0.5
+        assert(abs(bounds.midY - textCenter) < 0.000_001)
+        assert(abs(bounds.minY - (-49.821)) < 0.001)
+        assert(abs(bounds.maxY - 85.061) < 0.001)
+
+        let shortBounds = NodeMarkdownRenderContract.centeredInlineAttachmentBounds(
+            fontAscender: 30,
+            fontDescender: -10,
+            width: 20,
+            height: 16
+        )
+        assert(abs(shortBounds.midY - 10) < 0.000_001)
+    }
+
+    private static func testMarkerUsesMeasuredTextBaseline() {
+        let font = NSFont.systemFont(ofSize: 50)
+        let baseline: CGFloat = 622.472
+        let expected = baseline - (font.ascender + font.descender) * 0.5
+        let measured = NodeMarkdownTextKit2TextView.markerVisualCenterY(
+            textBaselineY: baseline,
+            font: font,
+            fallback: -1
+        )
+        assert(abs(measured - expected) < 0.000_001)
+
+        let fallback = NodeMarkdownTextKit2TextView.markerVisualCenterY(
+            textBaselineY: nil,
+            font: font,
+            fallback: 123
+        )
+        assert(fallback == 123)
+    }
+
+    private static func colorsMatch(_ lhs: NSColor, _ rhs: NSColor) -> Bool {
+        guard let lhsRGB = lhs.usingColorSpace(.deviceRGB),
+              let rhsRGB = rhs.usingColorSpace(.deviceRGB) else { return false }
+        let tolerance = 0.000_001
+        return abs(lhsRGB.redComponent - rhsRGB.redComponent) <= tolerance
+            && abs(lhsRGB.greenComponent - rhsRGB.greenComponent) <= tolerance
+            && abs(lhsRGB.blueComponent - rhsRGB.blueComponent) <= tolerance
+            && abs(lhsRGB.alphaComponent - rhsRGB.alphaComponent) <= tolerance
     }
     #endif
 }

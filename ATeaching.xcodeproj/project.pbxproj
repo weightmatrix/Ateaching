@@ -9,11 +9,13 @@
 /* Begin PBXBuildFile section */
 		8800A9AA2F9D136D00B96C59 /* SwiftMath in Frameworks */ = {isa = PBXBuildFile; productRef = 8800A9A92F9D136D00B96C59 /* SwiftMath */; };
 		8843ECEA2FA4EC7B00626F5B /* TeachingCoursePackageChangeTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8843ECE92FA4EC7B00626F5B /* TeachingCoursePackageChangeTracker.swift */; };
+		88F260812F9E000100000001 /* mathFonts.bundle in Resources */ = {isa = PBXBuildFile; fileRef = 88F260812F9E000200000002 /* mathFonts.bundle */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		8843ECE92FA4EC7B00626F5B /* TeachingCoursePackageChangeTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TeachingCoursePackageChangeTracker.swift; sourceTree = "<group>"; };
 		88C3760F2F95267100093CC3 /* ATeaching.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ATeaching.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		88F260812F9E000200000002 /* mathFonts.bundle */ = {isa = PBXFileReference; lastKnownFileType = wrapper.plug-in; name = mathFonts.bundle; path = Vendor/SwiftMath/Sources/SwiftMath/mathFonts.bundle; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -42,6 +44,7 @@
 				88C376112F95267100093CC3 /* ATeaching */,
 				88C376102F95267100093CC3 /* Products */,
 				8843ECE92FA4EC7B00626F5B /* TeachingCoursePackageChangeTracker.swift */,
+				88F260812F9E000200000002 /* mathFonts.bundle */,
 			);
 			sourceTree = "<group>";
 		};
@@ -121,6 +124,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				88F260812F9E000100000001 /* mathFonts.bundle in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -276,7 +280,7 @@
 				CODE_SIGN_ENTITLEMENTS = ATeaching/ATeaching.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2608102257;
+				CURRENT_PROJECT_VERSION = 2608112205;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = F4L9P953MQ;
 				ENABLE_APP_SANDBOX = YES;
@@ -301,7 +305,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.2608102257;
+				MARKETING_VERSION = 1.2608112205;
 				PRODUCT_BUNDLE_IDENTIFIER = Han.ATeaching;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -324,7 +328,7 @@
 				CODE_SIGN_ENTITLEMENTS = ATeaching/ATeaching.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2608102257;
+				CURRENT_PROJECT_VERSION = 2608112205;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = F4L9P953MQ;
 				ENABLE_APP_SANDBOX = YES;
@@ -349,7 +353,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.2608102257;
+				MARKETING_VERSION = 1.2608112205;
 				PRODUCT_BUNDLE_IDENTIFIER = Han.ATeaching;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;

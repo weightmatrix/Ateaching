@@ -92,7 +92,8 @@ extension NodeMarkdownTextKit2TextView {
         var attributes: [NSAttributedString.Key: Any] = [
             .font: font,
             .foregroundColor: textColor,
-            .paragraphStyle: Self.paragraphStyle(for: layout, font: font)
+            .paragraphStyle: Self.paragraphStyle(for: layout, font: font),
+            .baselineOffset: 0
         ]
         if layout.lineStyle.roleStyle.isUnderline {
             attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue
@@ -103,6 +104,33 @@ extension NodeMarkdownTextKit2TextView {
             range: rowRange
         )
         hideSourcePrefix(in: styled, layout: layout, rowRange: rowRange)
+    }
+
+    static func applyTextAttributesOfFollowingRowToPrecedingSeparator(
+        in styled: NSMutableAttributedString,
+        followingLayout: NodeMarkdownTextKit2RowLayout
+    ) {
+        let separatorLocation = followingLayout.range.location - 1
+        guard separatorLocation >= 0,
+              separatorLocation < styled.length,
+              (styled.string as NSString).character(at: separatorLocation) == 10 else { return }
+
+        let roleStyle = followingLayout.lineStyle.roleStyle
+        var attributes: [NSAttributedString.Key: Any] = [
+            .font: Self.resolvedFont(for: roleStyle),
+            .foregroundColor: NSColor(roleStyle.renderedColor)
+        ]
+        if roleStyle.isUnderline {
+            attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue
+            attributes[.underlineColor] = NSColor.systemBlue
+        } else {
+            attributes[.underlineStyle] = 0
+            attributes[.underlineColor] = NSColor.clear
+        }
+        styled.addAttributes(
+            attributes,
+            range: NSRange(location: separatorLocation, length: 1)
+        )
     }
 
     private func hideSourcePrefix(

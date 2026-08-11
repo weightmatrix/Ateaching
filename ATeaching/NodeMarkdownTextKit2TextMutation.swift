@@ -69,6 +69,11 @@ extension NodeMarkdownTextKit2Coordinator {
         selectedRange: NSRange,
         updatedRowMetadata: [NodeMarkdownTextKitRowMetadata]? = nil
     ) {
+        // 结构操作会创建或移动Node。旧Node草稿必须先按UUID提交，
+        // 否则新行的行号会在旧Node数组上解析，导致焦点和H3归属错位。
+        if updatedRowMetadata != nil {
+            commitActiveNodeSession(reason: "结构事务前")
+        }
         registerUndoSnapshot(for: textView)
         if let updatedRowMetadata {
             rowMetadata = updatedRowMetadata
@@ -78,10 +83,12 @@ extension NodeMarkdownTextKit2Coordinator {
         isApplyingStyleUpdate = false
         let value = textView.documentString()
         rebuildRowLayouts(from: textView, value: value)
+        // 先让新正文、UUID和层级成为唯一Node文档，再按新UUID恢复焦点。
+        // 这保证新行第一次输入时，活动草稿就是新行本身。
+        publishTextChange(value, structural: updatedRowMetadata != nil)
         rememberFocus(in: textView, selection: selectedRange)
         restoreRememberedFocus(in: textView)
         reportActiveRowIfNeeded(from: textView)
-        publishTextChange(value, structural: updatedRowMetadata != nil)
         updateTypingAttributes(for: textView)
         validateTextKit2State(in: textView, deep: true)
     }

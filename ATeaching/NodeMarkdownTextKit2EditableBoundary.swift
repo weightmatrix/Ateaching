@@ -64,7 +64,17 @@ extension NodeMarkdownTextKit2TextView {
         let normalized = normalizedGroups.flatMap { $0 }
         guard !normalized.isEmpty else { return }
         guard normalized.map(\.rangeValue) != selectedRanges.map(\.rangeValue) else { return }
+        let before = selectedRange()
         selectedRanges = normalized
+        if let requested = normalized.first?.rangeValue {
+            NodeMarkdownDiagnostic31.recordSelectionWrite(
+                "normalizeSelectedRangesToEditableContent",
+                before: before,
+                requested: requested,
+                in: self,
+                rowLayouts: nodeMarkdownRowLayouts
+            )
+        }
     }
 
     func editableChangeRange(for affectedRange: NSRange) -> NSRange? {

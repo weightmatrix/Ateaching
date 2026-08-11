@@ -50,13 +50,17 @@ extension NodeMarkdownTextKit2Coordinator {
         guard !isApplyingExternalText,
               !isApplyingStyleUpdate,
               let textView = notification.object as? NodeMarkdownTextKit2TextView else { return }
+        guard !textView.isEnforcingInputMethodAttributes else { return }
         guard !textView.isApplyingQuickInputReplacement else { return }
+        NodeMarkdownDiagnostic31.record("textDidChange进入", in: textView, rowLayouts: rowLayouts)
 
         // 输入法管理的拼音、候选词等只是NSTextStorage中的临时文字。
         // 正式提交前，源码快照、Node层级、附件和SwiftUI绑定一律不动。
         if textView.hasActiveInputMethodComposition {
             clearPendingNativeEdit()
+            applyTypingAttributesToMarkedText(in: textView)
             NodeMarkdownTextKit2Diagnostics.log("输入法事务中：忽略临时textDidChange，等待正式提交。")
+            NodeMarkdownDiagnostic31.record("textDidChange输入法临时态返回", in: textView, rowLayouts: rowLayouts)
             return
         }
 
@@ -80,7 +84,6 @@ extension NodeMarkdownTextKit2Coordinator {
         shouldRefreshCurrentRowAfterTextChange = true
         let quickInputEdit = textView.applyQuickInputIfNeeded(documentStyle: documentStyle)
         if let quickInputEdit {
-            pendingTextEditCharacterDelta += quickInputEdit.characterDelta
             if quickInputEdit.changesLineStructure {
                 pendingTextEditImpact = .document
                 pendingProjectedRowMetadata = projectedMetadata(
@@ -103,8 +106,7 @@ extension NodeMarkdownTextKit2Coordinator {
            updateRowLayoutsAfterCharacterEdit(
                 in: textView,
                 value: value,
-                affectedRange: pendingTextEditAffectedRange,
-                characterDelta: pendingTextEditCharacterDelta
+                affectedRange: pendingTextEditAffectedRange
            ) {
             updateTypingAttributes(for: textView)
         } else {
@@ -114,11 +116,25 @@ extension NodeMarkdownTextKit2Coordinator {
             || documentState.nodes.count != rowLayouts.count
         clearPendingNativeEdit()
         publishTextChange(value, structural: changedStructure)
+        NodeMarkdownDiagnostic31.record("textDidChange发布正文后", in: textView, rowLayouts: rowLayouts)
 
         if shouldRefreshCurrentRow || quickInputEdit != nil {
             refreshCurrentRowStyle(in: textView)
         }
         syncEditingRowWithSelection(in: textView)
+        NodeMarkdownDiagnostic31.record("textDidChange刷新与同步编辑行后", in: textView, rowLayouts: rowLayouts)
+        NodeMarkdownDiagnostic31.recordDeferredState(
+            after: 0,
+            stage: "textDidChange下一轮主队列",
+            in: textView,
+            rowLayouts: { [weak self] in self?.rowLayouts ?? [] }
+        )
+        NodeMarkdownDiagnostic31.recordDeferredState(
+            after: 0.12,
+            stage: "textDidChange后120ms",
+            in: textView,
+            rowLayouts: { [weak self] in self?.rowLayouts ?? [] }
+        )
         validateTextKit2State(in: textView, deep: false)
     }
 
@@ -127,11 +143,13 @@ extension NodeMarkdownTextKit2Coordinator {
         in textView: NodeMarkdownTextKit2TextView
     ) {
         guard !isApplyingExternalText, !isApplyingStyleUpdate else { return }
+        NodeMarkdownDiagnostic31.noteCommittedReplacement(commit.replacement, in: textView, rowLayouts: rowLayouts)
+        NodeMarkdownDiagnostic31.record("输入法正式提交进入", in: textView, rowLayouts: rowLayouts)
+        prepareNodeSessionForTextChange(affectedRange: commit.affectedRange)
         clearPendingNativeEdit()
 
         let sourceBefore = commit.sourceBefore as NSString
         pendingTextEditAffectedRange = commit.affectedRange
-        pendingTextEditCharacterDelta = (commit.replacement as NSString).length - commit.affectedRange.length
         pendingTextEditImpact = classifyTextEditImpact(
             source: sourceBefore,
             affectedRange: commit.affectedRange,
@@ -153,8 +171,7 @@ extension NodeMarkdownTextKit2Coordinator {
            updateRowLayoutsAfterCharacterEdit(
                 in: textView,
                 value: value,
-                affectedRange: commit.affectedRange,
-                characterDelta: pendingTextEditCharacterDelta
+                affectedRange: commit.affectedRange
            ) {
             // 普通中文确认只更新当前Node，并平移后续字符地址。
         } else {
@@ -167,16 +184,31 @@ extension NodeMarkdownTextKit2Coordinator {
         refreshCurrentRowStyle(in: textView)
         syncEditingRowWithSelection(in: textView)
         updateTypingAttributes(for: textView)
+        NodeMarkdownDiagnostic31.record("输入法正式提交完成", in: textView, rowLayouts: rowLayouts)
+        for (delay, label) in [(0.0, "提交后下一轮"), (0.05, "提交后50ms"), (0.25, "提交后250ms"), (1.0, "提交后1s")] {
+            NodeMarkdownDiagnostic31.recordDeferredState(
+                after: delay,
+                stage: label,
+                in: textView,
+                rowLayouts: { [weak self] in self?.rowLayouts ?? [] }
+            )
+        }
         validateTextKit2State(in: textView, deep: false)
     }
 
     func textViewDidChangeSelection(_ notification: Notification) {
         guard !isApplyingExternalText,
               let textView = notification.object as? NodeMarkdownTextKit2TextView else { return }
+        NodeMarkdownDiagnostic31.record(
+            "选区通知 applyingStyle=\(isApplyingStyleUpdate) composition=\(textView.hasActiveInputMethodComposition)",
+            in: textView,
+            rowLayouts: rowLayouts
+        )
 
         if textView.hasActiveInputMethodComposition {
             reportActiveRowIfNeeded(from: textView)
             updateTypingAttributes(for: textView)
+            applyTypingAttributesToMarkedText(in: textView)
             return
         }
 
@@ -195,6 +227,18 @@ extension NodeMarkdownTextKit2Coordinator {
               !isApplyingStyleUpdate,
               let textView = textView as? NodeMarkdownTextKit2TextView else { return true }
 
+        let replacement = replacementString ?? ""
+        NodeMarkdownDiagnostic31.startIfNeeded(
+            in: textView,
+            rowLayouts: rowLayouts,
+            rowMetadata: rowMetadata,
+            affectedRange: affectedCharRange,
+            replacement: replacement
+        )
+        NodeMarkdownDiagnostic31.record("shouldChangeText进入", in: textView, rowLayouts: rowLayouts)
+
+        prepareNodeSessionForTextChange(affectedRange: affectedCharRange)
+
         if textView.hasActiveInputMethodComposition {
             clearPendingNativeEdit()
             return true
@@ -202,15 +246,12 @@ extension NodeMarkdownTextKit2Coordinator {
 
         forgetRememberedFocus()
 
-        let replacement = replacementString ?? ""
         let source = textView.documentString() as NSString
         pendingProjectedSourceText = textView.projectedSourceText(
             replacing: affectedCharRange,
             with: replacement
         )
-        let replacementLength = (replacement as NSString).length
         pendingTextEditAffectedRange = affectedCharRange
-        pendingTextEditCharacterDelta = replacementLength - affectedCharRange.length
         pendingTextEditImpact = classifyTextEditImpact(
             source: source,
             affectedRange: affectedCharRange,
@@ -266,6 +307,7 @@ extension NodeMarkdownTextKit2Coordinator {
             replacement: replacement
         ) else {
             updateTypingAttributes(for: textView)
+            NodeMarkdownDiagnostic31.record("shouldChangeText允许系统写入", in: textView, rowLayouts: rowLayouts)
             return true
         }
 
@@ -287,7 +329,6 @@ extension NodeMarkdownTextKit2Coordinator {
         pendingProjectedRowMetadata = nil
         pendingTextEditImpact = .document
         pendingTextEditAffectedRange = nil
-        pendingTextEditCharacterDelta = 0
         shouldRefreshCurrentRowAfterTextChange = true
     }
 

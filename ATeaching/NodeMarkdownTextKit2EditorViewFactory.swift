@@ -45,7 +45,6 @@ extension NodeMarkdownTextKit2Representable {
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
         scrollView.documentView = textView
-        textView.installNodeMarkdownDiagnostics19(in: scrollView)
         // NSViewRepresentable刚创建时尚未获得SwiftUI分配的尺寸，contentSize此时可能接近0。
         // 不得用这个临时值覆盖TextView的有效初始frame，否则整篇正文会被排进1pt容器而不可见。
         textView.minSize = .zero

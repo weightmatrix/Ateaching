@@ -76,6 +76,9 @@ extension NodeMarkdownTextKit2Coordinator {
             guard let self, let textView else { return }
             self.handlePrimaryClick(in: textView)
         }
+        textView.onRequestSave = { [weak self] in
+            self?.onRequestSave?()
+        }
         textView.onInputMethodCommit = { [weak self, weak textView] commit in
             guard let self, let textView else { return }
             self.finishInputMethodCommit(commit, in: textView)

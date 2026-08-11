@@ -69,6 +69,23 @@ struct NodeMarkdownRenderContract: Hashable {
         let textBaselineOffset: CGFloat
     }
 
+    /// NSTextAttachment的bounds使用基线坐标：正Y在基线上方，负Y在下方。
+    /// 直接以真实字体框和真实图片高度求中心，不使用固定偏移。
+    static func centeredInlineAttachmentBounds(
+        fontAscender: CGFloat,
+        fontDescender: CGFloat,
+        width: CGFloat,
+        height: CGFloat
+    ) -> CGRect {
+        let textCenter = (fontAscender + fontDescender) * 0.5
+        return CGRect(
+            x: 0,
+            y: textCenter - height * 0.5,
+            width: max(0, width),
+            height: max(0, height)
+        )
+    }
+
     /// 公式行只使用真实字体度量和SwiftMath实际图像高度决定行框。
     /// TextKit在扩大的行框中会把普通文字留在基线一侧，因此正文需要抬升
     /// “额外高度的一半”，才能与公式、编号共用同一条视觉中轴。

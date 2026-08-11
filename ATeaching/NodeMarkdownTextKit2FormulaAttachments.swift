@@ -103,6 +103,9 @@ extension NodeMarkdownTextKit2TextView {
             latex: normalizedLatex,
             mode: mode == .display ? 1 : 0,
             fontSize: Int(scaledSize.rounded()),
+            baseFontName: baseFont.fontName,
+            baseFontAscender: Int((baseFont.ascender * 1_000).rounded()),
+            baseFontDescender: Int((baseFont.descender * 1_000).rounded()),
             red: Int((normalizedColor.redComponent * 255).rounded()),
             green: Int((normalizedColor.greenComponent * 255).rounded()),
             blue: Int((normalizedColor.blueComponent * 255).rounded()),
@@ -123,31 +126,19 @@ extension NodeMarkdownTextKit2TextView {
         let result = imageBuilder.asImage()
         guard result.0 == nil, let image = result.1 else { return nil }
 
-        let rawAscent = imageBuilder.mathAscent
-        let rawDescent = imageBuilder.mathDescent
         let rawWidth = image.size.width
-        let axisHeight: CGFloat
-        if mode == .text {
-            axisHeight = baseFont.xHeight * 0.5 * scale
-        } else {
-            axisHeight = (baseFont.ascender + baseFont.descender) * 0.5 * scale
-        }
-
-        // Math axis position from image bottom (MTMathImage centers vertically)
-        let sumHeight = rawAscent + rawDescent
-        let axisFromBottom: CGFloat
-        if sumHeight >= scaledSize * 0.5 {
-            axisFromBottom = rawDescent
-        } else {
-            axisFromBottom = (sumHeight - scaledSize * 0.5) * 0.5 + rawDescent
-        }
-
-        let originY = axisHeight - axisFromBottom
-        let metrics = NodeMarkdownTextKit2FormulaMetrics(
-            baselineAscent: (axisHeight + rawAscent) / scale,
-            baselineDescent: max(0, (rawDescent - axisHeight)) / scale,
+        let imageHeight = image.size.height / scale
+        let centeredBounds = NodeMarkdownRenderContract.centeredInlineAttachmentBounds(
+            fontAscender: baseFont.ascender,
+            fontDescender: baseFont.descender,
             width: rawWidth / scale,
-            imageOriginY: originY / scale
+            height: imageHeight
+        )
+        let metrics = NodeMarkdownTextKit2FormulaMetrics(
+            baselineAscent: max(0, centeredBounds.maxY),
+            baselineDescent: max(0, -centeredBounds.minY),
+            width: centeredBounds.width,
+            imageOriginY: centeredBounds.minY
         )
 
         guard metrics.width > 0, (metrics.baselineAscent + metrics.baselineDescent) > 0 else { return nil }

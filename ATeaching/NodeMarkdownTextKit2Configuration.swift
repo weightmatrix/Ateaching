@@ -30,6 +30,7 @@ extension NodeMarkdownTextKit2Coordinator {
         onDocumentSnapshot: ((NodeMarkdownLegacyDocumentSnapshot) -> Void)?,
         onCommitEditingNode: ((NodeMarkdownLegacyEditingNodeDraft) -> Void)?,
         onEditingDraftDirtyChange: ((Bool) -> Void)?,
+        onRequestSave: (() -> Void)?,
         onInputSessionStateChange: ((Bool) -> Void)?
     ) {
         let incomingMetadataChanged = rowMetadata != self.rowMetadata
@@ -77,6 +78,7 @@ extension NodeMarkdownTextKit2Coordinator {
         self.onDocumentSnapshot = onDocumentSnapshot
         self.onCommitEditingNode = onCommitEditingNode
         self.onEditingDraftDirtyChange = onEditingDraftDirtyChange
+        self.onRequestSave = onRequestSave
         self.onInputSessionStateChange = onInputSessionStateChange
         _ = externalTextSyncToken
     }

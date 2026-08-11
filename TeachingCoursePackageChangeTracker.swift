@@ -27,6 +27,7 @@ final class TeachingCoursePackageChangeTracker {
     private var newPackageOrderedIDs: [String] = []
     private var newPackageIDSet: Set<String> = []
     private var baselineDigestByH3ID: [String: String] = [:]
+    private var diagnostic26MutationSequence: UInt64 = 0
 
     func establishBaseline(document: NodeMarkdownDocument) {
         dirtyPackageIDs.removeAll()
@@ -35,6 +36,10 @@ final class TeachingCoursePackageChangeTracker {
         activeRowSnapshot = nil
         baselineDigestByH3ID = TeachingCoursePackageContentSignature.digestByH3ID(in: document)
         reconcileNewPackageList(with: document)
+        NodeMarkdownDiagnostic26.log(
+            "建立包基线 H3数=\(baselineDigestByH3ID.count) "
+                + "明细=\(baselineDigestByH3ID.keys.map(NodeMarkdownDiagnostic26.shortID).sorted())"
+        )
     }
 
     /// External notebook writes may insert linked lesson packages, but must not redefine the
@@ -187,6 +192,14 @@ final class TeachingCoursePackageChangeTracker {
             document: document,
             structuralIndex: structuralIndex
         )
+        if let snapshot = activeRowSnapshot {
+            NodeMarkdownDiagnostic26.log(
+                "外层行基线 Node=\(NodeMarkdownDiagnostic26.shortID(snapshot.nodeID.uuidString)) "
+                    + "row=\(snapshot.rowIndex) level=\(snapshot.level) "
+                    + "所属H3=\(snapshot.owningH3ID.map(NodeMarkdownDiagnostic26.shortID) ?? "nil") "
+                    + "文字=\(NodeMarkdownDiagnostic26.textSummary(snapshot.text))"
+            )
+        }
     }
 
     func finishTrackingPreviousRow(
@@ -220,7 +233,14 @@ final class TeachingCoursePackageChangeTracker {
             document: document,
             structuralIndex: structuralIndex
         )
-        if snapshot.level != current.level || snapshot.text != current.text {
+        let rowChanged = snapshot.level != current.level || snapshot.text != current.text
+        NodeMarkdownDiagnostic26.log(
+            "外层离行 Node=\(NodeMarkdownDiagnostic26.shortID(snapshot.nodeID.uuidString)) "
+                + "row \(snapshot.rowIndex)->\(current.rowIndex) changed=\(rowChanged) "
+                + "所属H3 \(snapshot.owningH3ID.map(NodeMarkdownDiagnostic26.shortID) ?? "nil")->"
+                + "\(current.owningH3ID.map(NodeMarkdownDiagnostic26.shortID) ?? "nil")"
+        )
+        if rowChanged {
             if let owningH3ID = current.owningH3ID ?? snapshot.owningH3ID {
                 classifyExistingH3Package(h3NodeID: owningH3ID, document: document)
             }
@@ -249,8 +269,11 @@ final class TeachingCoursePackageChangeTracker {
 
     func recordDocumentMutation(
         previousDocument: NodeMarkdownDocument,
-        currentDocument: NodeMarkdownDocument
+        currentDocument: NodeMarkdownDocument,
+        collectNewPackages: Bool = true
     ) -> Int {
+        diagnostic26MutationSequence &+= 1
+        let diagnosticSequence = diagnostic26MutationSequence
         var previousH3ByID: [String: NodeMarkdownNode] = [:]
         for node in previousDocument.nodes where node.level == 3 {
             previousH3ByID[node.id.uuidString] = node
@@ -259,6 +282,13 @@ final class TeachingCoursePackageChangeTracker {
         let currentDigests = TeachingCoursePackageContentSignature.digestByH3ID(in: currentDocument)
         let currentH3Nodes = currentDocument.nodes.filter { $0.level == 3 }
         let currentH3IDs = Set(currentH3Nodes.map { $0.id.uuidString })
+        let digestIDs = Set(previousDigests.keys).union(currentDigests.keys)
+        let changedDigestIDs = digestIDs.filter { previousDigests[$0] != currentDigests[$0] }
+        NodeMarkdownDiagnostic26.log(
+            "追踪事务#\(diagnosticSequence) collectNew=\(collectNewPackages) "
+                + "旧/新Node数=\(previousDocument.nodes.count)/\(currentDocument.nodes.count) "
+                + "内容变化H3=\(changedDigestIDs.map(NodeMarkdownDiagnostic26.shortID).sorted())"
+        )
 
         // Demoted or deleted H3 roots no longer own a package. They must disappear from both
         // queues immediately, especially source-less H3 roots that used to be new packages.
@@ -271,15 +301,29 @@ final class TeachingCoursePackageChangeTracker {
 
         for node in currentH3Nodes {
             let id = node.id.uuidString
+            let wasDirty = dirtyPackageIDs.contains(id)
             if isNewPackageRoot(node) {
                 dirtyPackageIDs.remove(id)
-                addNewPackage(nodeID: id)
+                if collectNewPackages {
+                    addNewPackage(nodeID: id)
+                }
+                if changedDigestIDs.contains(id) {
+                    NodeMarkdownDiagnostic26.log(
+                        "追踪事务#\(diagnosticSequence) H3=\(NodeMarkdownDiagnostic26.shortID(id)) 判定=新包"
+                    )
+                }
                 continue
             }
 
             removeNewPackage(h3NodeID: id)
             guard hasCompleteSourceLink(node), let currentDigest = currentDigests[id] else {
                 dirtyPackageIDs.remove(id)
+                if changedDigestIDs.contains(id) || wasDirty {
+                    NodeMarkdownDiagnostic26.log(
+                        "追踪事务#\(diagnosticSequence) H3=\(NodeMarkdownDiagnostic26.shortID(id)) "
+                            + "判定=来源不完整，移出脏包"
+                    )
+                }
                 continue
             }
 
@@ -288,21 +332,46 @@ final class TeachingCoursePackageChangeTracker {
                    hasCompleteSourceLink(previousNode),
                    let previousDigest = previousDigests[id] {
                     baselineDigestByH3ID[id] = previousDigest
+                    NodeMarkdownDiagnostic26.log(
+                        "追踪事务#\(diagnosticSequence) H3=\(NodeMarkdownDiagnostic26.shortID(id)) "
+                            + "缺基线，用修改前包建立="
+                            + "\(NodeMarkdownDiagnostic26.shortDigest(previousDigest))"
+                    )
                 } else {
                     // A linked package inserted from a lesson plan enters the session clean.
                     baselineDigestByH3ID[id] = currentDigest
+                    NodeMarkdownDiagnostic26.log(
+                        "追踪事务#\(diagnosticSequence) H3=\(NodeMarkdownDiagnostic26.shortID(id)) "
+                            + "缺修改前包，用当前包建立基线="
+                            + "\(NodeMarkdownDiagnostic26.shortDigest(currentDigest))"
+                    )
                 }
             }
 
-            if baselineDigestByH3ID[id] == currentDigest {
+            let baselineDigest = baselineDigestByH3ID[id]
+            if baselineDigest == currentDigest {
                 dirtyPackageIDs.remove(id)
             } else {
                 dirtyPackageIDs.insert(id)
             }
+            if changedDigestIDs.contains(id) || wasDirty != dirtyPackageIDs.contains(id) {
+                NodeMarkdownDiagnostic26.log(
+                    "追踪事务#\(diagnosticSequence) H3=\(NodeMarkdownDiagnostic26.shortID(id)) "
+                        + "previous=\(NodeMarkdownDiagnostic26.shortDigest(previousDigests[id])) "
+                        + "current=\(NodeMarkdownDiagnostic26.shortDigest(currentDigest)) "
+                        + "baseline=\(NodeMarkdownDiagnostic26.shortDigest(baselineDigest)) "
+                        + "判定脏=\(dirtyPackageIDs.contains(id))"
+                )
+            }
         }
 
         baselineDigestByH3ID = baselineDigestByH3ID.filter { currentH3IDs.contains($0.key) }
-        reconcileNewPackageList(with: currentDocument)
+        reconcileNewPackageList(with: currentDocument, discoverNewPackages: collectNewPackages)
+        NodeMarkdownDiagnostic26.log(
+            "追踪事务#\(diagnosticSequence) 结果 脏包="
+                + "\(dirtyPackageIDs.map(NodeMarkdownDiagnostic26.shortID).sorted()) "
+                + "新包=\(newPackageOrderedIDs.map(NodeMarkdownDiagnostic26.shortID))"
+        )
         return localPendingCount()
     }
 
@@ -421,18 +490,25 @@ final class TeachingCoursePackageChangeTracker {
 
     private func classifyH3Package(_ node: NodeMarkdownNode, document: NodeMarkdownDocument) {
         guard node.level == 3 else { return }
+        let shortID = NodeMarkdownDiagnostic26.shortID(node.id.uuidString)
         removeNewPackage(h3NodeID: node.id.uuidString)
         if isNewPackageRoot(node) {
             dirtyPackageIDs.remove(node.id.uuidString)
             addNewPackage(nodeID: node.id.uuidString)
+            NodeMarkdownDiagnostic26.log("单包复核 H3=\(shortID) 判定=新包")
         } else if hasCompleteSourceLink(node) {
             guard let currentDigest = packageDigest(h3NodeID: node.id.uuidString, document: document) else {
                 dirtyPackageIDs.remove(node.id.uuidString)
+                NodeMarkdownDiagnostic26.log("单包复核 H3=\(shortID) 判定=无法生成摘要，移出脏包")
                 return
             }
             guard let baselineDigest = baselineDigestByH3ID[node.id.uuidString] else {
                 baselineDigestByH3ID[node.id.uuidString] = currentDigest
                 dirtyPackageIDs.remove(node.id.uuidString)
+                NodeMarkdownDiagnostic26.log(
+                    "单包复核 H3=\(shortID) 缺基线，用当前包建立="
+                        + "\(NodeMarkdownDiagnostic26.shortDigest(currentDigest))，判定脏=false"
+                )
                 return
             }
             if currentDigest == baselineDigest {
@@ -440,8 +516,14 @@ final class TeachingCoursePackageChangeTracker {
             } else {
                 dirtyPackageIDs.insert(node.id.uuidString)
             }
+            NodeMarkdownDiagnostic26.log(
+                "单包复核 H3=\(shortID) current=\(NodeMarkdownDiagnostic26.shortDigest(currentDigest)) "
+                    + "baseline=\(NodeMarkdownDiagnostic26.shortDigest(baselineDigest)) "
+                    + "判定脏=\(dirtyPackageIDs.contains(node.id.uuidString))"
+            )
         } else {
             dirtyPackageIDs.remove(node.id.uuidString)
+            NodeMarkdownDiagnostic26.log("单包复核 H3=\(shortID) 判定=来源不完整，移出脏包")
         }
     }
 
@@ -521,7 +603,10 @@ final class TeachingCoursePackageChangeTracker {
     }
 
     // 名单长期保留并随编辑事件增删；完整扫描只负责校准，不承担日常发现的唯一职责。
-    private func reconcileNewPackageList(with document: NodeMarkdownDocument) {
+    private func reconcileNewPackageList(
+        with document: NodeMarkdownDocument,
+        discoverNewPackages: Bool = true
+    ) {
         let currentIDs = document.nodes.compactMap { node -> String? in
             isNewPackageRoot(node) ? node.id.uuidString : nil
         }
@@ -531,9 +616,11 @@ final class TeachingCoursePackageChangeTracker {
             newPackageIDSet.formIntersection(currentIDSet)
             newPackageOrderedIDs.removeAll { !currentIDSet.contains($0) }
         }
-        for id in currentIDs where !newPackageIDSet.contains(id) {
-            newPackageIDSet.insert(id)
-            newPackageOrderedIDs.append(id)
+        if discoverNewPackages {
+            for id in currentIDs where !newPackageIDSet.contains(id) {
+                newPackageIDSet.insert(id)
+                newPackageOrderedIDs.append(id)
+            }
         }
     }
 

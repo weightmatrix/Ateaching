@@ -85,6 +85,7 @@ extension NodeMarkdownTextKit2Coordinator {
             forLocation: textView.selectedRange().location,
             in: textView
         ) else { return }
+        textView.nodeMarkdownTypingAttributes = attributes
         textView.typingAttributes = attributes
     }
 
@@ -94,8 +95,11 @@ extension NodeMarkdownTextKit2Coordinator {
         guard let attributes = typingAttributes(forLocation: markedRange.location, in: textView) else {
             return
         }
-        // 只影响后续输入属性，不触碰输入法正在管理的组合文本。
+        textView.nodeMarkdownTypingAttributes = attributes
         textView.typingAttributes = attributes
+        // 输入法可能在setMarkedText内再次写入自己的大字号和蓝色。
+        // 以TextStorage中的真实marked range为准复写受控属性，其他输入法标记保留。
+        textView.enforceCanonicalAttributesOnMarkedText(attributes)
     }
 
     private func typingAttributes(

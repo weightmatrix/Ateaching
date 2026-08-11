@@ -39,6 +39,7 @@ struct NodeMarkdownTextKit2Editor: View {
     var onDocumentSnapshot: ((NodeMarkdownLegacyDocumentSnapshot) -> Void)?
     var onCommitEditingNode: ((NodeMarkdownLegacyEditingNodeDraft) -> Void)?
     var onEditingDraftDirtyChange: ((Bool) -> Void)?
+    var onRequestSave: (() -> Void)?
     var onInputSessionStateChange: ((Bool) -> Void)?
 
     var body: some View {
@@ -69,6 +70,7 @@ struct NodeMarkdownTextKit2Editor: View {
             onDocumentSnapshot: onDocumentSnapshot,
             onCommitEditingNode: onCommitEditingNode,
             onEditingDraftDirtyChange: onEditingDraftDirtyChange,
+            onRequestSave: onRequestSave,
             onInputSessionStateChange: onInputSessionStateChange
         )
         #else
@@ -109,6 +111,7 @@ struct NodeMarkdownTextKit2Representable: NSViewRepresentable {
     var onDocumentSnapshot: ((NodeMarkdownLegacyDocumentSnapshot) -> Void)?
     var onCommitEditingNode: ((NodeMarkdownLegacyEditingNodeDraft) -> Void)?
     var onEditingDraftDirtyChange: ((Bool) -> Void)?
+    var onRequestSave: (() -> Void)?
     var onInputSessionStateChange: ((Bool) -> Void)?
 }
 #endif

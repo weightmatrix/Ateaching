@@ -9,6 +9,9 @@ extension NodeMarkdownTextKit2TextView {
         if handleImagePasteShortcut(event) {
             return true
         }
+        if handleSaveShortcut(event) {
+            return true
+        }
         return super.performKeyEquivalent(with: event)
     }
 
@@ -72,6 +75,19 @@ extension NodeMarkdownTextKit2TextView {
             return false
         }
         onRequestInsertImage?()
+        return true
+    }
+
+    private func handleSaveShortcut(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard flags.contains(.command),
+              !flags.contains(.shift),
+              !flags.contains(.option),
+              !flags.contains(.control),
+              event.charactersIgnoringModifiers?.lowercased() == "s" else {
+            return false
+        }
+        onRequestSave?()
         return true
     }
 

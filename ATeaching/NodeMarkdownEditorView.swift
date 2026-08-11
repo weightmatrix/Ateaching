@@ -13,6 +13,30 @@ import WebKit
 extension Notification.Name {
     static let teachingNotebookDidPersistChange = Notification.Name("TeachingNotebookDidPersistChange")
     static let teachingRequestCloseNotebook = Notification.Name("TeachingRequestCloseNotebook")
+    static let nodeMarkdownCutPackageConsumed = Notification.Name("NodeMarkdownCutPackageConsumed")
+}
+
+/// 只在当前应用进程内共享，供两个同时打开的教案窗口完成剪切粘贴。
+/// Node UUID与包内顺序原样保留，不经过普通文本剪贴板重新解析。
+@MainActor
+private final class NodeMarkdownPackageCutClipboard {
+    struct Payload {
+        let sourceFileURL: URL
+        let sourceEditorID: String
+        let sourceOriginalIndex: Int
+        let nodes: [NodeMarkdownNode]
+    }
+
+    static let shared = NodeMarkdownPackageCutClipboard()
+    private(set) var payload: Payload?
+
+    func store(_ payload: Payload) {
+        self.payload = payload
+    }
+
+    func clear() {
+        payload = nil
+    }
 }
 
 // MARK: - NodeMarkdown编辑器页面 - v1 - 独立Web渲染骨架并预留后续原生编辑覆盖层
@@ -207,6 +231,13 @@ struct NodeMarkdownEditorView: View {
                 return
             }
             dismiss()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .nodeMarkdownCutPackageConsumed)) { notification in
+            guard let sourceEditorID = notification.userInfo?["sourceEditorID"] as? String,
+                  sourceEditorID == editorInstanceID else { return }
+            pendingCutPackageNodes = []
+            pendingCutPackageOriginalIndex = nil
+            statusMessage = "剪切包已在另一个教案中粘贴"
         }
         .onDisappear {
             legacyDraftCommitController.commitPendingEditing()
@@ -683,6 +714,7 @@ struct NodeMarkdownEditorView: View {
             },
             canPasteNodePackage: {
                 !pendingCutPackageNodes.isEmpty
+                    || (isLessonPlanEditor && NodeMarkdownPackageCutClipboard.shared.payload != nil)
             },
             onRequestDeleteProtectedH3AtRow: { rowIndex in
                 deleteProtectedH3PackageAtRow(rowIndex)
@@ -701,13 +733,16 @@ struct NodeMarkdownEditorView: View {
                 }
             },
             onDocumentSnapshot: { snapshot in
-                queueLegacyDocumentSnapshot(snapshot)
+                applyTextKit2DocumentSnapshot(snapshot)
             },
             onCommitEditingNode: { draft in
                 commitLegacyEditingNode(draft)
             },
             onEditingDraftDirtyChange: { isDirty in
                 handleLegacyEditingDraftDirtyChange(isDirty)
+            },
+            onRequestSave: {
+                saveToDisk()
             },
             onInputSessionStateChange: { isActive in
                 isTextInputSessionActive = isActive
@@ -745,6 +780,7 @@ struct NodeMarkdownEditorView: View {
             },
             canPasteNodePackage: {
                 !pendingCutPackageNodes.isEmpty
+                    || (isLessonPlanEditor && NodeMarkdownPackageCutClipboard.shared.payload != nil)
             },
             onRequestDeleteProtectedH3AtRow: { rowIndex in
                 deleteProtectedH3PackageAtRow(rowIndex)
@@ -1216,6 +1252,46 @@ struct NodeMarkdownEditorView: View {
         queueTextKitParse(with: newText, rowMetadataSnapshot: textKitDraftRowMetadata)
     }
 
+    /// TextKit2结构操作必须在当前事件中立即安装到外层文档。
+    /// 如果像旧管线那样防抖，新行的UUID会在第一次输入和离行时尚未存在，
+    /// 进而丢失焦点、脏包和新包归属。
+    private func applyTextKit2DocumentSnapshot(_ snapshot: NodeMarkdownLegacyDocumentSnapshot) {
+        guard !isNotebookWriteOperationInProgress else { return }
+        pendingTextKitParseTask?.cancel()
+        textKitParseGeneration &+= 1
+        latestLegacyDocumentSnapshot = snapshot
+
+        let previousDocument = document
+        var parsed = NodeMarkdownPlainTextCodec.parse(
+            snapshot: snapshot,
+            previousNodes: previousDocument.nodes
+        )
+        _ = parsed.restoreMissingH3SourceLinks(from: previousDocument)
+        _ = parsed.touchChangedH3Packages(comparedTo: previousDocument)
+        parsed.propagateChildMtimeToH3Roots()
+
+        document = parsed
+        synchronizeDocumentIndex(
+            previousDocument: previousDocument,
+            currentDocument: parsed,
+            activeRowIndex: activeEditorRowIndex
+        )
+        textKitDraft = snapshot.plainText
+        textKitDraftRowMetadata = makeTextKitRowMetadata(for: parsed)
+        cleanupUnusedImageAssets(previousDocument: previousDocument, currentDocument: parsed)
+        if isClassSessionEditor {
+            _ = packageChangeTracker.recordDocumentMutation(
+                previousDocument: previousDocument,
+                currentDocument: parsed,
+                collectNewPackages: false
+            )
+            refreshLocalPackageListsAndLight()
+        }
+        markDocumentDirty()
+        scheduleSnapshotRebuild()
+        rebuildSearchResults()
+    }
+
     /// 旧管线结构操作的唯一入口。正文和Node身份已经封装在同一份带版本快照中，
     /// 父页不得再分别读取`textKitDraft`和`textKitDraftRowMetadata`来拼装一次修改。
     private func queueLegacyDocumentSnapshot(_ snapshot: NodeMarkdownLegacyDocumentSnapshot) {
@@ -1282,12 +1358,23 @@ struct NodeMarkdownEditorView: View {
         guard let nodeID = UUID(uuidString: draft.nodeID),
               let rowIndex = documentIndex.row(for: nodeID),
               document.nodes.indices.contains(rowIndex) else {
+            NodeMarkdownDiagnostic26.log(
+                "外层提交失败 Node=\(NodeMarkdownDiagnostic26.shortID(draft.nodeID)) 原因=文档中找不到UUID"
+            )
             statusMessage = "编辑行身份已失效，本次内容未写入。"
             return
         }
 
         let previousDocument = document
         let previousNode = previousDocument.nodes[rowIndex]
+        let previousOwnerID = previousDocument.owningH3Index(
+            for: rowIndex,
+            structuralIndex: documentIndex
+        ).flatMap { ownerRow in
+            previousDocument.nodes.indices.contains(ownerRow)
+                ? previousDocument.nodes[ownerRow].id.uuidString
+                : nil
+        }
         let requestedLevel = max(1, min(12, draft.level))
         let level = previousNode.level == 3
             && !previousNode.sourceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -1308,10 +1395,33 @@ struct NodeMarkdownEditorView: View {
             sourceFile = ""
         }
 
-        guard previousNode.level != level
-                || previousNode.text != draft.content
-                || previousNode.sourceID != sourceID
-                || previousNode.sourceFile != sourceFile else { return }
+        let nodeChanged = previousNode.level != level
+            || previousNode.text != draft.content
+            || previousNode.sourceID != sourceID
+            || previousNode.sourceFile != sourceFile
+        NodeMarkdownDiagnostic26.log(
+            "外层提交 Node=\(NodeMarkdownDiagnostic26.shortID(draft.nodeID)) row=\(rowIndex) "
+                + "所属H3=\(previousOwnerID.map(NodeMarkdownDiagnostic26.shortID) ?? "nil") "
+                + "changed=\(nodeChanged) level \(previousNode.level)->\(level) "
+                + "Source \(!previousNode.sourceID.isEmpty && !previousNode.sourceFile.isEmpty)->\(!sourceID.isEmpty && !sourceFile.isEmpty) "
+                + "文字 \(NodeMarkdownDiagnostic26.textSummary(previousNode.text)) -> "
+                + "\(NodeMarkdownDiagnostic26.textSummary(draft.content))"
+        )
+        guard nodeChanged else {
+            // 新建H3可能在结构事务中已经写入文档，离行时根本没有文字差异。
+            // 会话边界仍要扫描这个无来源H3，而不是在Tab或回车的中间状态收集。
+            if isClassSessionEditor,
+               level == 3,
+               sourceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               sourceFile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                _ = packageChangeTracker.recordDocumentMutation(
+                    previousDocument: previousDocument,
+                    currentDocument: previousDocument
+                )
+                refreshLocalPackageListsAndLight()
+            }
+            return
+        }
 
         pendingTextKitParseTask?.cancel()
         latestLegacyDocumentSnapshot = nil
@@ -1342,6 +1452,11 @@ struct NodeMarkdownEditorView: View {
             _ = packageChangeTracker.recordDocumentMutation(
                 previousDocument: previousDocument,
                 currentDocument: updatedDocument
+            )
+            NodeMarkdownDiagnostic26.log(
+                "外层追踪结果 Node=\(NodeMarkdownDiagnostic26.shortID(draft.nodeID)) "
+                    + "脏包=\(packageChangeTracker.dirtyPackageIDList().map(NodeMarkdownDiagnostic26.shortID).sorted()) "
+                    + "新包=\(packageChangeTracker.newPackageIDList().map(NodeMarkdownDiagnostic26.shortID))"
             )
             refreshLocalPackageListsAndLight()
         }
@@ -1542,6 +1657,17 @@ struct NodeMarkdownEditorView: View {
         activeClassSession != nil
     }
 
+    private var isLessonPlanEditor: Bool {
+        let type = fileMeta.type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if type == "lessonplan" { return true }
+        guard let workspace = try? ArchiveStorage.ensureWorkspace() else { return false }
+        let lessonRoot = workspace
+            .appendingPathComponent(ArchiveStorage.systemFolderName, isDirectory: true)
+            .appendingPathComponent(ArchiveStorage.teachingPlanFolderName, isDirectory: true)
+            .standardizedFileURL.path
+        return fileURL.standardizedFileURL.path.hasPrefix(lessonRoot + "/")
+    }
+
     private var activeClassSession: TeachingClassSessionCenter.Session? {
         _ = classSessionRefreshToken
         guard let session = TeachingClassSessionCenter.shared.session else { return nil }
@@ -1709,6 +1835,9 @@ struct NodeMarkdownEditorView: View {
             isEditing: isTextInputSessionActive,
             activeNodeID: activeNodeID
         )
+        NodeMarkdownDiagnostic33.record(
+            "随堂锚点冻结 editing=\(isTextInputSessionActive) activeNode=\(activeNodeID?.uuidString ?? "nil") result=\(String(describing: pendingCourseInsertAnchor))"
+        )
     }
 
     private func applyCoursePickedRows(_ rows: [ChecklistTemplateRow], completionChecklistPath: String?) {
@@ -1743,6 +1872,9 @@ struct NodeMarkdownEditorView: View {
                 await MainActor.run {
                     let undoHint = summary.canUndo ? "（可撤销）" : ""
                     statusMessage = "插入完成：成功\(summary.insertedPackageCount) 跳过\(summary.skippedPackageCount)\(undoHint)"
+                    NodeMarkdownDiagnostic33.record(
+                        "随堂插入 anchor=\(String(describing: insertionAnchor)) inserted=\(summary.insertedPackageCount) skipped=\(summary.skippedPackageCount) firstRow=\(summary.firstInsertedRowIndex.map(String.init) ?? "nil") preserveNode=\(insertionActiveNodeID?.uuidString ?? "nil")"
+                    )
                     refreshNotebookFromDiskAfterExternalWrite(
                         preserveActiveNodeID: insertionActiveNodeID,
                         failureMessagePrefix: "插入完成，但刷新失败"
@@ -2174,7 +2306,8 @@ struct NodeMarkdownEditorView: View {
             NodeMarkdownTOCPanelView(
                 headings: headings,
                 expandMode: $tocExpandMode,
-                allowsReordering: activeClassSession?.kind == .teaching,
+                allowsReordering: !isReadOnlyRendered
+                    && (activeClassSession?.kind == .teaching || isLessonPlanEditor),
                 onMove: moveNodePackageFromTOC
             ) { selected in
                 activeSearchRowIndex = selected.rowIndex
@@ -2519,11 +2652,69 @@ struct NodeMarkdownEditorView: View {
         scheduleSnapshotRebuild()
         rebuildSearchResults()
         refreshLocalPackageListsAndLight()
-        statusMessage = "已删除节点包"
+        let completionReset = resetCompletionRowsForRemovedPackages(
+            removedNodes,
+            remainingDocument: document
+        )
+        NodeMarkdownDiagnostic33.record(
+            "包删除 rootRow=\(rowIndex) removedNodes=\(removedNodes.count) removedH3=\(removedNodes.filter { $0.level == 3 }.map { $0.id.uuidString }) resetChecklist=\(completionReset.count) error=\(completionReset.error ?? "none")"
+        )
+        if let error = completionReset.error {
+            statusMessage = "已删除节点包，但完成清单回退失败：\(error)"
+        } else if completionReset.count > 0 {
+            statusMessage = "已删除节点包，完成清单退回\(completionReset.count)项未完成"
+        } else {
+            statusMessage = "已删除节点包"
+        }
+    }
+
+    /// 一次包删除可以同时包含多个H3。只对真正从文档消失的非空已入库H3回退完成状态；
+    /// 如果同一母本包仍在随堂笔记中，完成清单保持完成。
+    private func resetCompletionRowsForRemovedPackages(
+        _ removedNodes: [NodeMarkdownNode],
+        remainingDocument: NodeMarkdownDocument
+    ) -> (count: Int, error: String?) {
+        guard isClassSessionEditor, let student = resolveStudentForNotebook() else { return (0, nil) }
+        let remainingKeys = Set(remainingDocument.nodes.compactMap { node -> String? in
+            guard node.level == 3 else { return nil }
+            let sourceFile = node.sourceFile.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let sourceID = node.sourceID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !sourceFile.isEmpty, !sourceID.isEmpty else { return nil }
+            return "\(sourceFile)#\(sourceID)"
+        })
+        let removedRoots = removedNodes.filter { node in
+            guard node.level == 3,
+                  !node.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+            let sourceFile = node.sourceFile.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let sourceID = node.sourceID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !sourceFile.isEmpty, !sourceID.isEmpty else { return false }
+            return !remainingKeys.contains("\(sourceFile)#\(sourceID)")
+        }
+        guard !removedRoots.isEmpty else { return (0, nil) }
+        do {
+            let count = try TeachingCourseWorkflowService.markLessonPackagesIncomplete(
+                student: student,
+                removedH3Roots: removedRoots
+            )
+            return (count, nil)
+        } catch {
+            TeachingDebugLogStore.append(
+                "2-33 包删除已完成，但完成清单回退失败：\(error.localizedDescription)",
+                category: "NodeMarkdown.2-33"
+            )
+            return (0, error.localizedDescription)
+        }
     }
 
     private func cutNodePackageAtRow(_ rowIndex: Int) {
+        commitPendingDraftBeforeSyncIfNeeded()
         guard let packageRange = packageRangeForNodePackage(at: rowIndex) else { return }
+        if isLessonPlanEditor,
+           let existing = NodeMarkdownPackageCutClipboard.shared.payload,
+           existing.sourceEditorID != editorInstanceID {
+            statusMessage = "另一个教案还有未粘贴的剪切包，请先处理。"
+            return
+        }
         let previousDocument = document
         pendingCutPackageNodes = Array(document.nodes[packageRange])
         pendingCutPackageOriginalIndex = packageRange.lowerBound
@@ -2533,6 +2724,32 @@ struct NodeMarkdownEditorView: View {
         }
         _ = document.ensureTrailingBlankLine(defaultLevel: min(12, max(1, document.nodes.last?.level ?? 1)))
         documentIndex.rebuild(from: document.nodes)
+
+        if isLessonPlanEditor {
+            do {
+                try NodeMarkdownIdentityPolicy.validateForPersistence(document)
+                try NodeMarkdownFileManager.write(document: document, meta: fileMeta, to: fileURL)
+                NodeMarkdownPackageCutClipboard.shared.store(
+                    .init(
+                        sourceFileURL: fileURL.standardizedFileURL,
+                        sourceEditorID: editorInstanceID,
+                        sourceOriginalIndex: packageRange.lowerBound,
+                        nodes: pendingCutPackageNodes
+                    )
+                )
+                NodeMarkdownDiagnostic33.record(
+                    "教案剪切 source=\(fileURL.path) range=\(packageRange) nodes=\(pendingCutPackageNodes.count) h3=\(pendingCutPackageNodes.filter { $0.level == 3 }.map { $0.id.uuidString })"
+                )
+            } catch {
+                document = previousDocument
+                documentIndex.rebuild(from: document.nodes)
+                pendingCutPackageNodes = []
+                pendingCutPackageOriginalIndex = nil
+                statusMessage = "剪切失败，源教案未改动：\(error.localizedDescription)"
+                return
+            }
+        }
+
         refreshTextKitDraftFromDocument(forceExternalSync: true)
         if isClassSessionEditor {
             _ = packageChangeTracker.recordRemovedNodePackage(
@@ -2542,6 +2759,10 @@ struct NodeMarkdownEditorView: View {
             )
         }
         markDocumentDirty()
+        if isLessonPlanEditor {
+            persistedDocumentRevision = documentRevision
+            saveState = .clean
+        }
         scheduleSnapshotRebuild()
         rebuildSearchResults()
         refreshLocalPackageListsAndLight()
@@ -2549,14 +2770,16 @@ struct NodeMarkdownEditorView: View {
     }
 
     private func pasteNodePackageAfterRow(_ rowIndex: Int) {
-        guard !pendingCutPackageNodes.isEmpty else {
+        let sharedPayload = isLessonPlanEditor ? NodeMarkdownPackageCutClipboard.shared.payload : nil
+        let nodesToPaste = sharedPayload?.nodes ?? pendingCutPackageNodes
+        guard !nodesToPaste.isEmpty else {
             statusMessage = "没有可粘贴的节点包"
             return
         }
         guard document.nodes.indices.contains(rowIndex) else { return }
         guard let packageRange = packageRangeForNodePackage(at: rowIndex) else { return }
         if let collision = NodeMarkdownIdentityPolicy.firstCollision(
-            inserting: pendingCutPackageNodes,
+            inserting: nodesToPaste,
             into: document
         ) {
             statusMessage = "粘贴已停止：目标文档已存在UUID \(collision.uuidString)"
@@ -2564,11 +2787,42 @@ struct NodeMarkdownEditorView: View {
         }
         let previousDocument = document
         let insertIndex = packageRange.upperBound
-        document.nodes.insert(contentsOf: pendingCutPackageNodes, at: insertIndex)
-        pendingCutPackageNodes = []
-        pendingCutPackageOriginalIndex = nil
+        document.nodes.insert(contentsOf: nodesToPaste, at: insertIndex)
         _ = document.ensureTrailingBlankLine(defaultLevel: min(12, max(1, document.nodes.last?.level ?? 1)))
         documentIndex.rebuild(from: document.nodes)
+
+        var relinkedNotebookCount = 0
+        if let sharedPayload {
+            do {
+                try NodeMarkdownIdentityPolicy.validateForPersistence(document)
+                try NodeMarkdownFileManager.write(document: document, meta: fileMeta, to: fileURL)
+                if sharedPayload.sourceFileURL.standardizedFileURL.path != fileURL.standardizedFileURL.path {
+                    let movedH3IDs = Set(nodesToPaste.lazy.filter { $0.level == 3 }.map(\.id))
+                    relinkedNotebookCount = try TeachingCourseWorkflowService.relinkNotebookPackagesAfterLessonMove(
+                        h3RootIDs: movedH3IDs,
+                        destinationLessonFileURL: fileURL
+                    )
+                }
+            } catch {
+                document = previousDocument
+                documentIndex.rebuild(from: document.nodes)
+                try? NodeMarkdownFileManager.write(document: previousDocument, meta: fileMeta, to: fileURL)
+                statusMessage = "粘贴失败，目标教案已回退：\(error.localizedDescription)"
+                return
+            }
+
+            NodeMarkdownPackageCutClipboard.shared.clear()
+            NotificationCenter.default.post(
+                name: .nodeMarkdownCutPackageConsumed,
+                object: nil,
+                userInfo: ["sourceEditorID": sharedPayload.sourceEditorID]
+            )
+            NodeMarkdownDiagnostic33.record(
+                "教案粘贴 source=\(sharedPayload.sourceFileURL.path) target=\(fileURL.path) nodes=\(nodesToPaste.count) relinkedNotebooks=\(relinkedNotebookCount)"
+            )
+        }
+        pendingCutPackageNodes = []
+        pendingCutPackageOriginalIndex = nil
         refreshTextKitDraftFromDocument(forceExternalSync: true)
         if isClassSessionEditor {
             _ = packageChangeTracker.recordParseMutation(
@@ -2578,10 +2832,16 @@ struct NodeMarkdownEditorView: View {
             )
         }
         markDocumentDirty()
+        if sharedPayload != nil {
+            persistedDocumentRevision = documentRevision
+            saveState = .clean
+        }
         scheduleSnapshotRebuild()
         rebuildSearchResults()
         refreshLocalPackageListsAndLight()
-        statusMessage = "已粘贴节点包"
+        statusMessage = relinkedNotebookCount > 0
+            ? "已粘贴节点包，并重连\(relinkedNotebookCount)个随堂H3包"
+            : "已粘贴节点包"
     }
 
     /// 目录拖动与剪切粘贴使用完全相同的“节点包”边界。源包从原位置移除后，
@@ -2637,6 +2897,9 @@ struct NodeMarkdownEditorView: View {
         rebuildSearchResults()
         refreshLocalPackageListsAndLight()
         statusMessage = "已移动节点包"
+        NodeMarkdownDiagnostic33.record(
+            "目录拖动 file=\(fileURL.path) source=\(sourceID.uuidString) target=\(targetID.uuidString) movedNodes=\(movingNodes.count)"
+        )
         return true
     }
 
@@ -3015,8 +3278,21 @@ struct NodeMarkdownEditorView: View {
         document.nodes.insert(contentsOf: pendingCutPackageNodes, at: insertIndex)
         pendingCutPackageNodes = []
         pendingCutPackageOriginalIndex = nil
+        if NodeMarkdownPackageCutClipboard.shared.payload?.sourceEditorID == editorInstanceID {
+            NodeMarkdownPackageCutClipboard.shared.clear()
+        }
         _ = document.ensureTrailingBlankLine(defaultLevel: min(12, max(1, document.nodes.last?.level ?? 1)))
         documentIndex.rebuild(from: document.nodes)
+        var lessonRollbackPersisted = !isLessonPlanEditor
+        if isLessonPlanEditor {
+            do {
+                try NodeMarkdownIdentityPolicy.validateForPersistence(document)
+                try NodeMarkdownFileManager.write(document: document, meta: fileMeta, to: fileURL)
+                lessonRollbackPersisted = true
+            } catch {
+                statusMessage = "剪切包已回到界面，但教案落盘失败：\(error.localizedDescription)"
+            }
+        }
         refreshTextKitDraftFromDocument(forceExternalSync: true)
         if isClassSessionEditor {
             _ = packageChangeTracker.recordParseMutation(
@@ -3027,9 +3303,15 @@ struct NodeMarkdownEditorView: View {
             refreshLocalPackageListsAndLight()
         }
         markDocumentDirty()
+        if isLessonPlanEditor, lessonRollbackPersisted {
+            persistedDocumentRevision = documentRevision
+            saveState = .clean
+        }
         scheduleSnapshotRebuild()
         rebuildSearchResults()
-        statusMessage = "已回退剪切包"
+        if lessonRollbackPersisted {
+            statusMessage = "已回退剪切包"
+        }
     }
 
     @MainActor
@@ -3719,6 +4001,9 @@ private struct NodeMarkdownTOCPanelView: View {
     @State private var searchText = ""
     @State private var expandedL1NodeIDs: Set<UUID> = []
     @State private var dropTargetNodeID: UUID?
+    @State private var rowFrames: [UUID: CGRect] = [:]
+    @State private var scrollViewportHeight: CGFloat = 0
+    @State private var autoScrollTask: Task<Void, Never>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -3738,11 +4023,43 @@ private struct NodeMarkdownTOCPanelView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(displayHeadings) { heading in
-                            headingRow(heading)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(displayHeadings) { heading in
+                                headingRow(heading)
+                                    .id(heading.nodeID)
+                                    .background {
+                                        GeometryReader { geometry in
+                                            Color.clear.preference(
+                                                key: NodeMarkdownTOCRowFramePreferenceKey.self,
+                                                value: [heading.nodeID: geometry.frame(in: .named("NodeMarkdownTOCScroll"))]
+                                            )
+                                        }
+                                    }
+                            }
                         }
+                    }
+                    .coordinateSpace(name: "NodeMarkdownTOCScroll")
+                    .background {
+                        GeometryReader { geometry in
+                            Color.clear
+                                .onAppear { scrollViewportHeight = geometry.size.height }
+                                .onChange(of: geometry.size.height) { _, height in
+                                    scrollViewportHeight = height
+                                }
+                        }
+                    }
+                    .onPreferenceChange(NodeMarkdownTOCRowFramePreferenceKey.self) { frames in
+                        rowFrames = frames
+                        updateAutoScroll(using: proxy)
+                    }
+                    .onChange(of: dropTargetNodeID) { _, _ in
+                        updateAutoScroll(using: proxy)
+                    }
+                    .onDisappear {
+                        autoScrollTask?.cancel()
+                        autoScrollTask = nil
                     }
                 }
             }
@@ -3763,7 +4080,7 @@ private struct NodeMarkdownTOCPanelView: View {
         case .l1:
             return headings.filter { heading in
                 if heading.level == 1 { return true }
-                guard heading.level > 1 else { return false }
+                guard heading.level > 1, heading.level <= 3 else { return false }
                 guard let root = parentL1(for: heading) else { return false }
                 return expandedL1NodeIDs.contains(root.nodeID)
             }
@@ -3851,6 +4168,35 @@ private struct NodeMarkdownTOCPanelView: View {
         } else {
             row
         }
+    }
+
+    private func updateAutoScroll(using proxy: ScrollViewProxy) {
+        autoScrollTask?.cancel()
+        autoScrollTask = nil
+        guard let targetID = dropTargetNodeID,
+              let frame = rowFrames[targetID],
+              scrollViewportHeight > 0,
+              frame.maxY >= scrollViewportHeight - 56,
+              let startIndex = displayHeadings.firstIndex(where: { $0.nodeID == targetID }) else { return }
+
+        autoScrollTask = Task { @MainActor in
+            var index = startIndex
+            while !Task.isCancelled, dropTargetNodeID != nil, index < displayHeadings.count - 1 {
+                index = min(displayHeadings.count - 1, index + 5)
+                withAnimation(.linear(duration: 0.08)) {
+                    proxy.scrollTo(displayHeadings[index].nodeID, anchor: .bottom)
+                }
+                try? await Task.sleep(for: .milliseconds(85))
+            }
+        }
+    }
+}
+
+private struct NodeMarkdownTOCRowFramePreferenceKey: PreferenceKey {
+    static var defaultValue: [UUID: CGRect] = [:]
+
+    static func reduce(value: inout [UUID: CGRect], nextValue: () -> [UUID: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
     }
 }
 

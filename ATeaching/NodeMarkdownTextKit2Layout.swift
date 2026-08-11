@@ -75,6 +75,58 @@ enum NodeMarkdownTextKit2TransientLayoutProjection {
     }
 }
 
+enum NodeMarkdownTextKit2RowLayoutReconciler {
+    static func replacingRow(
+        in layouts: [NodeMarkdownTextKit2RowLayout],
+        rowIndex: Int,
+        with rebuiltRow: NodeMarkdownTextKit2RowLayout,
+        documentLength: Int
+    ) -> [NodeMarkdownTextKit2RowLayout]? {
+        guard layouts.indices.contains(rowIndex),
+              rebuiltRow.rowIndex == rowIndex,
+              rebuiltRow.range.exact(toLength: documentLength) != nil,
+              rebuiltRow.contentRange.exact(toLength: documentLength) != nil else {
+            return nil
+        }
+        if rowIndex > 0 {
+            guard NSMaxRange(layouts[rowIndex - 1].range) == rebuiltRow.range.location else {
+                return nil
+            }
+        } else if rebuiltRow.range.location != 0 {
+            return nil
+        }
+
+        var reconciled = layouts
+        reconciled[rowIndex] = rebuiltRow
+        if rowIndex + 1 < reconciled.count {
+            let followingStart = reconciled[rowIndex + 1].range.location
+            let realFollowingStart = NSMaxRange(rebuiltRow.range)
+            let requiredOffset = realFollowingStart - followingStart
+            if requiredOffset != 0 {
+                for index in (rowIndex + 1)..<reconciled.count {
+                    guard reconciled[index].range.location + requiredOffset >= 0,
+                          reconciled[index].contentRange.location + requiredOffset >= 0 else {
+                        return nil
+                    }
+                    reconciled[index] = reconciled[index].offsetBy(requiredOffset)
+                }
+            }
+        }
+
+        var expectedLocation = 0
+        for layout in reconciled {
+            guard layout.range.location == expectedLocation,
+                  layout.range.exact(toLength: documentLength) != nil,
+                  layout.contentRange.exact(toLength: documentLength) != nil else {
+                return nil
+            }
+            expectedLocation = NSMaxRange(layout.range)
+        }
+        guard expectedLocation == documentLength else { return nil }
+        return reconciled
+    }
+}
+
 enum NodeMarkdownTextKit2FormulaRenderMode: Hashable {
     case display
     case text
@@ -84,6 +136,9 @@ struct NodeMarkdownTextKit2FormulaAttachmentCacheKey: Hashable {
     let latex: String
     let mode: Int
     let fontSize: Int
+    let baseFontName: String
+    let baseFontAscender: Int
+    let baseFontDescender: Int
     let red: Int
     let green: Int
     let blue: Int
