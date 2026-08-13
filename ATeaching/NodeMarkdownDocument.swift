@@ -175,7 +175,7 @@ struct NodeMarkdownDocument: Hashable, Codable {
                 }
                 h3RootIndex = index
                 maxChildMtime = nil
-            } else if node.level > 3, let root = h3RootIndex {
+            } else if node.level > 3, h3RootIndex != nil {
                 if maxChildMtime == nil || node.mtimeCache > maxChildMtime! {
                     maxChildMtime = node.mtimeCache
                 }

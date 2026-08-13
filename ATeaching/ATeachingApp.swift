@@ -149,10 +149,45 @@ private enum ATeachingExternalMarkdownOpenRouter {
 
 @MainActor
 private final class ATeachingMacApplicationDelegate: NSObject, NSApplicationDelegate {
+    #if DEBUG
+    private var screenCastListenerProbe: ScreenCastService?
+    #endif
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--screen-cast-listener-probe") {
+            runScreenCastListenerProbe()
+            return
+        }
+        #endif
         Task { await ATeachingLaunchBootstrapper.bootstrapIfNeeded() }
         ATeachingMacLaunchMainWindowGate.scheduleAutomaticOpenIfNeeded()
     }
+
+    #if DEBUG
+    private func runScreenCastListenerProbe() {
+        let service = ScreenCastService()
+        screenCastListenerProbe = service
+        ScreenCastDiagnostic40.record("自动自检开始：验证签名App内NWListener可进入ready", instanceID: service.diagnosticID)
+        service.startCasting(pin: "4040", name: "ATeaching Listener Probe")
+
+        Task { @MainActor [weak self] in
+            for _ in 0..<50 {
+                try? await Task.sleep(for: .milliseconds(100))
+                if service.statusMessage == "投屏中，等待接收端" || service.mode == .idle {
+                    break
+                }
+            }
+            ScreenCastDiagnostic40.record(
+                "自动自检结束：状态=\(service.statusMessage) 模式=\(String(describing: service.mode))",
+                instanceID: service.diagnosticID
+            )
+            service.stopAll(reason: "自动自检完成")
+            self?.screenCastListenerProbe = nil
+            NSApplication.shared.terminate(nil)
+        }
+    }
+    #endif
 
     func application(_ application: NSApplication, open urls: [URL]) {
         ATeachingExternalMarkdownOpenRouter.enqueue(urls)

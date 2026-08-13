@@ -20,6 +20,12 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>用于在同一 Wi-Fi 内发现并连接 ATeaching 投屏设备。</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_ateaching-cast._tcp</string>
+	</array>
 	<key>CFBundleDocumentTypes</key>
 	<array>
 		<dict>

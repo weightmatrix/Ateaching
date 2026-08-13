@@ -79,7 +79,7 @@ let appleSystemMonospacedFontName = "Apple System Monospaced"
 // MARK: - Markdown编辑器性能探针 - v1 - 为TextKit2迁移前建立输入渲染边界画像
 private enum MarkdownEditorPerformanceProbe {
     static var isEnabled: Bool {
-        TeachingDebugLogStore.isLayoutJitterLogsEnabled()
+        false
     }
 
     static func start() -> CFAbsoluteTime {
@@ -141,6 +141,167 @@ private enum MarkdownEditorPerformanceProbe {
         return "small"
     }
 }
+
+#if os(macOS)
+/// Permanent diagnostic for ordinary Markdown TextKit2 typing and scrolling.
+/// Keep this when cleaning temporary diagnostics; it is the long-document performance baseline.
+@MainActor
+private enum MarkdownTextKit2Diagnostic38 {
+    struct Session {
+        let id: Int
+        let startedAt: UInt64
+        var lastInputAt: UInt64
+        var documentLength: Int
+        var lineCount: Int
+        var lastLocation: Int
+        var inputCount = 0
+        var directInputCount = 0
+        var compositionInputCount = 0
+        var stageTotalMS: [String: Double] = [:]
+        var stageMaxMS: [String: Double] = [:]
+        var stageCount: [String: Int] = [:]
+        var counters: [String: Int] = [:]
+        var slowSamples: [String] = []
+
+        mutating func addDuration(_ stage: String, milliseconds: Double) {
+            stageTotalMS[stage, default: 0] += milliseconds
+            stageMaxMS[stage] = max(stageMaxMS[stage, default: 0], milliseconds)
+            stageCount[stage, default: 0] += 1
+        }
+
+        mutating func addCount(_ name: String, amount: Int = 1) {
+            counters[name, default: 0] += amount
+        }
+
+        mutating func addSlowSample(_ value: String) {
+            guard slowSamples.count < 12 else { return }
+            slowSamples.append(value)
+        }
+    }
+
+    private static var nextSessionID = 0
+    private static var preparedLog = false
+    private static var logURL: URL?
+
+    static func now() -> UInt64 { DispatchTime.now().uptimeNanoseconds }
+
+    static func milliseconds(since start: UInt64) -> Double {
+        Double(now() &- start) / 1_000_000
+    }
+
+    static func makeSession(documentLength: Int, lineCount: Int, location: Int, isComposition: Bool) -> Session {
+        nextSessionID += 1
+        let timestamp = now()
+        var session = Session(
+            id: nextSessionID,
+            startedAt: timestamp,
+            lastInputAt: timestamp,
+            documentLength: documentLength,
+            lineCount: lineCount,
+            lastLocation: location
+        )
+        recordInput(in: &session, documentLength: documentLength, lineCount: lineCount, location: location, isComposition: isComposition)
+        return session
+    }
+
+    static func recordInput(
+        in session: inout Session,
+        documentLength: Int,
+        lineCount: Int,
+        location: Int,
+        isComposition: Bool
+    ) {
+        session.lastInputAt = now()
+        session.documentLength = documentLength
+        session.lineCount = lineCount
+        session.lastLocation = location
+        session.inputCount += 1
+        if isComposition {
+            session.compositionInputCount += 1
+        } else {
+            session.directInputCount += 1
+        }
+    }
+
+    static func output(_ session: Session) {
+        let elapsed = Double(session.lastInputAt &- session.startedAt) / 1_000_000
+        let percentage = session.documentLength > 0
+            ? Double(session.lastLocation) / Double(session.documentLength) * 100
+            : 0
+        let counters = session.counters.keys.sorted().map {
+            "\($0)=\(session.counters[$0, default: 0])"
+        }.joined(separator: "，")
+        let stages = session.stageTotalMS.keys.sorted().map { stage -> String in
+            let total = session.stageTotalMS[stage, default: 0]
+            let count = session.stageCount[stage, default: 0]
+            let average = count > 0 ? total / Double(count) : 0
+            let maximum = session.stageMaxMS[stage, default: 0]
+            return "\(stage)=总\(format(total))/均\(format(average))/峰\(format(maximum))ms×\(count)"
+        }.joined(separator: "；")
+        let slowSamples = session.slowSamples.joined(separator: "；")
+        append(
+            "会话#\(session.id) 文档UTF16=\(session.documentLength) 缓存行=\(session.lineCount) "
+                + "位置=\(session.lastLocation)(\(String(format: "%.1f", percentage))%) "
+                + "输入=\(session.inputCount)(直接\(session.directInputCount)/组合\(session.compositionInputCount)) "
+                + "连续时长=\(format(elapsed))ms 计数=[\(counters)] 耗时=[\(stages)] 慢事件=[\(slowSamples)]"
+        )
+    }
+
+    static func diagnosticFilePath() -> String {
+        prepareLogIfNeeded()
+        return logURL?.path ?? "无法建立诊断记录文件"
+    }
+
+    private static func append(_ message: String) {
+        let tagged = "【诊断·38】\(message)"
+        print(tagged)
+        prepareLogIfNeeded()
+        guard let logURL,
+              let data = ("- `\(timestamp())` \(tagged)\n").data(using: .utf8),
+              let handle = try? FileHandle(forWritingTo: logURL) else { return }
+        defer { try? handle.close() }
+        _ = try? handle.seekToEnd()
+        try? handle.write(contentsOf: data)
+    }
+
+    private static func prepareLogIfNeeded() {
+        guard !preparedLog else { return }
+        preparedLog = true
+        let manager = FileManager.default
+        guard let applicationSupport = manager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
+        let folder = applicationSupport
+            .appendingPathComponent("ATeaching", isDirectory: true)
+            .appendingPathComponent("诊断", isDirectory: true)
+        do {
+            try manager.createDirectory(at: folder, withIntermediateDirectories: true)
+            let url = folder.appendingPathComponent("ATeaching诊断记录.MD", isDirectory: false)
+            let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未知"
+            let header = "# ATeaching诊断记录\n\n"
+                + "# 诊断·38 普通Markdown TextKit2大文档输入\n\n"
+                + "- 建立时间：\(timestamp())\n"
+                + "- 软件版本：\(version)\n"
+                + "- 固定物理位置：`\(url.path)`\n"
+                + "- 记录规则：连续输入只在内存聚合，停止4.2秒后落盘一条，以覆盖原有的三秒预览同步；不读取正文内容，不修改选区、布局或视野。\n"
+                + "- 旧诊断记录已清除，本文件只保留诊断·38。\n"
+                + "- 保留规则：诊断·38是普通Markdown TextKit2卡顿的长期基线，不随临时诊断清理删除。\n\n"
+            try header.write(to: url, atomically: true, encoding: .utf8)
+            logURL = url
+            print("【诊断·38】诊断记录：\(url.path)")
+        } catch {
+            print("【诊断·38】无法建立诊断记录：\(error.localizedDescription)")
+        }
+    }
+
+    private static func format(_ value: Double) -> String { String(format: "%.3f", value) }
+
+    private static func timestamp() -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+        return formatter.string(from: Date())
+    }
+}
+#endif
 
 // MARK: - Markdown删除诊断前缀 - v1 - 只用于性能记录，不改变编辑行为
 private func markdownProtectedPrefixLengthForDeletion(in line: String) -> Int {
@@ -638,6 +799,39 @@ enum MarkdownFontResolver {
     }
 }
 
+@MainActor
+final class MarkdownTextKit2CommitBridge: ObservableObject {
+    @Published private(set) var revision = 0
+    private(set) var hasPendingChanges = false
+    var commitHandler: (() -> Void)?
+    private var pendingRevisionWorkItem: DispatchWorkItem?
+
+    func markDirty() {
+        hasPendingChanges = true
+        pendingRevisionWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, self.hasPendingChanges else { return }
+            self.revision &+= 1
+        }
+        pendingRevisionWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: workItem)
+    }
+
+    func commitPendingText() {
+        guard hasPendingChanges else { return }
+        pendingRevisionWorkItem?.cancel()
+        pendingRevisionWorkItem = nil
+        commitHandler?()
+        hasPendingChanges = false
+    }
+
+    func reset() {
+        pendingRevisionWorkItem?.cancel()
+        pendingRevisionWorkItem = nil
+        hasPendingChanges = false
+    }
+}
+
 // MARK: - Markdown编辑器主页面 - v14 - 增强搜索命中高亮与右侧浮窗结果导航
 struct MarkdownEditorView: View {
     let fileURL: URL
@@ -672,6 +866,9 @@ struct MarkdownEditorView: View {
     @State private var showExportActionDialog = false
     @State private var pendingExportFormat: MarkdownExportFormat = .pdf
     @State private var documentStyleRefreshToken = 0
+    @StateObject private var textKit2CommitBridge = MarkdownTextKit2CommitBridge()
+    @ObservedObject private var screenCastAnnotationHub = ScreenCastAnnotationHub.shared
+    @State private var pendingScreenCastPublishTask: Task<Void, Never>?
 
     @ObservedObject private var settingsCenter = MarkdownEditorSettingsCenter.shared
     @ObservedObject private var fontCatalog = MarkdownFontCatalog.shared
@@ -694,7 +891,8 @@ struct MarkdownEditorView: View {
                         documentStyle: documentStyle,
                         quickInputSettings: quickInputSettings,
                         searchQuery: searchQuery,
-                        activeSearchRange: activeSearchRange
+                        activeSearchRange: activeSearchRange,
+                        commitBridge: textKit2CommitBridge
                     )
                 case .instant:
                     MarkdownInstantRenderModeView(
@@ -727,7 +925,8 @@ struct MarkdownEditorView: View {
                         documentStyle: documentStyle,
                         quickInputSettings: quickInputSettings,
                         searchQuery: searchQuery,
-                        activeSearchRange: activeSearchRange
+                        activeSearchRange: activeSearchRange,
+                        commitBridge: textKit2CommitBridge
                     )
                 case .web:
                     MarkdownWebRenderModeView(
@@ -753,6 +952,7 @@ struct MarkdownEditorView: View {
                     .padding(.trailing, 10)
                     .padding(.top, 10)
                 }
+                ScreenCastStrokeOverlay(strokes: screenCastAnnotationHub.strokes)
             }
             .id("markdown-display-\(renderMode.rawValue)-\(documentStyleRefreshToken)")
         }
@@ -779,6 +979,8 @@ struct MarkdownEditorView: View {
         .task { loadFile() }
         .task { fontCatalog.prewarmIfNeeded() }
         .onDisappear {
+            pendingScreenCastPublishTask?.cancel()
+            pendingScreenCastPublishTask = nil
             pendingSearchResultsWorkItem?.cancel()
             pendingSearchResultsWorkItem = nil
             pendingAutoSaveWorkItem?.cancel()
@@ -796,17 +998,30 @@ struct MarkdownEditorView: View {
             }
             scheduleAutoSave()
             scheduleSearchResultsRebuild(delay: 0.22)
+            scheduleScreenCastPublish(source: newValue)
             MarkdownEditorPerformanceProbe.end(
                 "MarkdownEditorView.onChange(markdownText)",
                 start: profileStart,
                 details: MarkdownEditorPerformanceProbe.textDetails(newValue)
             )
         }
+        .onChange(of: textKit2CommitBridge.revision) { _, _ in
+            guard textKit2CommitBridge.hasPendingChanges else { return }
+            if saveState != .saving {
+                saveState = .dirty
+            }
+            scheduleAutoSave()
+        }
         .onChange(of: renderMode) { _, newValue in
+            textKit2CommitBridge.commitPendingText()
             UserDefaults.standard.set(newValue.rawValue, forKey: Self.renderModeDefaultsKey)
         }
         .onChange(of: settingsCenter.documentStyle) { _, _ in
             documentStyleRefreshToken &+= 1
+            scheduleScreenCastPublish(source: markdownText)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .screenCastRequestedKindsDidChange)) { _ in
+            scheduleScreenCastPublish(source: markdownText)
         }
         .sheet(isPresented: $showStyleSheet) {
             MarkdownStyleSettingsView(
@@ -866,6 +1081,31 @@ struct MarkdownEditorView: View {
         "Markdown-\(fileURL.lastPathComponent)"
     }
 
+    private func scheduleScreenCastPublish(source: String) {
+        guard ScreenCastContentHub.shared.isRequested(.markdown) else {
+            pendingScreenCastPublishTask?.cancel()
+            pendingScreenCastPublishTask = nil
+            return
+        }
+        let style = documentStyle
+        let scheme = preferredScheme
+        let title = fileURL.deletingPathExtension().lastPathComponent
+        pendingScreenCastPublishTask?.cancel()
+        pendingScreenCastPublishTask = Task {
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                ScreenCastContentHub.shared.publishMarkdown(
+                    source: source,
+                    style: style,
+                    preferredScheme: scheme,
+                    title: title,
+                    baseURL: fileURL.deletingLastPathComponent()
+                )
+            }
+        }
+    }
+
     private static func restoredRenderMode() -> MarkdownRenderMode {
         guard let rawValue = UserDefaults.standard.string(forKey: renderModeDefaultsKey),
               let mode = MarkdownRenderMode(rawValue: rawValue),
@@ -898,7 +1138,7 @@ struct MarkdownEditorView: View {
     }
 
     private var hasUnsavedChanges: Bool {
-        markdownText != lastSavedText
+        textKit2CommitBridge.hasPendingChanges || markdownText != lastSavedText
     }
 
     private var headings: [MarkdownHeading] {
@@ -986,6 +1226,7 @@ struct MarkdownEditorView: View {
 
     private var tocButton: some View {
         Button {
+            textKit2CommitBridge.commitPendingText()
             showTOCPopover = true
         } label: {
             Image(systemName: "list.bullet.indent")
@@ -1009,6 +1250,7 @@ struct MarkdownEditorView: View {
         Menu {
             ForEach(MarkdownRenderMode.visibleCases) { mode in
                 Button {
+                    textKit2CommitBridge.commitPendingText()
                     renderMode = mode
                 } label: {
                     HStack {
@@ -1070,8 +1312,10 @@ struct MarkdownEditorView: View {
             }
             markdownText = text
             lastSavedText = text
+            textKit2CommitBridge.reset()
             lastKnownFileModificationDate = fileModificationDate()
             saveState = .clean
+            scheduleScreenCastPublish(source: text)
             MarkdownEditorPerformanceProbe.end(
                 "MarkdownEditorView.loadFile",
                 start: profileStart,
@@ -1090,6 +1334,7 @@ struct MarkdownEditorView: View {
     }
 
     private func saveFile(allowExternalOverwrite: Bool = false) {
+        textKit2CommitBridge.commitPendingText()
         pendingAutoSaveWorkItem?.cancel()
         pendingAutoSaveWorkItem = nil
         performSave(allowExternalOverwrite: allowExternalOverwrite, promptOnExternalChange: true)
@@ -1101,6 +1346,7 @@ struct MarkdownEditorView: View {
     }
 
     private func saveBeforeClosing() {
+        textKit2CommitBridge.commitPendingText()
         pendingAutoSaveWorkItem?.cancel()
         pendingAutoSaveWorkItem = nil
         guard hasUnsavedChanges else { return }
@@ -1127,6 +1373,7 @@ struct MarkdownEditorView: View {
     }
 
     private func performSave(allowExternalOverwrite: Bool, promptOnExternalChange: Bool) {
+        textKit2CommitBridge.commitPendingText()
         guard hasUnsavedChanges else { return }
         if !allowExternalOverwrite, fileWasModifiedExternally() {
             saveState = .failed
@@ -1227,6 +1474,7 @@ struct MarkdownEditorView: View {
     }
 
     private func performSearch() {
+        textKit2CommitBridge.commitPendingText()
         committedSearchText = searchText
         rebuildSearchResults()
     }
@@ -1329,6 +1577,7 @@ struct MarkdownEditorView: View {
 
     @MainActor
     private func beginExport(format: MarkdownExportFormat) {
+        textKit2CommitBridge.commitPendingText()
         pendingExportFormat = format
         exportToFiles(format: format)
     }
@@ -2169,6 +2418,7 @@ struct MarkdownDualRenderModeView: View {
     let quickInputSettings: MarkdownQuickInputSettings
     let searchQuery: String
     let activeSearchRange: NSRange?
+    let commitBridge: MarkdownTextKit2CommitBridge
     #if os(macOS)
     @StateObject private var scrollSyncBridge = MarkdownDualScrollSyncBridge()
     #endif
@@ -2186,7 +2436,8 @@ struct MarkdownDualRenderModeView: View {
                     quickInputSettings: quickInputSettings,
                     searchQuery: searchQuery,
                     activeSearchRange: activeSearchRange,
-                    scrollSyncBridge: scrollSyncBridge
+                    scrollSyncBridge: scrollSyncBridge,
+                    commitBridge: commitBridge
                 )
             #else
                 MarkdownTextKit2PlainModeView(
@@ -2197,7 +2448,8 @@ struct MarkdownDualRenderModeView: View {
                     documentStyle: documentStyle,
                     quickInputSettings: quickInputSettings,
                     searchQuery: searchQuery,
-                    activeSearchRange: activeSearchRange
+                    activeSearchRange: activeSearchRange,
+                    commitBridge: commitBridge
                 )
             #endif
             }
@@ -2236,6 +2488,7 @@ struct MarkdownTextKit2PlainModeView: View {
     let quickInputSettings: MarkdownQuickInputSettings
     let searchQuery: String
     let activeSearchRange: NSRange?
+    let commitBridge: MarkdownTextKit2CommitBridge
     #if os(macOS)
     let scrollSyncBridge: MarkdownDualScrollSyncBridge?
     #endif
@@ -2249,7 +2502,8 @@ struct MarkdownTextKit2PlainModeView: View {
         quickInputSettings: MarkdownQuickInputSettings,
         searchQuery: String,
         activeSearchRange: NSRange?,
-        scrollSyncBridge: MarkdownDualScrollSyncBridge? = nil
+        scrollSyncBridge: MarkdownDualScrollSyncBridge? = nil,
+        commitBridge: MarkdownTextKit2CommitBridge
     ) {
         self._markdownText = markdownText
         self._targetUTF16Offset = targetUTF16Offset
@@ -2259,6 +2513,7 @@ struct MarkdownTextKit2PlainModeView: View {
         self.quickInputSettings = quickInputSettings
         self.searchQuery = searchQuery
         self.activeSearchRange = activeSearchRange
+        self.commitBridge = commitBridge
         #if os(macOS)
         self.scrollSyncBridge = scrollSyncBridge
         #endif
@@ -2274,7 +2529,8 @@ struct MarkdownTextKit2PlainModeView: View {
             quickInputSettings: quickInputSettings,
             searchQuery: searchQuery,
             activeSearchRange: activeSearchRange,
-            scrollSyncBridge: scrollSyncBridge
+            scrollSyncBridge: scrollSyncBridge,
+            commitBridge: commitBridge
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(8)
@@ -3861,6 +4117,7 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
     var searchQuery: String = ""
     var activeSearchRange: NSRange?
     var scrollSyncBridge: MarkdownDualScrollSyncBridge?
+    let commitBridge: MarkdownTextKit2CommitBridge
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -3908,6 +4165,18 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
         context.coordinator.textContentStorage = textContentStorage
         context.coordinator.textLayoutManager = textLayoutManager
         context.coordinator.textContainer = textContainer
+        commitBridge.commitHandler = { [weak coordinator = context.coordinator] in
+            coordinator?.commitPendingTextToBinding()
+        }
+        textView.onDiagnostic38Duration = { [weak coordinator = context.coordinator] stage, milliseconds in
+            coordinator?.recordDiagnostic38Duration(stage, milliseconds: milliseconds)
+        }
+        textView.onDiagnostic38Count = { [weak coordinator = context.coordinator] name, amount in
+            coordinator?.recordDiagnostic38Count(name, amount: amount)
+        }
+        textView.onDiagnostic38SlowSample = { [weak coordinator = context.coordinator] sample in
+            coordinator?.recordDiagnostic38SlowSample(sample)
+        }
         context.coordinator.resetClipViewBoundsOrigin(scrollView.contentView.bounds.origin)
         context.coordinator.lastSourceSnapshot = text
         context.coordinator.lastObservedBindingText = text
@@ -3931,11 +4200,17 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ nsView: NSScrollView, coordinator: Coordinator) {
-        coordinator.flushPendingBindingSync()
+        coordinator.parent.commitBridge.commitPendingText()
+        coordinator.parent.commitBridge.commitHandler = nil
         NotificationCenter.default.removeObserver(coordinator)
     }
 
     func updateNSView(_ nsView: NSScrollView, context: Context) {
+        let diagnosticStart = MarkdownTextKit2Diagnostic38.now()
+        defer {
+            context.coordinator.recordDiagnostic38Duration("updateNSView", since: diagnosticStart)
+            context.coordinator.recordDiagnostic38Count("updateNSView次数")
+        }
         let profileStart = MarkdownEditorPerformanceProbe.start()
         guard let textView = context.coordinator.textView else { return }
         context.coordinator.parent = self
@@ -3947,6 +4222,7 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
 
         let bindingChangedExternally = text != context.coordinator.lastObservedBindingText
         if bindingChangedExternally, text != context.coordinator.lastSourceSnapshot {
+            context.coordinator.recordDiagnostic38Count("外部全文替换次数")
             let syncStart = MarkdownEditorPerformanceProbe.start()
             context.coordinator.cancelPendingBindingSync()
             let selectedRange = textView.selectedRange()
@@ -4038,6 +4314,8 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
         private var pendingDeletionLog = "none"
         private var pendingDeletionKind: EditorDeletionKind = .none
         private var pendingEditIsLocalCharacter = false
+        private var diagnostic38Session: MarkdownTextKit2Diagnostic38.Session?
+        private var diagnostic38FlushGeneration = 0
 
         init(_ parent: MarkdownTextKit2PlainTextEditor) {
             self.parent = parent
@@ -4049,7 +4327,17 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
         }
 
         func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
+            let diagnosticStart = MarkdownTextKit2Diagnostic38.now()
+            beginDiagnostic38Input(in: textView, affectedRange: affectedCharRange)
+            defer { recordDiagnostic38Duration("shouldChangeText总计", since: diagnosticStart) }
+            if let event = NSApp.currentEvent {
+                let eventLatency = (ProcessInfo.processInfo.systemUptime - event.timestamp) * 1_000
+                if eventLatency >= 0, eventLatency < 2_000 {
+                    recordDiagnostic38Duration("按键事件到编辑器", milliseconds: eventLatency)
+                }
+            }
             let replacement = replacementString ?? ""
+            recordDiagnostic38Count("替换UTF16", amount: (replacement as NSString).length)
             let replacementLength = (replacement as NSString).length
             pendingEditedRange = NSRange(location: affectedCharRange.location, length: replacementLength)
             let source = textView.textStorage?.mutableString ?? NSMutableString(string: textView.string)
@@ -4076,22 +4364,33 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
                 pendingDeletionKind = .none
             }
             if let markdownTextView = textView as? MarkdownTextKit2PlainTextView {
+                markdownTextView.markDiagnostic38InputStarted(at: diagnosticStart)
+                let typingStart = MarkdownTextKit2Diagnostic38.now()
                 markdownTextView.prepareTypingAttributesIfNeeded(at: affectedCharRange.location)
+                recordDiagnostic38Duration("输入属性准备", since: typingStart)
+                let cacheStart = MarkdownTextKit2Diagnostic38.now()
                 markdownTextView.prepareCachesForTextEdit(
                     affectedRange: affectedCharRange,
                     replacementString: replacementString
                 )
+                recordDiagnostic38Duration("编辑前缓存准备", since: cacheStart)
             }
             return true
         }
 
         func textDidChange(_ notification: Notification) {
+            let diagnostic38Start = MarkdownTextKit2Diagnostic38.now()
+            defer {
+                recordDiagnostic38Duration("textDidChange总计", since: diagnostic38Start)
+                recordDiagnostic38Count("textDidChange次数")
+            }
             let profileStart = MarkdownEditorPerformanceProbe.start()
             guard let textView else { return }
             guard !textView.isApplyingQuickInputReplacement else { return }
             guard !textView.isApplyingMarkdownStyle else { return }
             guard !textView.isRestoringAttachmentSource else { return }
             if textView.hasActiveMarkedText {
+                recordDiagnostic38Count("组合态textDidChange")
                 pendingEditIsLocalCharacter = false
                 textView.prepareTypingAttributesIfNeeded(at: textView.selectedRange().location)
                 textView.keepInsertionPointComfortablyVisible()
@@ -4105,18 +4404,26 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
                 pendingDeletionKind = .none
                 return
             }
+            parent.commitBridge.markDirty()
             let quickInputStart = MarkdownEditorPerformanceProbe.start()
+            let diagnosticQuickInputStart = MarkdownTextKit2Diagnostic38.now()
             if textView.applyQuickInputIfNeeded() {
                 pendingEditedRange = textView.selectedRange()
+                recordDiagnostic38Count("快捷替换命中")
             }
+            recordDiagnostic38Duration("快捷输入检查", since: diagnosticQuickInputStart)
             MarkdownEditorPerformanceProbe.end(
                 "MarkdownTextKit2PlainTextEditor.textDidChange.quickInput",
                 start: quickInputStart,
                 details: MarkdownEditorPerformanceProbe.textDetails(textView.string)
             )
             let usesInlineDeletionFastPath = pendingDeletionKind == .inlineCharacter
-            scheduleBindingSyncFromTextView(delay: pendingEditIsLocalCharacter ? 0.35 : 0.10)
+            if parent.scrollSyncBridge != nil {
+                scheduleBindingSyncFromTextView(delay: pendingEditIsLocalCharacter ? 0.35 : 0.10)
+                recordDiagnostic38Count("绑定延迟任务安排")
+            }
             let styleStart = MarkdownEditorPerformanceProbe.start()
+            let diagnosticStyleStart = MarkdownTextKit2Diagnostic38.now()
             let editedRange = pendingEditedRange ?? textView.selectedRange()
             if usesInlineDeletionFastPath {
                 MarkdownEditorPerformanceProbe.end(
@@ -4129,6 +4436,7 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
             } else {
                 textView.applyMarkdownStyleIncrementally(for: editedRange, style: documentStyle)
             }
+            recordDiagnostic38Duration("输入后局部样式", since: diagnosticStyleStart)
             textView.prepareTypingAttributesIfNeeded(at: textView.selectedRange().location)
             textView.keepInsertionPointComfortablyVisible()
             scheduleCenterLinePublish(delay: 3.0)
@@ -4172,6 +4480,7 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
             pendingBindingNeedsTextViewSnapshot = false
             parent.text = sourceText
             lastObservedBindingText = sourceText
+            parent.commitBridge.reset()
             MarkdownEditorPerformanceProbe.metric(
                 "TextKit2.bindingImmediate",
                 start: profileStart,
@@ -4202,6 +4511,7 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
         }
 
         func flushPendingBindingSync() {
+            let diagnosticStart = MarkdownTextKit2Diagnostic38.now()
             let profileStart = MarkdownEditorPerformanceProbe.start()
             pendingBindingWorkItem?.cancel()
             pendingBindingWorkItem = nil
@@ -4209,7 +4519,10 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
             if let pendingBindingSourceText {
                 sourceText = pendingBindingSourceText
             } else if pendingBindingNeedsTextViewSnapshot, let textView {
+                let snapshotStart = MarkdownTextKit2Diagnostic38.now()
                 sourceText = textView.markdownSourceStringPreservingAttachments()
+                recordDiagnostic38Duration("绑定全文源码投影", since: snapshotStart)
+                recordDiagnostic38Count("绑定全文源码投影次数")
             } else {
                 sourceText = nil
             }
@@ -4219,12 +4532,30 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
             lastSourceSnapshot = sourceText
             parent.text = sourceText
             lastObservedBindingText = sourceText
+            parent.commitBridge.reset()
+            recordDiagnostic38Duration("绑定刷新总计", since: diagnosticStart)
+            recordDiagnostic38Count("绑定刷新次数")
             MarkdownEditorPerformanceProbe.metric(
                 "TextKit2.bindingFlush",
                 start: profileStart,
                 budgetMs: 8,
                 textLength: (sourceText as NSString).length
             )
+        }
+
+        func commitPendingTextToBinding() {
+            let diagnosticStart = MarkdownTextKit2Diagnostic38.now()
+            cancelPendingBindingSync()
+            guard parent.commitBridge.hasPendingChanges, let textView else { return }
+            let snapshotStart = MarkdownTextKit2Diagnostic38.now()
+            let sourceText = textView.markdownSourceStringPreservingAttachments()
+            recordDiagnostic38Duration("提交全文源码投影", since: snapshotStart)
+            recordDiagnostic38Count("提交全文源码投影次数")
+            lastSourceSnapshot = sourceText
+            parent.text = sourceText
+            lastObservedBindingText = sourceText
+            recordDiagnostic38Duration("提交Binding总计", since: diagnosticStart)
+            recordDiagnostic38Count("提交Binding次数")
         }
 
         func cancelPendingBindingSync() {
@@ -4234,23 +4565,122 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
             pendingBindingNeedsTextViewSnapshot = false
         }
 
+        private func beginDiagnostic38Input(in textView: NSTextView, affectedRange: NSRange) {
+            #if DEBUG
+            let documentLength = textView.textStorage?.length ?? 0
+            let lineCount = (textView as? MarkdownTextKit2PlainTextView)?.diagnosticCachedLineCount ?? 0
+            let isComposition = (textView as? MarkdownTextKit2PlainTextView)?.hasActiveMarkedText ?? false
+            if var session = diagnostic38Session {
+                MarkdownTextKit2Diagnostic38.recordInput(
+                    in: &session,
+                    documentLength: documentLength,
+                    lineCount: lineCount,
+                    location: affectedRange.location,
+                    isComposition: isComposition
+                )
+                diagnostic38Session = session
+            } else {
+                diagnostic38Session = MarkdownTextKit2Diagnostic38.makeSession(
+                    documentLength: documentLength,
+                    lineCount: lineCount,
+                    location: affectedRange.location,
+                    isComposition: isComposition
+                )
+                _ = MarkdownTextKit2Diagnostic38.diagnosticFilePath()
+            }
+            diagnostic38FlushGeneration &+= 1
+            let generation = diagnostic38FlushGeneration
+            let immediateProbeStart = MarkdownTextKit2Diagnostic38.now()
+            DispatchQueue.main.async { [weak self] in
+                self?.recordDiagnostic38Duration("输入后主线程即时排队", since: immediateProbeStart)
+                self?.recordDiagnostic38Count("输入后主线程即时探针")
+            }
+            let frameProbeStart = MarkdownTextKit2Diagnostic38.now()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.016) { [weak self] in
+                let elapsed = MarkdownTextKit2Diagnostic38.milliseconds(since: frameProbeStart)
+                self?.recordDiagnostic38Duration("输入后一帧超期", milliseconds: max(0, elapsed - 16))
+                self?.recordDiagnostic38Count("输入后一帧探针")
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4.2) { [weak self] in
+                guard let self,
+                      generation == self.diagnostic38FlushGeneration,
+                      let session = self.diagnostic38Session else { return }
+                self.diagnostic38Session = nil
+                MarkdownTextKit2Diagnostic38.output(session)
+            }
+            #endif
+        }
+
+        func recordDiagnostic38Duration(_ stage: String, since start: UInt64) {
+            recordDiagnostic38Duration(stage, milliseconds: MarkdownTextKit2Diagnostic38.milliseconds(since: start))
+        }
+
+        func recordDiagnostic38Duration(_ stage: String, milliseconds: Double) {
+            #if DEBUG
+            guard var session = diagnostic38Session else { return }
+            session.addDuration(stage, milliseconds: milliseconds)
+            diagnostic38Session = session
+            #endif
+        }
+
+        func recordDiagnostic38Count(_ name: String, amount: Int = 1) {
+            #if DEBUG
+            guard var session = diagnostic38Session else { return }
+            session.addCount(name, amount: amount)
+            diagnostic38Session = session
+            #endif
+        }
+
+        func recordDiagnostic38SlowSample(_ sample: String) {
+            #if DEBUG
+            guard var session = diagnostic38Session else { return }
+            session.addSlowSample(sample)
+            diagnostic38Session = session
+            #endif
+        }
+
         @objc func clipViewBoundsDidChange(_ notification: Notification) {
             guard let clipView = notification.object as? NSClipView else { return }
             let currentOrigin = clipView.bounds.origin
+            let previousOrigin = lastClipViewBoundsOrigin
             if let lastClipViewBoundsOrigin,
                abs(lastClipViewBoundsOrigin.x - currentOrigin.x) < 0.5,
                abs(lastClipViewBoundsOrigin.y - currentOrigin.y) < 0.5 {
                 return
             }
             lastClipViewBoundsOrigin = currentOrigin
+            recordDiagnostic38Count("滚动视口通知")
+            if let previousOrigin {
+                recordDiagnostic38Count(
+                    "滚动累计纵向像素",
+                    amount: Int(abs(currentOrigin.y - previousOrigin.y).rounded())
+                )
+            }
+            if let event = NSApp.currentEvent {
+                recordDiagnostic38Count("滚动事件-\(String(describing: event.type))")
+            }
             scrollRenderWorkItem?.cancel()
+            let scheduledAt = MarkdownTextKit2Diagnostic38.now()
             let workItem = DispatchWorkItem { [weak self] in
                 guard let self, let textView = self.textView else { return }
+                let elapsed = MarkdownTextKit2Diagnostic38.milliseconds(since: scheduledAt)
+                self.recordDiagnostic38Duration("滚动渲染任务超期", milliseconds: max(0, elapsed - 40))
+                self.recordDiagnostic38Count("滚动渲染任务执行")
+                if elapsed > 100 {
+                    self.recordDiagnostic38SlowSample(
+                        "滚动任务等待=\(String(format: "%.1f", elapsed))ms originY=\(String(format: "%.1f", currentOrigin.y)) "
+                            + "visible=\(NSStringFromRect(textView.visibleRect))"
+                    )
+                }
                 guard !textView.isApplyingMarkdownStyle,
                       !textView.isApplyingQuickInputReplacement,
                       !textView.isRestoringAttachmentSource else { return }
+                let workStart = MarkdownTextKit2Diagnostic38.now()
                 textView.applyMarkdownStyleToVisibleRange(style: self.documentStyle)
+                let searchStart = MarkdownTextKit2Diagnostic38.now()
                 textView.applySearchHighlightsToVisibleRange(query: self.lastSearchQuery, activeRange: self.lastSearchActiveRange)
+                self.recordDiagnostic38Duration("滚动搜索高亮", since: searchStart)
+                self.recordDiagnostic38Duration("滚动渲染任务总计", since: workStart)
                 self.scheduleCenterLinePublish(delay: 0.18)
             }
             scrollRenderWorkItem = workItem
@@ -4272,7 +4702,14 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
             guard parent.scrollSyncBridge != nil else { return }
             scrollSyncWorkItem?.cancel()
             typingScrollSyncWorkItem?.cancel()
+            let scheduledAt = MarkdownTextKit2Diagnostic38.now()
             let workItem = DispatchWorkItem { [weak self] in
+                let elapsed = MarkdownTextKit2Diagnostic38.milliseconds(since: scheduledAt)
+                self?.recordDiagnostic38Duration(
+                    "预览同步任务超期",
+                    milliseconds: max(0, elapsed - delay * 1_000)
+                )
+                self?.recordDiagnostic38Count("预览同步任务执行")
                 self?.publishCenterLine()
             }
             if delay >= 3.0 {
@@ -4284,6 +4721,8 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
         }
 
         private func publishCenterLine() {
+            let diagnosticStart = MarkdownTextKit2Diagnostic38.now()
+            defer { recordDiagnostic38Duration("预览中心行发布", since: diagnosticStart) }
             guard let bridge = parent.scrollSyncBridge,
                   let textView,
                   let scrollView,
@@ -4348,6 +4787,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     }
 
     private func markdownSourceLineIndex(containing location: Int) -> Int {
+        let diagnosticStart = MarkdownTextKit2Diagnostic38.now()
         let nsText = string as NSString
         guard nsText.length > 0 else { return 0 }
         let safeLocation = max(0, min(location, nsText.length))
@@ -4361,10 +4801,16 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
             if next <= cursor { break }
             cursor = next
         }
+        onDiagnostic38Duration?("预览中心行逐行定位", MarkdownTextKit2Diagnostic38.milliseconds(since: diagnosticStart))
+        onDiagnostic38Count?("预览中心行扫描行", lineIndex)
         return lineIndex
     }
 
     private func markdownSourceRange(forLine targetLine: Int, in nsText: NSString) -> NSRange {
+        let diagnosticStart = MarkdownTextKit2Diagnostic38.now()
+        defer {
+            onDiagnostic38Duration?("外部预览行逐行定位", MarkdownTextKit2Diagnostic38.milliseconds(since: diagnosticStart))
+        }
         var lineIndex = 0
         var cursor = 0
         while cursor < nsText.length {
@@ -4414,6 +4860,31 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     private var attachmentStyleGeneration = 0
     private var pendingAttachmentStyleWorkItem: DispatchWorkItem?
     private var pendingAttachmentLineRanges: [Int: NSRange] = [:]
+    private var diagnostic38InputToFirstDrawStart: UInt64?
+    var onDiagnostic38Duration: ((String, Double) -> Void)?
+    var onDiagnostic38Count: ((String, Int) -> Void)?
+    var onDiagnostic38SlowSample: ((String) -> Void)?
+    var diagnosticCachedLineCount: Int { lineRangeCache.count }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let diagnosticStart = MarkdownTextKit2Diagnostic38.now()
+        super.draw(dirtyRect)
+        let drawDuration = MarkdownTextKit2Diagnostic38.milliseconds(since: diagnosticStart)
+        if let inputStart = diagnostic38InputToFirstDrawStart {
+            diagnostic38InputToFirstDrawStart = nil
+            onDiagnostic38Duration?("输入至首次绘制", MarkdownTextKit2Diagnostic38.milliseconds(since: inputStart))
+            onDiagnostic38Count?("输入后首次绘制次数", 1)
+        }
+        onDiagnostic38Duration?("draw", drawDuration)
+        onDiagnostic38Count?("draw次数", 1)
+        onDiagnostic38Count?("draw脏区高度", Int(dirtyRect.height.rounded()))
+        if drawDuration > 16 {
+            onDiagnostic38SlowSample?(
+                "draw=\(String(format: "%.1f", drawDuration))ms dirty=\(NSStringFromRect(dirtyRect)) "
+                    + "visible=\(NSStringFromRect(visibleRect)) bounds=\(NSStringFromRect(bounds))"
+            )
+        }
+    }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if handleMarkdownImagePasteShortcut(event) { return true }
@@ -4423,6 +4894,10 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     override func keyDown(with event: NSEvent) {
         if handleMarkdownImagePasteShortcut(event) { return }
         super.keyDown(with: event)
+    }
+
+    func markDiagnostic38InputStarted(at timestamp: UInt64) {
+        diagnostic38InputToFirstDrawStart = timestamp
     }
 
     override func paste(_ sender: Any?) {
@@ -4532,7 +5007,13 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
             ) { line in
                 parseNumberedLine(in: line)?.markerLength ?? 0
             }
-        } else if replacement.contains("\n") || replacement.contains("\r") || affectedRange.length > 0 {
+        } else if replacement.contains("\n")
+                    || replacement.contains("\r")
+                    || (affectedRange.length > 0
+                        && nsText.range(of: "\n", options: [], range: NSIntersectionRange(
+                            affectedRange,
+                            NSRange(location: 0, length: nsText.length)
+                        )).location != NSNotFound) {
             impact = .line
         } else {
             impact = .character
@@ -4540,13 +5021,16 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
 
         switch impact {
         case .character:
+            onDiagnostic38Count?("字符级缓存失效", 1)
             invalidateLocalMarkdownCaches(around: affectedRange)
         case .line, .structure, .document:
+            onDiagnostic38Count?("全文行缓存失效", 1)
             invalidateLineRangeCache()
         }
     }
 
     private func invalidateLocalMarkdownCaches(around affectedRange: NSRange) {
+        cancelIdleMarkdownStyleCompletion()
         guard let nsText = textStorage?.mutableString else { return }
         guard nsText.length > 0 else {
             markdownBlockCache.removeAll(keepingCapacity: true)
@@ -4575,6 +5059,8 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     }
 
     func applyMarkdownStyleVisibleFirst(style: MarkdownDocumentStyle) {
+        let diagnosticStart = MarkdownTextKit2Diagnostic38.now()
+        defer { onDiagnostic38Duration?("可见优先样式", MarkdownTextKit2Diagnostic38.milliseconds(since: diagnosticStart)) }
         let profileStart = MarkdownEditorPerformanceProbe.start()
         guard let textStorage else { return }
         cancelIdleMarkdownStyleCompletion()
@@ -4596,14 +5082,21 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     }
 
     func applyMarkdownStyleToVisibleRange(style: MarkdownDocumentStyle) {
+        let diagnosticStart = MarkdownTextKit2Diagnostic38.now()
+        defer { onDiagnostic38Duration?("滚动可见区样式", MarkdownTextKit2Diagnostic38.milliseconds(since: diagnosticStart)) }
         let profileStart = MarkdownEditorPerformanceProbe.start()
         guard let textStorage else { return }
         currentDocumentStyle = style
-        rebuildLineRangeCacheIfNeeded()
         let fullRange = NSRange(location: 0, length: textStorage.length)
         let visibleRange = NSIntersectionRange(visibleCharacterRange() ?? selectedNeighborhoodRange(), fullRange)
         guard visibleRange.length > 0 else { return }
         applyMarkdownStyle(in: expandedLineRange(for: visibleRange), style: style)
+        let visibleStyleDuration = MarkdownTextKit2Diagnostic38.milliseconds(since: diagnosticStart)
+        if visibleStyleDuration > 16 {
+            onDiagnostic38SlowSample?(
+                "可见区样式=\(String(format: "%.1f", visibleStyleDuration))ms range=\(NSStringFromRange(visibleRange))"
+            )
+        }
         MarkdownEditorPerformanceProbe.end(
             "MarkdownTextKit2PlainTextView.applyMarkdownStyleToVisibleRange",
             start: profileStart,
@@ -4619,6 +5112,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     }
 
     func applyMarkdownStyleIncrementally(for editedRange: NSRange, style: MarkdownDocumentStyle) {
+        let diagnosticStart = MarkdownTextKit2Diagnostic38.now()
         let profileStart = MarkdownEditorPerformanceProbe.start()
         guard let textStorage else { return }
         currentDocumentStyle = style
@@ -4628,9 +5122,11 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         let safeRange = NSRange(location: safeLocation, length: safeLength)
         let block = incrementalMarkdownBlock(containing: safeRange)
         let styleRange = incrementalMarkdownStyleRange(around: block.range)
+        onDiagnostic38Count?("增量样式UTF16", styleRange.length)
         applyMarkdownStyle(in: styleRange, style: style, layers: [.block, .inline])
         markAttachmentStyleDirty(in: styleRange)
         schedulePendingAttachmentStyle(style: style, delay: 0.18)
+        onDiagnostic38Duration?("结构增量样式", MarkdownTextKit2Diagnostic38.milliseconds(since: diagnosticStart))
         MarkdownEditorPerformanceProbe.end(
             "MarkdownTextKit2PlainTextView.applyMarkdownStyleIncrementally",
             start: profileStart,
@@ -4648,6 +5144,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     /// Ordinary typing is a line-local transaction. It must not resolve a surrounding
     /// Markdown block or touch neighboring paragraphs merely because one character changed.
     func applyMarkdownStyleToEditedLine(for editedRange: NSRange, style: MarkdownDocumentStyle) {
+        let diagnosticStart = MarkdownTextKit2Diagnostic38.now()
         let profileStart = MarkdownEditorPerformanceProbe.start()
         guard let textStorage else { return }
         currentDocumentStyle = style
@@ -4657,9 +5154,11 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         let lineRange = textStorage.mutableString.lineRange(
             for: NSRange(location: safeLocation, length: 0)
         )
+        onDiagnostic38Count?("当前行样式UTF16", lineRange.length)
         applyMarkdownStyle(in: lineRange, style: style, layers: [.block, .inline])
         markAttachmentStyleDirty(in: lineRange)
         schedulePendingAttachmentStyle(style: style, delay: 0.24)
+        onDiagnostic38Duration?("当前行样式内部", MarkdownTextKit2Diagnostic38.milliseconds(since: diagnosticStart))
         MarkdownEditorPerformanceProbe.metric(
             "TextKit2.localLineStyle",
             start: profileStart,
@@ -4844,12 +5343,8 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         return nsText.lineRange(for: NSRange(location: location, length: 0))
     }
 
-    private func rebuildLineRangeCacheIfNeeded() {
-        guard cachedStringLength != (textStorage?.length ?? 0) else { return }
-        rebuildLineRangeCache()
-    }
-
     private func rebuildLineRangeCache() {
+        let diagnosticStart = MarkdownTextKit2Diagnostic38.now()
         let profileStart = MarkdownEditorPerformanceProbe.start()
         guard let nsText = textStorage?.mutableString else { return }
         lineRangeCache = []
@@ -4865,6 +5360,15 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
             lineRangeCache = [NSRange(location: 0, length: 0)]
         }
         cachedStringLength = nsText.length
+        let rebuildDuration = MarkdownTextKit2Diagnostic38.milliseconds(since: diagnosticStart)
+        onDiagnostic38Duration?("全文行缓存重建", rebuildDuration)
+        onDiagnostic38Count?("全文行缓存重建次数", 1)
+        onDiagnostic38Count?("全文行缓存扫描行", lineRangeCache.count)
+        if rebuildDuration > 8 {
+            onDiagnostic38SlowSample?(
+                "全文行缓存重建=\(String(format: "%.1f", rebuildDuration))ms lines=\(lineRangeCache.count)"
+            )
+        }
         MarkdownEditorPerformanceProbe.end(
             "MarkdownTextKit2PlainTextView.rebuildLineRangeCache",
             start: profileStart,
@@ -4936,6 +5440,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
                 guard let textStorage = self.textStorage else { return }
 
                 let profileStart = MarkdownEditorPerformanceProbe.start()
+                let diagnosticStart = MarkdownTextKit2Diagnostic38.now()
                 var processed = 0
                 while nextIndex < self.lineRangeCache.count, processed < batchLineCount {
                     let lineRange = self.lineRangeCache[nextIndex]
@@ -4948,6 +5453,8 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
                     self.markAttachmentStyleDirty(in: lineRange)
                     processed += 1
                 }
+                self.onDiagnostic38Count?("后台样式处理行", processed)
+                self.onDiagnostic38Duration?("后台样式批次", MarkdownTextKit2Diagnostic38.milliseconds(since: diagnosticStart))
 
                 MarkdownEditorPerformanceProbe.end(
                     "MarkdownTextKit2PlainTextView.idleMarkdownStyleBatch",
@@ -4998,9 +5505,11 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         }
 
         var lineLocation = actualLineRange.location
+        var processedLineCount = 0
         while lineLocation < NSMaxRange(actualLineRange) {
             let lineRange = nsText.lineRange(for: NSRange(location: lineLocation, length: 0))
             if lineRange.length == 0 { break }
+            processedLineCount += 1
 
             var rawLine = nsText.substring(with: lineRange)
             if rawLine.hasSuffix("\n") { rawLine.removeLast() }
@@ -5032,6 +5541,8 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
             setSelectedRange(selectedRange)
         }
         isApplyingMarkdownStyle = false
+        onDiagnostic38Count?("样式处理行", processedLineCount)
+        onDiagnostic38Count?("样式处理UTF16", actualLineRange.length)
     }
 
     private func applyMarkdownBlockStyle(
@@ -5492,6 +6003,11 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     }
 
     func markdownSourceStringPreservingAttachments() -> String {
+        let diagnosticStart = MarkdownTextKit2Diagnostic38.now()
+        defer {
+            onDiagnostic38Duration?("全文源码字符串生成", MarkdownTextKit2Diagnostic38.milliseconds(since: diagnosticStart))
+            onDiagnostic38Count?("全文源码字符串生成次数", 1)
+        }
         guard let textStorage else { return string }
         if textStorage.mutableString.range(of: "\u{fffc}").location == NSNotFound {
             return textStorage.string
@@ -5930,6 +6446,11 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     }
 
     override func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        let diagnosticStart = MarkdownTextKit2Diagnostic38.now()
+        defer {
+            onDiagnostic38Duration?("setMarkedText", MarkdownTextKit2Diagnostic38.milliseconds(since: diagnosticStart))
+            onDiagnostic38Count?("setMarkedText次数", 1)
+        }
         let location = replacementRange.location == NSNotFound ? self.selectedRange().location : replacementRange.location
         prepareTypingAttributesIfNeeded(at: location)
         let markedText = markedTextByApplyingCurrentLineMetrics(to: string)
@@ -6808,10 +7329,10 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     }
 
     func keepInsertionPointComfortablyVisible() {
+        let diagnosticStart = MarkdownTextKit2Diagnostic38.now()
         scrollInsertionPointToComfortZone()
-        DispatchQueue.main.async { [weak self] in
-            self?.scrollInsertionPointToComfortZone()
-        }
+        onDiagnostic38Duration?("光标可见检查", MarkdownTextKit2Diagnostic38.milliseconds(since: diagnosticStart))
+        onDiagnostic38Count?("光标可见检查次数", 1)
     }
 
     private func scrollInsertionPointToComfortZone() {
@@ -6824,7 +7345,6 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         let selection = selectedRange()
         let insertionLocation = max(0, min(selection.location, textLength))
         let insertionRange = NSRange(location: insertionLocation, length: 0)
-        scrollRangeToVisible(insertionRange)
 
         guard selection.length == 0,
               let window,
@@ -6833,31 +7353,30 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         }
 
         let caretScreenRect = firstRect(forCharacterRange: insertionRange, actualRange: nil)
-        guard !caretScreenRect.isEmpty else { return }
+        guard !caretScreenRect.isEmpty else {
+            scrollRangeToVisible(insertionRange)
+            return
+        }
 
         let caretWindowRect = window.convertFromScreen(caretScreenRect)
         let caretRect = convert(caretWindowRect, from: nil)
         let clipView = scrollView.contentView
         let visibleRect = convert(clipView.bounds, from: clipView)
         guard !visibleRect.isEmpty else { return }
-
-        let lowerComfortMargin = max(72, min(180, visibleRect.height * 0.24))
-        let upperComfortMargin: CGFloat = 32
+        guard !visibleRect.contains(caretRect) else { return }
         var targetOrigin = clipView.bounds.origin
 
         if isFlipped {
-            let lowerComfortY = visibleRect.maxY - lowerComfortMargin
-            if caretRect.maxY > lowerComfortY {
-                targetOrigin.y += caretRect.maxY - lowerComfortY
-            } else if caretRect.minY < visibleRect.minY + upperComfortMargin {
-                targetOrigin.y -= (visibleRect.minY + upperComfortMargin) - caretRect.minY
+            if caretRect.maxY > visibleRect.maxY {
+                targetOrigin.y += caretRect.maxY - visibleRect.maxY
+            } else if caretRect.minY < visibleRect.minY {
+                targetOrigin.y -= visibleRect.minY - caretRect.minY
             }
         } else {
-            let lowerComfortY = visibleRect.minY + lowerComfortMargin
-            if caretRect.minY < lowerComfortY {
-                targetOrigin.y -= lowerComfortY - caretRect.minY
-            } else if caretRect.maxY > visibleRect.maxY - upperComfortMargin {
-                targetOrigin.y += caretRect.maxY - (visibleRect.maxY - upperComfortMargin)
+            if caretRect.minY < visibleRect.minY {
+                targetOrigin.y -= visibleRect.minY - caretRect.minY
+            } else if caretRect.maxY > visibleRect.maxY {
+                targetOrigin.y += caretRect.maxY - visibleRect.maxY
             }
         }
 

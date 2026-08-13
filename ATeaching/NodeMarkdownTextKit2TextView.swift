@@ -46,6 +46,8 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
     var onRequestSave: (() -> Void)?
     var onInputMethodCommit: ((InputMethodCommit) -> Void)?
     var onInputMethodTransactionFailure: ((String) -> Void)?
+    var onDiagnostic35Draw: ((Double, CGFloat) -> Void)?
+    var onDiagnostic35CompositionUpdate: ((NSRange) -> Void)?
     var quickInputSettings = MarkdownQuickInputSettings()
     var isApplyingQuickInputReplacement = false
     var isEnforcingInputMethodAttributes = false
@@ -61,6 +63,7 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
     private var inputMethodAffectedRange = NSRange(location: 0, length: 0)
     private var inputMethodRowLayoutsBefore: [NodeMarkdownTextKit2RowLayout] = []
     private var inputMethodGeneration: UInt64 = 0
+    private var caretClickViewportGeneration: UInt64 = 0
     var nodeMarkdownEditingRowIndex: Int?
     var nodeMarkdownRowLayouts: [NodeMarkdownTextKit2RowLayout] = [] {
         didSet {
@@ -117,8 +120,19 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
     }
 
     override func scrollRangeToVisible(_ range: NSRange) {
-        guard !suppressesAutomaticSelectionScrolling else { return }
+        guard !suppressesAutomaticSelectionScrolling else {
+            NodeMarkdownDiagnostic41.event("拦截scrollRangeToVisible range=\(NSStringFromRange(range)) selection=\(NSStringFromRange(selectedRange()))")
+            return
+        }
+        let before = enclosingScrollView?.contentView.bounds.origin
         super.scrollRangeToVisible(range)
+        let after = enclosingScrollView?.contentView.bounds.origin
+        if before != after {
+            let caller = Thread.callStackSymbols.dropFirst().prefix(6).joined(separator: " ← ")
+            NodeMarkdownDiagnostic41.event(
+                "执行scrollRangeToVisible range=\(NSStringFromRange(range)) origin=\(String(describing: before))->\(String(describing: after)) caller=\(caller)"
+            )
+        }
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
@@ -126,16 +140,69 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        #if DEBUG
+        let diagnosticStart = NodeMarkdownDiagnostic35.now()
+        #endif
         _ = drawNodeMarkdownBackgroundBars(in: dirtyRect)
         _ = drawNodeMarkdownInlineHighlights(in: dirtyRect)
         super.draw(dirtyRect)
         _ = drawNodeMarkdownMarkers(in: dirtyRect)
+        #if DEBUG
+        onDiagnostic35Draw?(
+            NodeMarkdownDiagnostic35.milliseconds(since: diagnosticStart),
+            dirtyRect.height
+        )
+        #endif
     }
 
     override func mouseDown(with event: NSEvent) {
+        let viewportOrigin = enclosingScrollView?.contentView.bounds.origin
+        let displayRect = visibleRect.isEmpty ? bounds : visibleRect
+        if !displayRect.isEmpty {
+            let containerRect = displayRect.offsetBy(
+                dx: -textContainerOrigin.x,
+                dy: -textContainerOrigin.y
+            )
+            nodeTextLayoutManager.ensureLayout(for: containerRect)
+        }
+        let clickPoint = convert(event.locationInWindow, from: nil)
+        NodeMarkdownDiagnostic41.event(
+            "点击命中准备 point=\(NSStringFromPoint(clickPoint)) origin=\(String(describing: viewportOrigin)) viewportRange=\(String(describing: nodeTextLayoutManager.textViewportLayoutController.viewportRange))"
+        )
         // Content缓冲区已经不含隐藏前缀，点击位置应完全交给NSTextView/TextKit2。
         super.mouseDown(with: event)
+        NodeMarkdownDiagnostic41.event(
+            "点击命中完成 point=\(NSStringFromPoint(clickPoint)) selection=\(NSStringFromRange(selectedRange())) origin=\(String(describing: enclosingScrollView?.contentView.bounds.origin))"
+        )
         onHandlePrimaryClick?()
+        // 单击进入编辑可能切换源码/渲染样式，TextKit会据此自动调整滚动位置。
+        // 点击位置原本就在当前视野内，因此这不是需要“追焦点”的场景；恢复
+        // 点击前视野。拖拽形成选区时保留系统原生自动滚动。
+        if selectedRange().length == 0, let viewportOrigin {
+            restoreViewportAfterCaretClick(to: viewportOrigin)
+        }
+    }
+
+    private func restoreViewportAfterCaretClick(to origin: NSPoint) {
+        guard let scrollView = enclosingScrollView else { return }
+        caretClickViewportGeneration &+= 1
+        let generation = caretClickViewportGeneration
+        let selectionAfterClick = selectedRange()
+        let restore = { [weak scrollView] in
+            guard let scrollView else { return }
+            let clipView = scrollView.contentView
+            var bounds = clipView.bounds
+            bounds.origin = origin
+            clipView.setBoundsOrigin(clipView.constrainBoundsRect(bounds).origin)
+            scrollView.reflectScrolledClipView(clipView)
+        }
+        restore()
+        DispatchQueue.main.async { [weak self] in
+            guard let self,
+                  self.caretClickViewportGeneration == generation,
+                  self.selectedRange() == selectionAfterClick else { return }
+            restore()
+        }
     }
 
     override func setMarkedText(
@@ -143,6 +210,9 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
         selectedRange: NSRange,
         replacementRange: NSRange
     ) {
+        #if DEBUG
+        onDiagnostic35CompositionUpdate?(replacementRange)
+        #endif
         NodeMarkdownDiagnostic31.record(
             "setMarkedText前 selectedRange=\(NSStringFromRange(selectedRange)) replacementRange=\(NSStringFromRange(replacementRange))",
             in: self,

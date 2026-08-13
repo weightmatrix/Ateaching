@@ -97,7 +97,7 @@ struct TeachingStudentsSubpageView: View {
                     Button {
                         onUpdateIcon(student.id, iconName)
                     } label: {
-                        Label(iconName, systemImage: iconName)
+                        Label(TeachingStudentItem.displayName(forIcon: iconName), systemImage: iconName)
                     }
                 }
             }
@@ -107,7 +107,12 @@ struct TeachingStudentsSubpageView: View {
                     Button {
                         onUpdateColor(student.id, color)
                     } label: {
-                        Label(color.displayName, systemImage: "paintpalette")
+                        HStack {
+                            Circle()
+                                .fill(color.value)
+                                .frame(width: 10, height: 10)
+                            Text(color.displayName)
+                        }
                     }
                 }
             }

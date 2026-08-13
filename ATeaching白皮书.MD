@@ -4,6 +4,28 @@
 
 ---
 
+# 2-37 明确导航与焦点可见性
+
+视野移动分为两类：搜索、目录等用户明确导航使用`navigationRequestToken`，每个令牌只消费一次；普通鼠标点击进入编辑不构成导航命令。`NSTextView.mouseDown`完成真实选区后，单点插入事务恢复点击前的`NSClipView.bounds.origin`，并在下一主线程轮次抵消TextKit因源码/渲染样式切换产生的延迟自动滚动。拖拽选区不应用该保护。
+
+回车后的焦点可见性不再靠固定次数调用`scrollRangeToVisible`。代码读取TextKit提供的真实插入点屏幕矩形，转换到TextView坐标并与`visibleRect`比较；只有插入点越界时才请求滚动。由此保留必要的焦点追踪，同时删除进入编辑、普通保存和焦点仍可见时的强制视野变化。
+
+# 2-36 字符事务与结构事务分流
+
+`【诊断·35】`证明旧高频路径同时承担了字符编辑与结构编辑的成本：每键验证全部元数据、比较整篇布局快照、回写焦点调试状态，并在中文定字后刷新当前及相邻Node。字符事务现只沿用既有Node身份，增量更新当前Node、当前行长度和必要的输入属性；结构事务才拆分全文、验证全部Node并重建样式。
+
+SwiftUI同步令牌是外部替换的唯一明确命令。本地正文尚待绑定确认时，`updateNSView`只确认状态，不再触发布局重建。焦点位置回调仅在调试覆盖层启用时连接，避免光标每移动一个字符就驱动父视图更新。
+
+Debug校验分为局部与完整两级。普通输入核对当前Node的UUID索引、当前行与相邻接缝、文末和选区；文档载入与结构事务继续执行全量检查。当前布局表仍保存绝对UTF-16范围，因此行长度改变时仍需平移后续范围。严格与文档长度无关的下一阶段应建立独立前缀长度索引，以真实行长计算位置，不得缓存或猜测行号。
+
+# 2-34 可重复触发的Node定位命令
+
+搜索高亮状态不再兼任导航事件。`activeSearchRowIndex`继续表达当前高亮Node，`textKit2NavigationRequestToken`专门表达用户发出了一次定位命令。搜索结果、上一条、下一条与目录选择每次点击都递增该序号，因此目标Node没变时仍能再次定位。
+
+`NodeMarkdownTextKit2NavigationPolicy`在真实行数内验证目标，并且只接受未处理的请求序号。Coordinator在完成正文同步和行布局核对后，将该Node的真实UTF-16范围交给`NSTextView.scrollRangeToVisible`。该路径不写选区、不设置第一响应者、不进入Node编辑会话，与焦点管理完全分离。
+
+学生外观数据保持原有`iconName`和颜色枚举的落盘格式。图标集扩充到20个；颜色枚举在原有6色基础上新增黄、薄荷、青、青蓝、靛蓝和棕，旧学生JSON不需要迁移。
+
 # 2-33 包事务、插入锚点与教案移动
 
 包删除以删除前快照为依据，从被删范围收集所有非空、同时拥有`SourceFile`和`SourceID`的H3根。剩余文档仍有相同来源键时不回退完成状态；否则在当前学生完成清单中将精确匹配行的`Status`写为0。任务失败必须显示错误，不能用“已删除”掩盖清单未回退。
@@ -1432,3 +1454,44 @@ TextKit2新管线不能仅依赖`NSTextView.typingAttributes`，因为输入法�
 输入法事务开始时，`setMarkedText`先将标准Node样式合并到输入法提供的属性字符串，再交给AppKit。`super.setMarkedText`返回后，以`markedRange()`的真实UTF-16范围为准，在`NSTextContentStorage.performEditingTransaction`中向该范围复写受控属性。组合期间如果输入法再次改写marked text，选区与文字变化回调会再次执行同一校正。
 
 校正只写入`.font`、`.foregroundColor`和`.paragraphStyle`。输入法自己的下划线、选中段、分词和候选信息不删除。属性校正期间使用独立标志阻断重入文字修改回调，不改变源码快照、Node内容、选区和输入法提交事务。
+# APP内语义投屏
+
+APP内投屏不是录屏视频。主控分别维护“上课”和“Markdown”两个语义频道，编辑器将渲染后的HTML快照交给`ScreenCastContentHub`，会话层只发送用户已启用的频道。NodeMarkdown只在上课会话中发布，普通Markdown只发布到Markdown频道。编辑器的保存、输入、焦点和脏包事务不依赖投屏状态。
+
+局域网传输使用Network.framework。主控通过`_ateaching-cast._tcp`发布Bonjour服务，接收端通过`NWBrowser`自动发现，不要求用户录入IP或端口。四位数字属于局域网配对码而非互联网安全凭据；连接建立后，接收端发送名字、配对码和稳定设备UUID，主控验证后分配批注颜色并返回会话状态。
+
+TCP是字节流。每条消息必须使用四字节大端长度加JSON信封的分帧格式；接收缓冲区允许一帧被拆成多次receive，也允许一次receive包含多帧。任何代码不得假定一次receive等于一条消息。信封包含协议版本和消息类型，文档、视野、成员、批注与控制消息使用各自Codable载荷。
+
+文档快照携带频道、标题、完整渲染HTML和单调递增版本。NodeMarkdown的KaTeX、marked等网页资源内联到HTML，本地图片转换为Data URI，因此接收设备不读取主控物理路径。接收WebView仅在版本变化时重新载入；主控暂停或缩小窗口时保留上一版本，不清空页面。
+
+视野同步只读取主控当前编辑器的真实滚动容器。滚动位置按可滚动宽度和高度归一化到0至1，鼠标按编辑器可见区域归一化；采样不得调用主控的scrollTo、scrollRangeToVisible或改变焦点。接收端把比例映射到自己的屏幕尺寸，因此Mac和iPhone尺寸不同也能观看同一位置。
+
+批注点使用接收画布的归一化坐标，按成员UUID和颜色发送。笔迹、删除单笔和清除本人笔迹是独立消息；“清除”不能误删其他成员的批注。Mac接收时其他Markdown和NodeMarkdown窗口只暂时隐藏，退出接收后恢复，不关闭文档。
+
+Mac App保持沙盒运行，同时必须在Debug与Release产物中携带`com.apple.security.network.server`和`com.apple.security.network.client`。前者允许主控建立`NWListener`，后者允许接收端浏览并连接局域网服务。工程设置修改后必须读取签名App的实际entitlements，并在签名沙盒进程中确认Listener进入`ready`，不能只以编译通过作为网络权限验证。
+
+Listener失败属于可观察的会话终态。清理listener、peer和定时器时必须保留失败原因；只有用户主动停止或新会话启动前清理时，状态才恢复为“未连接”。
+
+# TextKit2回车结构事务
+
+NodeMarkdown新管线的回车属于两个Node之间的局部结构事务。原Node保留UUID和光标前内容，新Node获得新UUID、继承允许继承的层级并保存光标后内容；带来源的受保护H3仍只在其后建立无来源H4，不拆分或复制来源身份。
+
+正常回车只能修改当前TextStorage范围、两个Node、拆分接缝布局和相关行样式。不得重新解析全文、用全文替换DocumentState、执行全文深度校验，或因前文增加一个换行而重新渲染未编辑Node。结构快照必须在原生命令返回后合并发布，不能让SwiftUI在AppKit命令处理中重入编辑器。
+
+新行的层级样式和typingAttributes必须先于选区安装。回车不得调用`scrollRangeToVisible`，也不得在TextKit2布局失效期间通过`firstRect`猜测光标坐标。结构事务保存进入前的真实clipView原点并阻止系统自动追踪选区；事务结束后恢复原点。只有文档末尾受到容器边界约束时，系统约束后的合法原点可以保留。
+
+局部接缝更新必须验证Node数量、行范围连续性和文档末端。验证失败可以进入明确记录的完整布局安全回退，但回退不是正常性能路径。
+
+# NodeMarkdown ProseMirror式核心架构
+
+NodeMarkdown新管线借鉴ProseMirror的核心分层，但不引入网页编辑器或JavaScript运行时。文档的权威状态是带UUID、level、content、SourceID和SourceFile的Node序列；TextKit2只是某个可见Node的输入与排版工具，不再拥有整篇文档的业务身份。
+
+所有变更由`NodeMarkdownTransaction`表达。字符替换、Node替换、层级更改、插入、删除、拆分、合并和移动都是显式Step。事务携带基础版本号，过期事务会被拒绝；多步结构事务要么整体成功，要么回滚。`NodeMarkdownPositionMap`使选区使用Node UUID和Node内UTF-16偏移进行映射，不依赖整篇字符位置。结构事务的反向Step构成撤销与重做历史。
+
+`NodeMarkdownProseMirrorIndex`在内存中为UUID行位置、父Node、子树结束和所属H3包建立结构索引。查找Node不再每次扫描文档；结构改动后由文档核心统一重建相关索引，界面层不自行推断H3包范围。
+
+Mac编辑视口使用虚拟化Node块。`NSTableView`只创建屏幕中可见的Node视图，每个视图拥有独立TextKit2存储，因此上一Node的附件、属性或删除范围在结构上无法落入下一Node。非可见Node不创建TextKit对象；可见静态Node复用原公式、图片、编号、高亮和背景条渲染器。
+
+Node高度由TextKit2真实布局片段测量，不根据行号或字数猜测。实测高度进入按UUID、内容版本、样式版本和宽度键控制的渲染缓存；Fenwick高度索引以`O(log N)`更新高度和查找纵向位置。宽度改变时只使高度缓存失效，可见Node重测，并通过真实顶部Node保持滚动锚点。
+
+普通英文和中文输入只更新活动Node的TextStorage、Node值、高度和未保存状态，不构造全文字符串，不平移后续范围，不回写SwiftUI。离行、ESC、保存、同步或导出时才提交活动Node草稿。回车、Tab、跨Node删除和多行粘贴属于结构事务；只有这些操作发布完整文档快照。

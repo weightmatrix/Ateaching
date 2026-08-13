@@ -14,6 +14,7 @@ final class NodeMarkdownTextKit2Coordinator: NSObject, NSTextViewDelegate {
     var workingDirectoryURL: URL?
     var documentStyle: NodeMarkdownDocumentStyle
     var activeRowIndex: Int?
+    var navigationRequestToken: Int
     var activeMatchLocationInRow: Int?
     var editingRowIndex: Int?
     var searchQuery: String
@@ -30,8 +31,11 @@ final class NodeMarkdownTextKit2Coordinator: NSObject, NSTextViewDelegate {
     var lastAppliedEditingRowIndex: Int?
     var lastReportedActiveRowIndex: Int?
     var lastReportedFocusLocation: NodeMarkdownTextFocusLocation?
-    var lastScrolledActiveRowIndex: Int?
+    var lastHandledNavigationRequestToken: Int
     var lastExternalTextSyncToken: Int
+    var diagnostic35Session: NodeMarkdownDiagnostic35.Session?
+    var diagnostic35FlushGeneration = 0
+    var diagnostic41TextTransaction: NodeMarkdownDiagnostic41.Transaction?
     var editingParagraphStyleCache: [Int: NSParagraphStyle] = [:]
     var onTextChange: ((String) -> Void)?
     var onTextChangeWithRowMetadata: ((String, [NodeMarkdownTextKitRowMetadata]) -> Void)?
@@ -49,9 +53,9 @@ final class NodeMarkdownTextKit2Coordinator: NSObject, NSTextViewDelegate {
     var onEditingDraftDirtyChange: ((Bool) -> Void)?
     var onRequestSave: (() -> Void)?
     var onInputSessionStateChange: ((Bool) -> Void)?
+    var onBeginEditing: (() -> Void)?
     var isApplyingExternalText = false
     var isApplyingStyleUpdate = false
-    var shouldRefreshCurrentRowAfterTextChange = true
     var pendingTextEditImpact: EditorDeletionImpact = .document
     var pendingTextEditAffectedRange: NSRange?
     var pendingProjectedRowMetadata: [NodeMarkdownTextKitRowMetadata]?
@@ -71,12 +75,14 @@ final class NodeMarkdownTextKit2Coordinator: NSObject, NSTextViewDelegate {
     private weak var draftCommitController: NodeMarkdownLegacyDraftCommitController?
     let documentSnapshotSessionID = UUID()
     var documentSnapshotRevision: UInt64 = 0
+    var pendingStructuralSnapshotGeneration: UInt64 = 0
 
     init(
         text: Binding<String>,
         workingDirectoryURL: URL?,
         documentStyle: NodeMarkdownDocumentStyle,
         activeRowIndex: Int?,
+        navigationRequestToken: Int,
         activeMatchLocationInRow: Int?,
         editingRowIndex: Int?,
         searchQuery: String,
@@ -99,13 +105,16 @@ final class NodeMarkdownTextKit2Coordinator: NSObject, NSTextViewDelegate {
         onCommitEditingNode: ((NodeMarkdownLegacyEditingNodeDraft) -> Void)?,
         onEditingDraftDirtyChange: ((Bool) -> Void)?,
         onRequestSave: (() -> Void)?,
-        onInputSessionStateChange: ((Bool) -> Void)?
+        onInputSessionStateChange: ((Bool) -> Void)?,
+        onBeginEditing: (() -> Void)?
     ) {
         documentState = NodeMarkdownTextKit2DocumentState(text: text.wrappedValue, rowMetadata: rowMetadata)
         self.text = text
         self.workingDirectoryURL = workingDirectoryURL
         self.documentStyle = documentStyle
         self.activeRowIndex = activeRowIndex
+        self.navigationRequestToken = navigationRequestToken
+        lastHandledNavigationRequestToken = navigationRequestToken
         self.activeMatchLocationInRow = activeMatchLocationInRow
         self.editingRowIndex = editingRowIndex
         self.searchQuery = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -128,6 +137,7 @@ final class NodeMarkdownTextKit2Coordinator: NSObject, NSTextViewDelegate {
         self.onEditingDraftDirtyChange = onEditingDraftDirtyChange
         self.onRequestSave = onRequestSave
         self.onInputSessionStateChange = onInputSessionStateChange
+        self.onBeginEditing = onBeginEditing
         self.draftCommitController = draftCommitController
     }
 

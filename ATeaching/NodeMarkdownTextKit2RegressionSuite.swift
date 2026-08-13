@@ -18,12 +18,19 @@ enum NodeMarkdownTextKit2RegressionSuite {
         testDuplicateIdentityIsRejected()
         testIncompleteDocumentContractsAreRejected()
         testProtectedH3CannotLoseIdentity()
+        testDocumentStateSplitsNodeLocally()
+        testProseMirrorCharacterTransactionAndMapping()
+        testProseMirrorStructuralIndexAndHistory()
+        testProtectedH3SplitCanUndo()
+        testProseMirrorRejectsStaleTransaction()
         testHeightIndex()
         testLargeIndexLookup()
         testCommittedNodeCollectsDirtyAndNewPackages()
         #if os(macOS)
+        testNavigationRequestCanRepeatSameRow()
         testQuickInputReconcilesRealFollowingRowBoundary()
         testInputMethodTemporarilyProjectsFollowingRows()
+        testNativeDeletionDefersSelectionAndRefreshesSeam()
         testInputMethodUsesCurrentNodeTypography()
         testBody3AndBody4UseIndependentStyles()
         testParagraphBoundaryUsesFollowingNodeTextStyle()
@@ -45,6 +52,35 @@ enum NodeMarkdownTextKit2RegressionSuite {
             sourceFile: sourceFile
         )
     }
+
+    #if os(macOS)
+    private static func testNavigationRequestCanRepeatSameRow() {
+        assert(NodeMarkdownTextKit2NavigationPolicy.targetRow(
+            requestToken: 1,
+            lastHandledToken: 0,
+            activeRowIndex: 8,
+            rowCount: 20
+        ) == 8)
+        assert(NodeMarkdownTextKit2NavigationPolicy.targetRow(
+            requestToken: 1,
+            lastHandledToken: 1,
+            activeRowIndex: 8,
+            rowCount: 20
+        ) == nil)
+        assert(NodeMarkdownTextKit2NavigationPolicy.targetRow(
+            requestToken: 2,
+            lastHandledToken: 1,
+            activeRowIndex: 8,
+            rowCount: 20
+        ) == 8)
+        assert(NodeMarkdownTextKit2NavigationPolicy.targetRow(
+            requestToken: 3,
+            lastHandledToken: 2,
+            activeRowIndex: 20,
+            rowCount: 20
+        ) == nil)
+    }
+    #endif
 
     private static func testDocumentStateKeepsIdentity() {
         let first = UUID()
@@ -122,6 +158,132 @@ enum NodeMarkdownTextKit2RegressionSuite {
         assert(state.node(at: 0)?.level == 3)
         assert(state.node(at: 0)?.sourceID == "source")
         assert(state.node(at: 0)?.sourceFile == "chapter.csv")
+    }
+
+    private static func testDocumentStateSplitsNodeLocally() {
+        let first = UUID()
+        let following = UUID()
+        let inserted = UUID()
+        let state = NodeMarkdownTextKit2DocumentState(
+            text: "AABBCC\nDD",
+            rowMetadata: [metadata(first, level: 5), metadata(following, level: 8)]
+        )
+        assert(state.splitNode(at: 0, utf16Offset: 4, newNodeID: inserted, newLevel: 5))
+        assert(state.snapshot.plainText == "AABB\nCC\nDD")
+        assert(state.node(at: 0)?.id == first)
+        assert(state.node(at: 1)?.id == inserted)
+        assert(state.node(at: 1)?.level == 5)
+        assert(state.node(at: 2)?.id == following)
+        assert(state.row(for: following) == 2)
+    }
+
+    private static func testProseMirrorCharacterTransactionAndMapping() {
+        let first = UUID()
+        let second = UUID()
+        let state = NodeMarkdownTextKit2DocumentState(
+            text: "ABCDE\nFollowing",
+            rowMetadata: [metadata(first, level: 5), metadata(second, level: 9)]
+        )
+        let beforeRevision = state.revision
+        let selection = NodeMarkdownNodeSelection(
+            anchor: NodeMarkdownNodePosition(nodeID: first, utf16Offset: 5)
+        )
+        let result = state.dispatch(
+            NodeMarkdownTransaction(
+                baseRevision: beforeRevision,
+                steps: [
+                    .replaceText(
+                        nodeID: first,
+                        range: NSRange(location: 1, length: 2),
+                        replacement: "XYZ"
+                    )
+                ],
+                selectionBefore: selection,
+                label: "Regression typing"
+            )
+        )
+        assert(result?.structural == false)
+        assert(result?.affectedNodeIDs == [first])
+        assert(result?.mappedSelection?.head == NodeMarkdownNodePosition(nodeID: first, utf16Offset: 6))
+        assert(state.node(at: 0)?.content == "AXYZDE")
+        assert(state.node(at: 1)?.content == "Following")
+        assert(state.row(for: second) == 1)
+    }
+
+    private static func testProseMirrorStructuralIndexAndHistory() {
+        let h1 = UUID()
+        let h3 = UUID()
+        let child = UUID()
+        let state = NodeMarkdownTextKit2DocumentState(
+            text: "H1\nPackage\nChild",
+            rowMetadata: [
+                metadata(h1, level: 1),
+                metadata(h3, level: 3),
+                metadata(child, level: 4)
+            ]
+        )
+        assert(state.parentRow(of: 2) == 1)
+        assert(state.owningH3Row(for: 2) == 1)
+        assert(state.packageRange(rootID: h3) == 1..<3)
+
+        let inserted = UUID()
+        let transaction = NodeMarkdownTransaction(
+            baseRevision: state.revision,
+            steps: [
+                .splitNode(nodeID: child, offset: 2, newNodeID: inserted, newLevel: 4)
+            ],
+            label: "Regression split"
+        )
+        assert(state.dispatch(transaction)?.structural == true)
+        assert(state.snapshot.plainText == "H1\nPackage\nCh\nild")
+        assert(state.packageRange(rootID: h3) == 1..<4)
+        assert(state.undo() != nil)
+        assert(state.snapshot.plainText == "H1\nPackage\nChild")
+        assert(state.row(for: inserted) == nil)
+        assert(state.redo() != nil)
+        assert(state.snapshot.plainText == "H1\nPackage\nCh\nild")
+    }
+
+    private static func testProseMirrorRejectsStaleTransaction() {
+        let id = UUID()
+        let state = NodeMarkdownTextKit2DocumentState(
+            text: "A",
+            rowMetadata: [metadata(id, level: 7)]
+        )
+        let staleRevision = state.revision
+        assert(state.updateRow(0, content: "AB", metadata: metadata(id, level: 7)))
+        let stale = NodeMarkdownTransaction(
+            baseRevision: staleRevision,
+            steps: [.replaceText(nodeID: id, range: NSRange(location: 0, length: 1), replacement: "X")],
+            label: "Stale"
+        )
+        assert(state.dispatch(stale) == nil)
+        assert(state.node(at: 0)?.content == "AB")
+    }
+
+    private static func testProtectedH3SplitCanUndo() {
+        let root = UUID()
+        let child = UUID()
+        let state = NodeMarkdownTextKit2DocumentState(
+            text: "Package\nFollowing",
+            rowMetadata: [
+                metadata(root, level: 3, sourceID: "source", sourceFile: "chapter.csv"),
+                metadata(child, level: 4)
+            ]
+        )
+        let inserted = UUID()
+        let transaction = NodeMarkdownTransaction(
+            baseRevision: state.revision,
+            steps: [.splitNode(nodeID: root, offset: 7, newNodeID: inserted, newLevel: 4)],
+            label: "Protected H3 Enter"
+        )
+        assert(state.dispatch(transaction) != nil)
+        assert(state.node(at: 0)?.isProtectedH3 == true)
+        assert(state.node(at: 1)?.level == 4)
+        assert(state.node(at: 1)?.sourceID.isEmpty == true)
+        assert(state.undo() != nil)
+        assert(state.snapshot.plainText == "Package\nFollowing")
+        assert(state.node(at: 0)?.isProtectedH3 == true)
     }
 
     private static func testHeightIndex() {
@@ -283,6 +445,23 @@ enum NodeMarkdownTextKit2RegressionSuite {
         assert(projected?[0].contentRange == NSRange(location: 0, length: 4))
         assert(projected?[1].range == NSRange(location: 5, length: 1))
         assert(projected?[1].level == 9)
+    }
+
+    private static func testNativeDeletionDefersSelectionAndRefreshesSeam() {
+        assert(NodeMarkdownTextKit2NativeEditPolicy.shouldDeferSelectionSynchronization(
+            hasPendingSourceProjection: true
+        ))
+        assert(!NodeMarkdownTextKit2NativeEditPolicy.shouldDeferSelectionSynchronization(
+            hasPendingSourceProjection: false
+        ))
+        assert(NodeMarkdownTextKit2NativeEditPolicy.seamRows(
+            afterSettling: NSRange(location: 24, length: 3),
+            rowIndex: 7
+        ) == Set([7, 8]))
+        assert(NodeMarkdownTextKit2NativeEditPolicy.seamRows(
+            afterSettling: NSRange(location: 24, length: 0),
+            rowIndex: 7
+        ).isEmpty)
     }
 
     private static func testInputMethodUsesCurrentNodeTypography() {

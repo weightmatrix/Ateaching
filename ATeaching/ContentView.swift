@@ -10,6 +10,28 @@ struct ContentView: View {
     }
 
     var body: some View {
+        Group {
+            if screenCastService.isReceiving && screenCastService.isConnected {
+                NavigationStack {
+                    ScreenCastReceiverView(service: screenCastService)
+                }
+            } else {
+                mainNavigation
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: appWillTerminate)) { _ in
+            screenCastService.stopAll(reason: "应用将终止")
+        }
+        .onChange(of: screenCastService.isConnected) { _, connected in
+            if connected && screenCastService.isReceiving {
+                ScreenCastReceiverWindowCoordinator.enterExclusiveReceiving()
+            } else {
+                ScreenCastReceiverWindowCoordinator.leaveExclusiveReceiving()
+            }
+        }
+    }
+
+    private var mainNavigation: some View {
         NavigationStack {
             VStack(spacing: 0) {
                 currentPage
@@ -42,9 +64,6 @@ struct ContentView: View {
             #if os(macOS)
             .background(MacMainWindowAccessor(title: displayTitle))
             #endif
-        }
-        .onReceive(NotificationCenter.default.publisher(for: appWillTerminate)) { _ in
-            screenCastService.stopAll()
         }
     }
 

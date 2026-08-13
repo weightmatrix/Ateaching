@@ -20,6 +20,9 @@ extension NodeMarkdownTextKit2Coordinator {
         externalText: String,
         externalTextSyncToken: Int
     ) {
+        let diagnosticStart = NodeMarkdownDiagnostic35.now()
+        defer { recordDiagnostic35Duration("Coordinator同步", since: diagnosticStart) }
+        recordDiagnostic35Count("Coordinator同步次数")
         NodeMarkdownDiagnostic31.record(
             "synchronize进入 external/storage=\((externalText as NSString).length)/\(textView.nodeTextStorage.length) token=\(externalTextSyncToken)/\(lastExternalTextSyncToken) localRevision=\(localEditRevision)/\(lastAcknowledgedLocalRevision) unack=\(hasUnacknowledgedLocalText) pendingFocus=\(pendingFocusAnchor != nil)",
             in: textView,
@@ -41,6 +44,13 @@ extension NodeMarkdownTextKit2Coordinator {
 
         let currentText = textView.documentString()
         let hasExplicitExternalSync = externalTextSyncToken != lastExternalTextSyncToken
+        let diagnostic41: NodeMarkdownDiagnostic41.Transaction? = {
+            guard hasExplicitExternalSync || currentText != externalText else { return nil }
+            return beginDiagnostic41(
+                "SwiftUI同步 token=\(externalTextSyncToken)/\(lastExternalTextSyncToken) current/external=\((currentText as NSString).length)/\((externalText as NSString).length)",
+                in: textView
+            )
+        }()
         NodeMarkdownTextKit2Diagnostics.log("同步判定：当前长度=\((currentText as NSString).length)，外部长度=\((externalText as NSString).length)，明确外部同步=\(hasExplicitExternalSync)，存在未确认本地正文=\(hasUnacknowledgedLocalText)，有效输入法组合=\(hasActiveComposition)。")
         let viewportAnchor: NodeMarkdownTextKit2VisualViewportAnchor? = {
             guard hasExplicitExternalSync,
@@ -51,6 +61,7 @@ extension NodeMarkdownTextKit2Coordinator {
             )
         }()
         if currentText == externalText {
+            recordDiagnostic35Count("同步正文相同")
             NodeMarkdownDiagnostic31.record("synchronize分支=正文相同", in: textView, rowLayouts: rowLayouts)
             NodeMarkdownTextKit2Diagnostics.log("同步分支=正文相同，不替换TextStorage。")
             if lastPublishedLocalText == externalText {
@@ -62,15 +73,19 @@ extension NodeMarkdownTextKit2Coordinator {
             // 正文没有被替换，TextKit当前选区就是唯一真实焦点。
             forgetRememberedFocus()
         } else if hasUnacknowledgedLocalText && !hasExplicitExternalSync {
+            recordDiagnostic35Count("同步保留本地")
             NodeMarkdownDiagnostic31.record("synchronize分支=保留本地正文", in: textView, rowLayouts: rowLayouts)
             NodeMarkdownTextKit2Diagnostics.log("同步分支=保留未确认本地正文，拒绝迟到的普通外部回写。")
             // 只有真正发布且尚未被SwiftUI确认的正文才能阻止外部回写。
             // NSTextView刚挂入窗口时可能已经获得焦点；“正在编辑”不等于“正文已经改变”，
             // 否则磁盘正文首次载入会被空的初始文本挡住，Mac端只剩一块空白编辑器。
-            rebuildRowLayoutsIfNeeded(from: textView)
+            // 本地字符事务已经同步更新当前Node与行坐标。迟到的SwiftUI视图刷新
+            // 既没有新正文，也没有外部同步令牌，绝不能借机重建全文或重刷样式。
+            // 结构事务和明确外部替换均走其他分支，并继续保留完整重建能力。
             // 迟到的SwiftUI回写不能用输入前记录的行内偏移覆盖原生输入焦点。
             forgetRememberedFocus()
         } else {
+            recordDiagnostic35Count("同步全文安装")
             NodeMarkdownDiagnostic31.record("synchronize分支=安装外部正文", in: textView, rowLayouts: rowLayouts)
             NodeMarkdownTextKit2Diagnostics.log("同步分支=安装外部正文。")
             _ = consumeExternalTextSyncToken(externalTextSyncToken)
@@ -90,7 +105,11 @@ extension NodeMarkdownTextKit2Coordinator {
             restoreVisualViewportAnchor(viewportAnchor, in: textView)
         }
         refreshSearchHighlightsIfNeeded(in: textView)
+        scrollToActiveRowIfNeeded(in: textView)
         updateTypingAttributes(for: textView)
+        if let diagnostic41 {
+            finishDiagnostic41(diagnostic41, in: textView)
+        }
         NodeMarkdownDiagnostic31.record(
             "synchronize完成 pendingFocus=\(pendingFocusAnchor != nil) editingRow=\(editingRowIndex.map(String.init) ?? "nil")",
             in: textView,

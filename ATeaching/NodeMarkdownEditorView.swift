@@ -68,8 +68,10 @@ struct NodeMarkdownEditorView: View {
     @State private var searchResults: [NodeMarkdownSearchResult] = []
     @State private var activeSearchResultIndex: Int?
     @State private var activeSearchRowIndex: Int?
+    @State private var textKit2NavigationRequestToken = 0
     @State private var pendingExportFormat: NodeMarkdownExportFormat = .pdf
     @State private var pendingRebuildTask: Task<Void, Never>?
+    @State private var pendingScreenCastPublishTask: Task<Void, Never>?
     @State private var pendingTextKitParseTask: Task<Void, Never>?
     @State private var textKitParseGeneration: UInt64 = 0
     @State private var diskLoadGeneration: UInt64 = 0
@@ -117,6 +119,7 @@ struct NodeMarkdownEditorView: View {
     @State private var legacyDraftCommitController = NodeMarkdownLegacyDraftCommitController()
     @State private var hasUncommittedLegacyDraft = false
     @StateObject private var annotationController = TeachingAnnotationController()
+    @ObservedObject private var screenCastAnnotationHub = ScreenCastAnnotationHub.shared
     private let editorInstanceID = UUID().uuidString
 
     @ObservedObject private var settingsCenter = NodeMarkdownSettingsCenter.shared
@@ -144,6 +147,7 @@ struct NodeMarkdownEditorView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .contentShape(Rectangle())
                 .allowsHitTesting(annotationController.isActive)
+            ScreenCastStrokeOverlay(strokes: screenCastAnnotationHub.strokes)
         }
         .navigationTitle("Node-\(fileURL.lastPathComponent)")
         .toolbar {
@@ -239,7 +243,14 @@ struct NodeMarkdownEditorView: View {
             pendingCutPackageOriginalIndex = nil
             statusMessage = "剪切包已在另一个教案中粘贴"
         }
+        .onReceive(NotificationCenter.default.publisher(for: .screenCastRequestedKindsDidChange)) { _ in
+            guard isClassSessionEditor,
+                  ScreenCastContentHub.shared.isRequested(.teaching) else { return }
+            scheduleSnapshotRebuild()
+        }
         .onDisappear {
+            pendingScreenCastPublishTask?.cancel()
+            pendingScreenCastPublishTask = nil
             legacyDraftCommitController.commitPendingEditing()
             guard !isClosingClassSessionWithSync else {
                 Task {
@@ -621,6 +632,13 @@ struct NodeMarkdownEditorView: View {
             documentIndex.rebuild(from: parsedDocument.nodes)
             fileMeta = loaded.1
             rowsSnapshot = rows
+            if isClassSessionEditor && ScreenCastContentHub.shared.isRequested(.teaching) {
+                scheduleNodeScreenCastPublish(
+                    rows,
+                    title: loaded.1.title.isEmpty ? targetURL.deletingPathExtension().lastPathComponent : loaded.1.title,
+                    baseURL: targetURL.deletingLastPathComponent()
+                )
+            }
             textKitDraft = NodeMarkdownPlainTextCodec.serialize(document: parsedDocument)
             textKitDraftRowMetadata = makeTextKitRowMetadata(for: parsedDocument)
             // 编辑器通常先于异步磁盘读取创建。正文与Node身份装载完成后必须同时
@@ -687,6 +705,7 @@ struct NodeMarkdownEditorView: View {
             workingDirectoryURL: fileURL.deletingLastPathComponent(),
             documentStyle: settingsCenter.documentStyle,
             activeRowIndex: activeSearchRowIndex,
+            navigationRequestToken: textKit2NavigationRequestToken,
             activeMatchLocationInRow: activeSearchMatchLocationInRow,
             editingRowIndex: activeEditorRowIndex,
             searchQuery: searchQuery,
@@ -727,11 +746,13 @@ struct NodeMarkdownEditorView: View {
                     handleActiveEditorRowChange(rowIndex)
                 }
             },
-            onFocusLocationChange: { location in
-                enqueueEditorStateUpdate {
-                    textKit2FocusLocation = location
+            onFocusLocationChange: TeachingDebugLogStore.isTextKit2FocusLocationOverlayEnabled()
+                ? { location in
+                    enqueueEditorStateUpdate {
+                        textKit2FocusLocation = location
+                    }
                 }
-            },
+                : nil,
             onDocumentSnapshot: { snapshot in
                 applyTextKit2DocumentSnapshot(snapshot)
             },
@@ -746,6 +767,9 @@ struct NodeMarkdownEditorView: View {
             },
             onInputSessionStateChange: { isActive in
                 isTextInputSessionActive = isActive
+            },
+            onBeginEditing: {
+                finishSearchForEditing()
             }
         )
     }
@@ -756,6 +780,7 @@ struct NodeMarkdownEditorView: View {
             workingDirectoryURL: fileURL.deletingLastPathComponent(),
             documentStyle: settingsCenter.documentStyle,
             activeRowIndex: activeSearchRowIndex,
+            navigationRequestToken: textKit2NavigationRequestToken,
             activeMatchLocationInRow: activeSearchMatchLocationInRow,
             editingRowIndex: activeEditorRowIndex,
             searchQuery: searchQuery,
@@ -816,6 +841,7 @@ struct NodeMarkdownEditorView: View {
                 query: searchQuery,
                 results: searchResults,
                 activeIndex: activeSearchResultIndex,
+                documentStyle: settingsCenter.documentStyle,
                 onSelect: { index in
                     selectSearchResult(at: index)
                 },
@@ -1533,8 +1559,25 @@ struct NodeMarkdownEditorView: View {
             await MainActor.run {
                 guard !Task.isCancelled else { return }
                 rowsSnapshot = rows
+                if isClassSessionEditor && ScreenCastContentHub.shared.isRequested(.teaching) {
+                    scheduleNodeScreenCastPublish(
+                        rows,
+                        title: fileMeta.title.isEmpty ? fileURL.deletingPathExtension().lastPathComponent : fileMeta.title,
+                        baseURL: fileURL.deletingLastPathComponent()
+                    )
+                }
                 rebuildSearchResults()
             }
+        }
+    }
+
+    private func scheduleNodeScreenCastPublish(_ rows: String, title: String, baseURL: URL) {
+        pendingScreenCastPublishTask?.cancel()
+        pendingScreenCastPublishTask = Task {
+            try? await Task.sleep(nanoseconds: 450_000_000)
+            guard !Task.isCancelled,
+                  ScreenCastContentHub.shared.isRequested(.teaching) else { return }
+            ScreenCastContentHub.shared.publishNodeMarkdownRows(rows, title: title, baseURL: baseURL)
         }
     }
 
@@ -1591,11 +1634,16 @@ struct NodeMarkdownEditorView: View {
     }
 
     private func refreshTextKitDraftFromDocument(forceExternalSync: Bool = false) {
+        let previousToken = externalTextSyncToken
         invalidatePendingTextKitParsing()
         textKitDraft = NodeMarkdownPlainTextCodec.serialize(document: document)
         textKitDraftRowMetadata = textKitRowMetadata
         if forceExternalSync {
             externalTextSyncToken &+= 1
+            let activeRowDescription = activeEditorRowIndex.map(String.init) ?? "nil"
+            NodeMarkdownDiagnostic41.event(
+                "父页面强制外部同步 token=\(previousToken)->\(externalTextSyncToken) nodes=\(document.nodes.count) draftUTF16=\((textKitDraft as NSString).length) activeRow=\(activeRowDescription)"
+            )
         }
     }
 
@@ -2311,6 +2359,8 @@ struct NodeMarkdownEditorView: View {
                 onMove: moveNodePackageFromTOC
             ) { selected in
                 activeSearchRowIndex = selected.rowIndex
+                let requestToken = textKit2NavigationRequestToken &+ 1
+                textKit2NavigationRequestToken = requestToken
                 showTOCPopover = false
             }
             .frame(width: 300, height: 360)
@@ -2430,8 +2480,11 @@ struct NodeMarkdownEditorView: View {
 
     private func selectSearchResult(at index: Int) {
         guard searchResults.indices.contains(index) else { return }
+        let result = searchResults[index]
         activeSearchResultIndex = index
-        activeSearchRowIndex = searchResults[index].rowIndex
+        activeSearchRowIndex = result.rowIndex
+        let requestToken = textKit2NavigationRequestToken &+ 1
+        textKit2NavigationRequestToken = requestToken
     }
 
     private func performSearch() {
@@ -2483,6 +2536,14 @@ struct NodeMarkdownEditorView: View {
         searchResults = []
         activeSearchResultIndex = nil
         activeSearchRowIndex = nil
+    }
+
+    private func finishSearchForEditing() {
+        guard showSearchPopover || !searchText.isEmpty || !committedSearchText.isEmpty || !searchResults.isEmpty else {
+            return
+        }
+        clearSearchState()
+        showSearchPopover = false
     }
 
     @ViewBuilder
@@ -3071,16 +3132,23 @@ struct NodeMarkdownEditorView: View {
     /// 图片文件由父页面按H3作用域落盘，但正文插入必须回到发起请求的TextKit管线执行。
     /// 这样图片粘贴仍是一次本行编辑，不需要父页面强制替换整篇文档。
     private func prepareImageTextAtRow(_ rowIndex: Int) -> String? {
+        let activeRowDescription = activeEditorRowIndex.map(String.init) ?? "nil"
+        NodeMarkdownDiagnostic41.event("父页面准备图片 row=\(rowIndex) nodes=\(document.nodes.count) activeRow=\(activeRowDescription)")
         // 图片写入必须建立在编辑器刚刚提交的完整Node草稿上。
         // 这保证Tab/Shift+Tab更新过的level、UUID及来源字段不会被父文档旧值覆盖。
         commitPendingDraftBeforeSyncIfNeeded()
-        guard document.nodes.indices.contains(rowIndex) else { return nil }
+        guard document.nodes.indices.contains(rowIndex) else {
+            NodeMarkdownDiagnostic41.event("图片准备失败：目标行越界 row=\(rowIndex)")
+            return nil
+        }
         guard let h3Index = documentIndex.owningH3Row(for: rowIndex), document.nodes.indices.contains(h3Index) else {
+            NodeMarkdownDiagnostic41.event("图片准备失败：所属H3无效 row=\(rowIndex)")
             statusMessage = "未定位到所属H3包"
             return nil
         }
         let h3Node = document.nodes[h3Index]
         guard h3Node.level == 3 else {
+            NodeMarkdownDiagnostic41.event("图片准备失败：所属节点不是H3 h3=\(h3Index) level=\(h3Node.level)")
             statusMessage = "未定位到所属H3包"
             return nil
         }
@@ -3109,6 +3177,7 @@ struct NodeMarkdownEditorView: View {
             selectedURL: selectedURL,
             scope: imageScope
         ) else {
+            NodeMarkdownDiagnostic41.event("图片准备失败：资产服务返回nil file=\(selectedURL.lastPathComponent)")
             statusMessage = "插入图片失败"
             return nil
         }
@@ -3118,6 +3187,7 @@ struct NodeMarkdownEditorView: View {
             to: document.nodes[rowIndex].text
         )
         statusMessage = isTemporaryImageScope(imageScope) ? "已插入图片到暂存区" : "已插入图片"
+        NodeMarkdownDiagnostic41.event("图片准备成功 row=\(rowIndex) h3=\(h3Index) updatedUTF16=\((updatedText as NSString).length)")
         return updatedText
         #else
         return nil
@@ -3126,6 +3196,8 @@ struct NodeMarkdownEditorView: View {
 
     private func openDrawingBoardAtRow(_ rowIndex: Int) {
         #if os(macOS)
+        let activeRowDescription = activeEditorRowIndex.map(String.init) ?? "nil"
+        NodeMarkdownDiagnostic41.event("父页面打开画图板 row=\(rowIndex) documentNodes=\(document.nodes.count) activeRow=\(activeRowDescription)")
         guard document.nodes.indices.contains(rowIndex) else { return }
         guard !isRowInNewPackage(rowIndex) else {
             statusMessage = "新包不允许画图"
@@ -3140,20 +3212,25 @@ struct NodeMarkdownEditorView: View {
 
     private func insertDrawingAsset(drawingURL: URL) {
         #if os(macOS)
+        let targetRowDescription = drawingBoardTargetRowIndex.map(String.init) ?? "nil"
+        NodeMarkdownDiagnostic41.event("父页面收到画图完成 URL=\(drawingURL.lastPathComponent) targetRow=\(targetRowDescription) documentNodes=\(document.nodes.count)")
         defer {
             drawingBoardTargetRowIndex = nil
             try? FileManager.default.removeItem(at: drawingURL)
         }
         guard let rowIndex = drawingBoardTargetRowIndex, document.nodes.indices.contains(rowIndex) else {
+            NodeMarkdownDiagnostic41.event("画图插入失败：目标行无效")
             statusMessage = "未定位到画图插入行"
             return
         }
         guard let h3Index = documentIndex.owningH3Row(for: rowIndex), document.nodes.indices.contains(h3Index) else {
+            NodeMarkdownDiagnostic41.event("画图插入失败：所属H3无效 row=\(rowIndex)")
             statusMessage = "未定位到所属H3包"
             return
         }
         let sourceFile = document.nodes[h3Index].sourceFile.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !sourceFile.isEmpty else {
+            NodeMarkdownDiagnostic41.event("画图插入失败：SourceFile为空 h3=\(h3Index)")
             statusMessage = "该包未绑定母本，不能插入画图"
             return
         }
@@ -3162,6 +3239,7 @@ struct NodeMarkdownEditorView: View {
             sourceFile: sourceFile,
             notebookFileURL: fileURL
         ) else {
+            NodeMarkdownDiagnostic41.event("画图插入失败：图片资产服务返回nil")
             statusMessage = "插入画图失败"
             return
         }
@@ -3175,6 +3253,7 @@ struct NodeMarkdownEditorView: View {
             structuralIndex: documentIndex
         )
         refreshTextKitDraftFromDocument(forceExternalSync: true)
+        NodeMarkdownDiagnostic41.event("画图已写入Document并请求外部同步 row=\(rowIndex) textUTF16=\((updatedText as NSString).length) syncToken=\(externalTextSyncToken)")
         markDocumentDirty()
         scheduleSnapshotRebuild()
         rebuildSearchResults()
@@ -3967,6 +4046,7 @@ private enum NodeMarkdownTOCExpandMode: String, CaseIterable, Identifiable {
 
 private struct NodeMarkdownSearchResult: Identifiable, Hashable {
     let rowIndex: Int
+    let level: Int
     let matchLocationInRow: Int
     let matchLength: Int
     let snippet: String
@@ -3985,6 +4065,7 @@ private func nodeMarkdownBuildSearchResults(in nodes: [NodeMarkdownNode], query:
         guard match.location != NSNotFound, match.length > 0 else { return nil }
         return NodeMarkdownSearchResult(
             rowIndex: index,
+            level: node.level,
             matchLocationInRow: match.location,
             matchLength: match.length,
             snippet: text
@@ -4204,6 +4285,7 @@ private struct NodeMarkdownSearchFloatingPanelView: View {
     let query: String
     let results: [NodeMarkdownSearchResult]
     let activeIndex: Int?
+    let documentStyle: NodeMarkdownDocumentStyle
     let onSelect: (Int) -> Void
     let onClose: () -> Void
 
@@ -4230,15 +4312,20 @@ private struct NodeMarkdownSearchFloatingPanelView: View {
                         ForEach(Array(results.enumerated()), id: \.offset) { item in
                             let index = item.offset
                             let result = item.element
+                            let rowColor = documentStyle.style(forLevel: result.level).renderedColor
                             Button {
                                 onSelect(index)
                             } label: {
-                                Text(markdownSearchHighlightedSnippet(result.snippet, query: query))
+                                Text(nodeMarkdownSearchHighlightedSnippet(
+                                    result.snippet,
+                                    query: query,
+                                    color: rowColor
+                                ))
                                     .font(.caption)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .padding(.horizontal, 6)
                                     .padding(.vertical, 4)
-                                    .background(index == activeIndex ? Color.blue.opacity(0.16) : Color.clear)
+                                    .background(index == activeIndex ? rowColor.opacity(0.16) : Color.clear)
                                     .cornerRadius(6)
                             }
                             .buttonStyle(.plain)
@@ -4254,6 +4341,27 @@ private struct NodeMarkdownSearchFloatingPanelView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .shadow(color: .black.opacity(0.12), radius: 8, x: 0, y: 2)
     }
+}
+
+private func nodeMarkdownSearchHighlightedSnippet(
+    _ snippet: String,
+    query: String,
+    color: Color
+) -> AttributedString {
+    var attributed = AttributedString(snippet)
+    attributed.foregroundColor = color
+    let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !normalizedQuery.isEmpty else { return attributed }
+
+    var searchStart = attributed.startIndex
+    while searchStart < attributed.endIndex,
+          let range = attributed[searchStart...].range(of: normalizedQuery, options: [.caseInsensitive]) {
+        attributed[range].foregroundColor = color
+        attributed[range].font = .caption.bold()
+        attributed[range].underlineStyle = Text.LineStyle(pattern: .solid, color: color)
+        searchStart = range.upperBound
+    }
+    return attributed
 }
 
 private enum NodeMarkdownWebAssets {
@@ -4320,6 +4428,12 @@ enum NodeMarkdownHTMLBuilder {
         baseURL: URL? = nil,
         inlineAssets: Bool = false
     ) -> String {
+        let renderLayout = NodeMarkdownRenderContract.default.layout
+        // TextKit2 lays its marker out from textContainerOrigin + markerX. The text
+        // container itself has a 16pt inset, so HTML must reserve both distances.
+        let containerLeading = renderLayout.leadingPadding + renderLayout.markerX(for: 1)
+        let containerTrailing = renderLayout.leadingPadding
+        let containerVertical = renderLayout.leadingPadding
         let bodyBackground = backgroundHex ?? "transparent"
         let baseTag = baseURL.map { "<base href=\"\(htmlAttributeEscape($0.absoluteString))\" />" } ?? ""
         let katexScriptTag = inlineAssets
@@ -4348,14 +4462,14 @@ enum NodeMarkdownHTMLBuilder {
             line-height: 1.4;
         }
         .container {
-            padding-left: 2ch;
-            padding-right: 2ch;
+            padding: \(Int(containerVertical.rounded()))px \(Int(containerTrailing.rounded()))px;
+            padding-left: \(Int(containerLeading.rounded()))px;
             box-sizing: border-box;
         }
         .row {
             position: relative;
             display: flex;
-            align-items: flex-start;
+            align-items: baseline;
             min-height: 0;
             margin: 0;
             white-space: pre-wrap;
@@ -4368,8 +4482,8 @@ enum NodeMarkdownHTMLBuilder {
             z-index: 0;
             left: var(--bgbar-left, 0px);
             right: 0;
-            top: max(0px, calc((var(--first-line-height, 1em) - var(--bgbar-height, 1em)) / 2));
-            height: var(--bgbar-height, 1em);
+            top: 0;
+            bottom: 0;
             border-radius: var(--bgbar-radius-x, 1em) / var(--bgbar-radius-y, 50%);
             background: linear-gradient(90deg, var(--bgbar-start) 0%, var(--bgbar-end) 100%);
             border: var(--decoration-border, 0 solid transparent);
@@ -4385,7 +4499,7 @@ enum NodeMarkdownHTMLBuilder {
             user-select: none;
             -webkit-user-select: none;
             pointer-events: none;
-            line-height: var(--first-line-height, 1.4em);
+            line-height: var(--node-line-height, 1.4);
             z-index: 1;
         }
         .text {
@@ -4900,17 +5014,21 @@ enum NodeMarkdownHTMLBuilder {
     ) -> String {
         let level = max(1, min(12, node.level))
         let cachedStyle = styleCache.style(for: level)
-        let leftIndent = max(0, level - 1) * 18
+        let leftIndent = Int(
+            (CGFloat(max(0, level - 1)) * NodeMarkdownRenderContract.default.layout.levelIndentStep)
+                .rounded()
+        )
         let iconSymbol = htmlEscape(styleCache.iconSymbolGlyph(for: level))
         let escapedText = htmlEscape(node.text)
         let escapedMarkdown = htmlAttributeEscape(node.text)
+        let fontFamily = htmlAttributeEscape(cachedStyle.fontFamily)
         let rowClass = cachedStyle.hasBackgroundBar ? "row has-bgbar" : "row"
         let bgbarAttr = cachedStyle.hasBackgroundBar ? "1" : "0"
         let spacingCSS = "margin-top:\(Int(max(0, spacingBefore).rounded()))px;"
         return """
         <div class="\(rowClass)" data-node-index="\(index)" data-padding-left="\(leftIndent)" data-pdf-bgbar="\(bgbarAttr)" data-pdf-bgcolor="\(cachedStyle.backgroundColorHex)" style="padding-left:\(leftIndent)px;cursor:text;--marker-advance:\(cachedStyle.markerAdvance)px;\(spacingCSS)\(cachedStyle.rowCSS)">
-            <span class="icon" style="color:\(cachedStyle.colorHex);font-size:\(cachedStyle.iconFontSize)px">\(iconSymbol)</span>
-            <div class="text" data-markdown="\(escapedMarkdown)" style="color:\(cachedStyle.colorHex);font-size:\(cachedStyle.fontSize)px;font-weight:\(cachedStyle.fontWeight);\(cachedStyle.textDecorationCSS)">\(escapedText)</div>
+            <span class="icon" style="color:\(cachedStyle.colorHex);font-family:'\(fontFamily)',sans-serif;font-size:\(cachedStyle.iconFontSize)px">\(iconSymbol)</span>
+            <div class="text" data-markdown="\(escapedMarkdown)" style="color:\(cachedStyle.colorHex);font-family:'\(fontFamily)',sans-serif;font-size:\(cachedStyle.fontSize)px;font-weight:\(cachedStyle.fontWeight);\(cachedStyle.textDecorationCSS)">\(escapedText)</div>
         </div>
         """
     }
@@ -4988,6 +5106,7 @@ enum NodeMarkdownHTMLBuilder {
 private struct NodeMarkdownRenderStyleCache {
     struct CachedStyle {
         var colorHex: String
+        var fontFamily: String
         var fontSize: Int
         var iconFontSize: Int
         var fontWeight: String
@@ -5017,6 +5136,7 @@ private struct NodeMarkdownRenderStyleCache {
             )
             map[level] = CachedStyle(
                 colorHex: colorHex,
+                fontFamily: roleStyle.fontName,
                 fontSize: fontSize,
                 iconFontSize: fontSize,
                 fontWeight: roleStyle.isBold ? "700" : "500",
@@ -5035,7 +5155,7 @@ private struct NodeMarkdownRenderStyleCache {
     }
 
     func style(for level: Int) -> CachedStyle {
-        cached[level] ?? cached[1] ?? CachedStyle(colorHex: "#FFFFFF", fontSize: 15, iconFontSize: 15, fontWeight: "500", textDecorationCSS: "", rowCSS: "", hasBackgroundBar: false, backgroundColorHex: "#FFFFFF", markerAdvance: 22)
+        cached[level] ?? cached[1] ?? CachedStyle(colorHex: "#FFFFFF", fontFamily: "-apple-system", fontSize: 15, iconFontSize: 15, fontWeight: "500", textDecorationCSS: "", rowCSS: "", hasBackgroundBar: false, backgroundColorHex: "#FFFFFF", markerAdvance: 22)
     }
 
     private static func rowCSS(
@@ -5045,7 +5165,6 @@ private struct NodeMarkdownRenderStyleCache {
     ) -> String {
         let fontSize = max(1, roleStyle.fontSize)
         let firstLineHeight = ceil(fontSize * 1.4)
-        let barHeight = ceil(fontSize)
         var css = "--node-line-height:1.4;--first-line-height:\(Int(firstLineHeight))px;"
         css += usesMonochromeDecorationBorders
             ? "--decoration-border:1px solid #000000;"
@@ -5054,7 +5173,7 @@ private struct NodeMarkdownRenderStyleCache {
         let backgroundBar = NodeMarkdownRenderContract.default.backgroundBar
         let start = NodeMarkdownRenderContract.webRGBA(fromHex: backgroundColorHex, alpha: backgroundBar.startAlpha)
         let end = NodeMarkdownRenderContract.webRGBA(fromHex: backgroundColorHex, alpha: backgroundBar.endAlpha)
-        css += "--bgbar-left:0px;--bgbar-height:\(Int(barHeight))px;--bgbar-radius-x:1em;--bgbar-radius-y:50%;--bgbar-start:\(start);--bgbar-end:\(end);"
+        css += "--bgbar-left:0px;--bgbar-radius-x:1em;--bgbar-radius-y:50%;--bgbar-start:\(start);--bgbar-end:\(end);"
         return css
     }
 

@@ -15,7 +15,7 @@
 /* Begin PBXFileReference section */
 		8843ECE92FA4EC7B00626F5B /* TeachingCoursePackageChangeTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TeachingCoursePackageChangeTracker.swift; sourceTree = "<group>"; };
 		88C3760F2F95267100093CC3 /* ATeaching.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ATeaching.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		88F260812F9E000200000002 /* mathFonts.bundle */ = {isa = PBXFileReference; lastKnownFileType = wrapper.plug-in; name = mathFonts.bundle; path = Vendor/SwiftMath/Sources/SwiftMath/mathFonts.bundle; sourceTree = "<group>"; };
+		88F260812F9E000200000002 /* mathFonts.bundle */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.plug-in"; name = mathFonts.bundle; path = Vendor/SwiftMath/Sources/SwiftMath/mathFonts.bundle; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -280,12 +280,12 @@
 				CODE_SIGN_ENTITLEMENTS = ATeaching/ATeaching.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2608112205;
+				CURRENT_PROJECT_VERSION = 2608132226;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = F4L9P953MQ;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
-				ENABLE_INCOMING_NETWORK_CONNECTIONS = NO;
+				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
@@ -305,7 +305,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.2608112205;
+				MARKETING_VERSION = 1.2608132226;
 				PRODUCT_BUNDLE_IDENTIFIER = Han.ATeaching;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -328,12 +328,12 @@
 				CODE_SIGN_ENTITLEMENTS = ATeaching/ATeaching.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2608112205;
+				CURRENT_PROJECT_VERSION = 2608132226;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = F4L9P953MQ;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
-				ENABLE_INCOMING_NETWORK_CONNECTIONS = NO;
+				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
@@ -353,7 +353,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.2608112205;
+				MARKETING_VERSION = 1.2608132226;
 				PRODUCT_BUNDLE_IDENTIFIER = Han.ATeaching;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;

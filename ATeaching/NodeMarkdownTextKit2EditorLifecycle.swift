@@ -32,6 +32,11 @@ extension NodeMarkdownTextKit2Representable {
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? NodeMarkdownTextKit2TextView else { return }
+        let diagnosticStart = NodeMarkdownDiagnostic35.now()
+        defer {
+            context.coordinator.recordDiagnostic35Duration("updateNSView", since: diagnosticStart)
+            context.coordinator.recordDiagnostic35Count("updateNSView次数")
+        }
         NodeMarkdownDiagnostic31.record(
             "updateNSView进入 binding/storage=\((text as NSString).length)/\(textView.nodeTextStorage.length) token=\(externalTextSyncToken)/\(context.coordinator.lastExternalTextSyncToken)",
             in: textView,
@@ -51,6 +56,7 @@ extension NodeMarkdownTextKit2Representable {
             workingDirectoryURL: workingDirectoryURL,
             documentStyle: documentStyle,
             activeRowIndex: activeRowIndex,
+            navigationRequestToken: navigationRequestToken,
             activeMatchLocationInRow: activeMatchLocationInRow,
             editingRowIndex: editingRowIndex,
             searchQuery: searchQuery,
@@ -72,7 +78,8 @@ extension NodeMarkdownTextKit2Representable {
             onCommitEditingNode: onCommitEditingNode,
             onEditingDraftDirtyChange: onEditingDraftDirtyChange,
             onRequestSave: onRequestSave,
-            onInputSessionStateChange: onInputSessionStateChange
+            onInputSessionStateChange: onInputSessionStateChange,
+            onBeginEditing: onBeginEditing
         )
         context.coordinator.attach(textView)
         context.coordinator.configureCommandHandlers(for: textView)

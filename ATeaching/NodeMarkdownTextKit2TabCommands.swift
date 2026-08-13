@@ -35,15 +35,16 @@ extension NodeMarkdownTextKit2Coordinator {
             )
         }
 
-        registerUndoSnapshot(for: textView)
         let currentLevel = rowMetadata[rowIndex].level
         let nextLevel = increaseLevel ? min(12, currentLevel + 1) : max(1, currentLevel - 1)
-        rowMetadata[rowIndex] = rowMetadata[rowIndex].changingLevel(to: nextLevel)
-        rebuildRowLayouts(from: textView)
-        rememberFocus(in: textView, selection: selection)
-        restoreRememberedFocus(in: textView)
-        publishTextChange(textView.documentString(), structural: true)
-        return true
+        guard let nodeID = UUID(uuidString: rowMetadata[rowIndex].nodeID) else { return false }
+        return dispatchLevelTransaction(
+            in: textView,
+            steps: [.setLevel(nodeID: nodeID, level: nextLevel)],
+            affectedRows: [rowIndex],
+            selection: selection,
+            label: increaseLevel ? "Indent Node" : "Outdent Node"
+        )
     }
 
     private func changeLevelsForSelection(
@@ -53,22 +54,60 @@ extension NodeMarkdownTextKit2Coordinator {
     ) -> Bool {
         let sourceText = textView.documentString() as NSString
         let fullLineRange = sourceText.lineRange(for: selection)
-        var changed = false
-        registerUndoSnapshot(for: textView)
+        var steps: [NodeMarkdownTransactionStep] = []
+        var affectedRows = Set<Int>()
         for index in rowCharacterRanges.indices {
             guard NSIntersectionRange(fullLineRange, rowCharacterRanges[index]).length > 0,
                   rowMetadata.indices.contains(index),
-                  !rowMetadata[index].isProtectedH3 else { continue }
+                  !rowMetadata[index].isProtectedH3,
+                  let nodeID = UUID(uuidString: rowMetadata[index].nodeID) else { continue }
             let currentLevel = rowMetadata[index].level
             let nextLevel = increaseLevel ? min(12, currentLevel + 1) : max(1, currentLevel - 1)
-            rowMetadata[index] = rowMetadata[index].changingLevel(to: nextLevel)
-            changed = true
+            guard nextLevel != currentLevel else { continue }
+            steps.append(.setLevel(nodeID: nodeID, level: nextLevel))
+            affectedRows.insert(index)
         }
-        guard changed else { return true }
-        rebuildRowLayouts(from: textView)
-        rememberFocus(in: textView, selection: selection)
-        restoreRememberedFocus(in: textView)
-        publishTextChange(textView.documentString(), structural: true)
+        guard !steps.isEmpty else { return true }
+        return dispatchLevelTransaction(
+            in: textView,
+            steps: steps,
+            affectedRows: affectedRows,
+            selection: selection,
+            label: increaseLevel ? "Indent Nodes" : "Outdent Nodes"
+        )
+    }
+
+    private func dispatchLevelTransaction(
+        in textView: NodeMarkdownTextKit2TextView,
+        steps: [NodeMarkdownTransactionStep],
+        affectedRows: Set<Int>,
+        selection: NSRange,
+        label: String
+    ) -> Bool {
+        commitActiveNodeSession(reason: "层级事务前", notifyExternal: false)
+        let transaction = NodeMarkdownTransaction(
+            baseRevision: documentState.revision,
+            steps: steps,
+            label: label
+        )
+        guard documentState.dispatch(transaction) != nil else {
+            NodeMarkdownTextKit2Diagnostics.log(
+                "拒绝层级事务：\(documentState.lastTransactionError?.description ?? "未知错误")。"
+            )
+            return false
+        }
+        registerCoreTransactionUndo(in: textView)
+        rowMetadata = documentState.snapshot.rowMetadata
+        rebuildRowLayouts(from: textView, value: textView.documentString(), applyStyles: false)
+        refreshRowStyles(in: textView, rows: affectedRows)
+        if let safeSelection = selection.exact(toLength: textView.nodeTextStorage.length) {
+            isApplyingStyleUpdate = true
+            textView.setSelectedRange(safeSelection)
+            isApplyingStyleUpdate = false
+        }
+        localEditRevision &+= 1
+        scheduleDocumentSnapshotPublication()
+        syncEditingRowWithSelection(in: textView)
         return true
     }
 

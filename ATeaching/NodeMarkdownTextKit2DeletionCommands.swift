@@ -31,16 +31,42 @@ extension NodeMarkdownTextKit2Coordinator {
         let replaceEnd = NSMaxRange(currentContentRange)
         let replaceRange = NSRange(location: replaceStart, length: max(0, replaceEnd - replaceStart))
         let newCursor = previousContentRange.location + (previousContent as NSString).length
-        var nextMetadata = rowMetadata
-        guard nextMetadata.indices.contains(currentLineIndex) else { return false }
-        nextMetadata.remove(at: currentLineIndex)
-        replaceSourceText(
-            in: textView,
-            range: replaceRange,
-            replacement: previousContent + currentContent,
-            selectedRange: NSRange(location: newCursor, length: 0),
-            updatedRowMetadata: nextMetadata
+        guard let previousID = UUID(uuidString: rowMetadata[currentLineIndex - 1].nodeID),
+              let currentID = UUID(uuidString: rowMetadata[currentLineIndex].nodeID) else { return false }
+        commitActiveNodeSession(reason: "合并Node事务前", notifyExternal: false)
+        let transaction = NodeMarkdownTransaction(
+            baseRevision: documentState.revision,
+            steps: [.joinNodes(leftID: previousID, rightID: currentID)],
+            label: "Join Nodes"
         )
+        guard documentState.dispatch(transaction) != nil else {
+            if documentState.lastTransactionError == .protectedNode(previousID)
+                || documentState.lastTransactionError == .protectedNode(currentID) {
+                showProtectedH3Alert()
+                return true
+            }
+            return false
+        }
+        registerCoreTransactionUndo(in: textView)
+        rowMetadata = documentState.snapshot.rowMetadata
+        isApplyingStyleUpdate = true
+        textView.replaceSourceText(
+            in: replaceRange,
+            with: previousContent + currentContent,
+            selectedRange: NSRange(location: newCursor, length: 0),
+            documentStyle: documentStyle
+        )
+        isApplyingStyleUpdate = false
+        let value = textView.documentString()
+        rebuildRowLayouts(from: textView, value: value, applyStyles: false)
+        refreshRowStyles(
+            in: textView,
+            rows: Set([currentLineIndex - 1, currentLineIndex])
+        )
+        localEditRevision &+= 1
+        lastPublishedLocalText = value
+        scheduleDocumentSnapshotPublication()
+        syncEditingRowWithSelection(in: textView)
         return true
     }
 

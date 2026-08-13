@@ -31,26 +31,18 @@ extension NodeMarkdownTextKit2Coordinator {
         let left = lineCoreNSString.substring(with: NSRange(location: 0, length: splitOffset))
         let right = lineCoreNSString.substring(from: splitOffset)
 
-        let replacement = left + "\n" + right
         let newCursor = coreRange.location + (left as NSString).length + 1
-        var nextMetadata = rowMetadata
-        guard nextMetadata.indices.contains(sourceRowIndex) else { return false }
-        let inheritedLevel = nextMetadata[sourceRowIndex].level
-        let insertionIndex = sourceRowIndex + 1
-        guard (0...nextMetadata.count).contains(insertionIndex) else { return false }
-        nextMetadata.insert(
-            .fresh(level: inheritedLevel),
-            at: insertionIndex
-        )
-        replaceSourceText(
+        guard rowMetadata.indices.contains(sourceRowIndex) else { return false }
+        return performLocalNewlineTransaction(
             in: textView,
-            range: coreRange,
-            replacement: replacement,
-            selectedRange: NSRange(location: newCursor, length: 0),
-            updatedRowMetadata: nextMetadata
+            sourceRow: sourceRowIndex,
+            splitOffset: splitOffset,
+            replacementRange: coreRange,
+            replacement: left + "\n" + right,
+            newCursor: newCursor,
+            newLevel: rowMetadata[sourceRowIndex].level,
+            preservesSourceNodeContent: false
         )
-        ensureCaretVisibleAfterNewline(in: textView, location: newCursor)
-        return true
     }
 
     private func insertEmptyH4AfterProtectedH3(
@@ -63,27 +55,16 @@ extension NodeMarkdownTextKit2Coordinator {
         let hasTrailingNewline = rawLine.hasSuffix("\n")
         let insertionLocation = NSMaxRange(lineRange)
         let cursor = hasTrailingNewline ? insertionLocation : insertionLocation + 1
-        var nextMetadata = rowMetadata
-        let insertionIndex = sourceRowIndex + 1
-        guard (0...nextMetadata.count).contains(insertionIndex) else { return false }
-        nextMetadata.insert(.fresh(level: 4), at: insertionIndex)
-        replaceSourceText(
+        return performLocalNewlineTransaction(
             in: textView,
-            range: NSRange(location: insertionLocation, length: 0),
+            sourceRow: sourceRowIndex,
+            splitOffset: (sourceText.substring(with: rowLayouts[sourceRowIndex].contentRange) as NSString).length,
+            replacementRange: NSRange(location: insertionLocation, length: 0),
             replacement: "\n",
-            selectedRange: NSRange(location: cursor, length: 0),
-            updatedRowMetadata: nextMetadata
+            newCursor: cursor,
+            newLevel: 4,
+            preservesSourceNodeContent: true
         )
-        return true
-    }
-
-    private func ensureCaretVisibleAfterNewline(in textView: NodeMarkdownTextKit2TextView, location: Int) {
-        let range = NSRange(location: location, length: 0)
-        guard range.exact(toLength: (textView.documentString() as NSString).length) != nil else { return }
-        textView.scrollRangeToVisible(range)
-        DispatchQueue.main.async { [weak textView] in
-            textView?.scrollRangeToVisible(range)
-        }
     }
 }
 #endif

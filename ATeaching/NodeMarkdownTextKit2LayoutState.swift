@@ -34,6 +34,10 @@ extension NodeMarkdownTextKit2Coordinator {
         value: String,
         applyStyles: Bool = true
     ) {
+        let diagnosticStart = NodeMarkdownDiagnostic35.now()
+        defer { recordDiagnostic35Duration("全文行布局重建", since: diagnosticStart) }
+        recordDiagnostic35Count("全文行布局重建次数")
+        recordDiagnostic35Count("全文行布局处理Node", amount: rowMetadata.count)
         if let error = NodeMarkdownTextKit2DocumentState.validationError(
             text: value,
             rowMetadata: rowMetadata
@@ -64,6 +68,9 @@ extension NodeMarkdownTextKit2Coordinator {
         value: String,
         affectedRange: NSRange
     ) -> Bool {
+        let diagnosticStart = NodeMarkdownDiagnostic35.now()
+        defer { recordDiagnostic35Duration("单行坐标增量更新", since: diagnosticStart) }
+        recordDiagnostic35Count("单行坐标增量次数")
         guard !rowLayouts.isEmpty, !rowCharacterRanges.isEmpty else { return false }
         let nsText = value as NSString
         guard nsText.length > 0 else {
@@ -78,6 +85,7 @@ extension NodeMarkdownTextKit2Coordinator {
         guard let rowIndex = lineIndexForLocation(anchor), rowLayouts.indices.contains(rowIndex) else {
             return false
         }
+        recordDiagnostic35Count("后续Node坐标平移检查", amount: max(0, rowLayouts.count - rowIndex - 1))
 
         let lineRange = nsText.lineRange(for: NSRange(location: anchor, length: 0))
         guard let rebuiltLayout = Self.makeRowLayout(
@@ -109,7 +117,6 @@ extension NodeMarkdownTextKit2Coordinator {
         lastLayoutDocumentStyleIdentity = documentStyle.renderIdentity
         lastLayoutRowMetadataSnapshot = rowMetadata
         textView.nodeMarkdownRowLayouts = rowLayouts
-        updateTypingAttributes(for: textView)
         return true
     }
 
@@ -241,7 +248,7 @@ extension NodeMarkdownTextKit2Coordinator {
         return layouts
     }
 
-    private static func makeRowLayout(
+    static func makeRowLayout(
         rowIndex: Int,
         lineRange: NSRange,
         source nsText: NSString,
@@ -285,7 +292,95 @@ extension NodeMarkdownTextKit2Coordinator {
         )
     }
 
-    private static func spacingBeforeRow(
+    /// Rebuilds only the split seam. Unchanged rows retain their render contract;
+    /// following absolute ranges receive the known one-character newline offset.
+    func updateRowLayoutsAfterSplit(
+        in textView: NodeMarkdownTextKit2TextView,
+        sourceRow: Int,
+        value: String
+    ) -> Bool {
+        guard rowLayouts.indices.contains(sourceRow),
+              rowMetadata.indices.contains(sourceRow + 1) else { return false }
+        let source = value as NSString
+        let start = rowLayouts[sourceRow].range.location
+        guard start <= source.length else { return false }
+        let firstRange = source.lineRange(for: NSRange(location: start, length: 0))
+        let secondStart = NSMaxRange(firstRange)
+        guard secondStart <= source.length else { return false }
+        let secondRange: NSRange = secondStart == source.length
+            ? NSRange(location: secondStart, length: 0)
+            : source.lineRange(for: NSRange(location: secondStart, length: 0))
+        let previous = sourceRow > 0 ? rowLayouts[sourceRow - 1] : nil
+        guard let first = Self.makeRowLayout(
+            rowIndex: sourceRow,
+            lineRange: firstRange,
+            source: source,
+            previousLayout: previous,
+            documentStyle: documentStyle,
+            rowMetadata: rowMetadata
+        ) else { return false }
+
+        let second: NodeMarkdownTextKit2RowLayout
+        if secondRange.length == 0 {
+            let level = rowMetadata[sourceRow + 1].level
+            let lineStyle = NodeMarkdownRenderContract.default.lineStyle(
+                level: level,
+                prefix: "",
+                documentStyle: documentStyle
+            )
+            second = NodeMarkdownTextKit2RowLayout(
+                rowIndex: sourceRow + 1,
+                range: secondRange,
+                contentRange: secondRange,
+                prefix: "",
+                level: level,
+                lineStyle: lineStyle,
+                spacingBefore: NodeMarkdownRenderContract.interRowSpacing(
+                    previousLevel: first.level,
+                    previousRoleStyle: first.lineStyle.roleStyle,
+                    currentLevel: level,
+                    currentRoleStyle: lineStyle.roleStyle
+                ),
+                isProtectedH3: rowMetadata[sourceRow + 1].isProtectedH3
+            )
+        } else {
+            guard let layout = Self.makeRowLayout(
+                rowIndex: sourceRow + 1,
+                lineRange: secondRange,
+                source: source,
+                previousLayout: first,
+                documentStyle: documentStyle,
+                rowMetadata: rowMetadata
+            ) else { return false }
+            second = layout
+        }
+
+        var updated = Array(rowLayouts.prefix(sourceRow))
+        updated.reserveCapacity(rowLayouts.count + 1)
+        updated.append(first)
+        updated.append(second)
+        let oldFollowingRow = sourceRow + 1
+        if oldFollowingRow < rowLayouts.count {
+            let requiredOffset = NSMaxRange(second.range) - rowLayouts[oldFollowingRow].range.location
+            for oldIndex in oldFollowingRow..<rowLayouts.count {
+                updated.append(rowLayouts[oldIndex].reindexed(oldIndex + 1, offsetBy: requiredOffset))
+            }
+        }
+        guard updated.count == rowMetadata.count,
+              updated.last.map({ NSMaxRange($0.range) }) == source.length else { return false }
+
+        rowLayouts = updated
+        rowCharacterRanges = updated.map(\.range)
+        lastLayoutTextSnapshot = value
+        lastLayoutDocumentStyleIdentity = documentStyle.renderIdentity
+        lastLayoutRowMetadataSnapshot = rowMetadata
+        editingParagraphStyleCache.removeValue(forKey: sourceRow)
+        editingParagraphStyleCache.removeValue(forKey: sourceRow + 1)
+        textView.nodeMarkdownRowLayouts = updated
+        return true
+    }
+
+    static func spacingBeforeRow(
         previousLayout: NodeMarkdownTextKit2RowLayout?,
         currentLevel: Int,
         currentLineStyle: NodeMarkdownRenderContract.LineStyle

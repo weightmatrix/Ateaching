@@ -18,6 +18,7 @@ struct NodeMarkdownTextKit2Editor: View {
     let workingDirectoryURL: URL?
     let documentStyle: NodeMarkdownDocumentStyle
     let activeRowIndex: Int?
+    let navigationRequestToken: Int
     let activeMatchLocationInRow: Int?
     let editingRowIndex: Int?
     let searchQuery: String
@@ -41,14 +42,16 @@ struct NodeMarkdownTextKit2Editor: View {
     var onEditingDraftDirtyChange: ((Bool) -> Void)?
     var onRequestSave: (() -> Void)?
     var onInputSessionStateChange: ((Bool) -> Void)?
+    var onBeginEditing: (() -> Void)?
 
     var body: some View {
         #if os(macOS)
-        NodeMarkdownTextKit2Representable(
+        NodeMarkdownProseMirrorRepresentable(
             text: $text,
             workingDirectoryURL: workingDirectoryURL,
             documentStyle: documentStyle,
             activeRowIndex: activeRowIndex,
+            navigationRequestToken: navigationRequestToken,
             activeMatchLocationInRow: activeMatchLocationInRow,
             editingRowIndex: editingRowIndex,
             searchQuery: searchQuery,
@@ -71,7 +74,8 @@ struct NodeMarkdownTextKit2Editor: View {
             onCommitEditingNode: onCommitEditingNode,
             onEditingDraftDirtyChange: onEditingDraftDirtyChange,
             onRequestSave: onRequestSave,
-            onInputSessionStateChange: onInputSessionStateChange
+            onInputSessionStateChange: onInputSessionStateChange,
+            onBeginEditing: onBeginEditing
         )
         #else
         let displayStyle = documentStyle.platformDisplayStyle
@@ -90,6 +94,7 @@ struct NodeMarkdownTextKit2Representable: NSViewRepresentable {
     let workingDirectoryURL: URL?
     let documentStyle: NodeMarkdownDocumentStyle
     let activeRowIndex: Int?
+    let navigationRequestToken: Int
     let activeMatchLocationInRow: Int?
     let editingRowIndex: Int?
     let searchQuery: String
@@ -113,5 +118,6 @@ struct NodeMarkdownTextKit2Representable: NSViewRepresentable {
     var onEditingDraftDirtyChange: ((Bool) -> Void)?
     var onRequestSave: (() -> Void)?
     var onInputSessionStateChange: ((Bool) -> Void)?
+    var onBeginEditing: (() -> Void)?
 }
 #endif

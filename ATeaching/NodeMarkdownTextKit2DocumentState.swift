@@ -75,7 +75,13 @@ final class NodeMarkdownTextKit2DocumentState {
     private(set) var revision: UInt64 = 0
     private(set) var nodes: [NodeMarkdownTextKit2Node] = []
     private(set) var rowByID: [UUID: Int] = [:]
+    private(set) var structuralIndex = NodeMarkdownProseMirrorIndex(nodes: [])
     private(set) var lastValidationError: ValidationError?
+    private(set) var lastTransactionError: NodeMarkdownTransactionError?
+    private var undoHistory: [NodeMarkdownHistoryEntry] = []
+    private var redoHistory: [NodeMarkdownHistoryEntry] = []
+    private let historyLimit = 500
+    private var allowsProtectedHistoryMutation = false
 
     init(text: String, rowMetadata: [NodeMarkdownTextKitRowMetadata]) {
         _ = replace(text: text, rowMetadata: rowMetadata, incrementsRevision: false)
@@ -87,9 +93,149 @@ final class NodeMarkdownTextKit2DocumentState {
 
     func row(for id: UUID) -> Int? { rowByID[id] }
 
+    func parentRow(of row: Int) -> Int? { structuralIndex.parentRow(of: row) }
+    func subtreeRange(startingAt row: Int) -> Range<Int>? {
+        structuralIndex.subtreeRange(startingAt: row)
+    }
+    func owningH3Row(for row: Int) -> Int? { structuralIndex.owningH3Row(for: row) }
+    func packageRange(rootID: UUID) -> Range<Int>? { structuralIndex.packageRange(rootID: rootID) }
+
     func node(at row: Int) -> NodeMarkdownTextKit2Node? {
         guard nodes.indices.contains(row) else { return nil }
         return nodes[row]
+    }
+
+    var canUndo: Bool { !undoHistory.isEmpty }
+    var canRedo: Bool { !redoHistory.isEmpty }
+
+    @discardableResult
+    func dispatch(_ transaction: NodeMarkdownTransaction) -> NodeMarkdownTransactionResult? {
+        guard transaction.baseRevision == revision else {
+            lastTransactionError = .staleRevision(expected: revision, received: transaction.baseRevision)
+            return nil
+        }
+        guard !transaction.steps.isEmpty else {
+            return NodeMarkdownTransactionResult(
+                transactionID: transaction.id,
+                revisionBefore: revision,
+                revisionAfter: revision,
+                affectedNodeIDs: [],
+                structural: false,
+                positionMap: NodeMarkdownPositionMap(),
+                mappedSelection: transaction.selectionAfter ?? transaction.selectionBefore
+            )
+        }
+
+        // Single-Node typing is deliberately allocation-free with respect to document size.
+        // Structural/multi-step transactions keep one rollback snapshot because they are rare.
+        let needsRollbackSnapshot = transaction.steps.count != 1
+            || !transaction.steps.allSatisfy(\.isSingleNodeContentMutation)
+        let rollbackNodes = needsRollbackSnapshot ? nodes : nil
+        let rollbackIndex = needsRollbackSnapshot ? rowByID : nil
+        let rollbackStructuralIndex = needsRollbackSnapshot ? structuralIndex : nil
+        let revisionBefore = revision
+        var inverseSteps: [NodeMarkdownTransactionStep] = []
+        var affectedNodeIDs = Set<UUID>()
+        var structural = false
+        var positionMap = NodeMarkdownPositionMap()
+
+        do {
+            for step in transaction.steps {
+                let applied = try applyStep(step)
+                inverseSteps.insert(contentsOf: applied.inverseSteps, at: 0)
+                affectedNodeIDs.formUnion(applied.affectedNodeIDs)
+                structural = structural || applied.structural
+                if let mapOperation = applied.mapOperation {
+                    positionMap.append(mapOperation)
+                }
+            }
+        } catch let error as NodeMarkdownTransactionError {
+            if let rollbackNodes, let rollbackIndex, let rollbackStructuralIndex {
+                nodes = rollbackNodes
+                rowByID = rollbackIndex
+                structuralIndex = rollbackStructuralIndex
+            }
+            lastTransactionError = error
+            return nil
+        } catch {
+            if let rollbackNodes, let rollbackIndex, let rollbackStructuralIndex {
+                nodes = rollbackNodes
+                rowByID = rollbackIndex
+                structuralIndex = rollbackStructuralIndex
+            }
+            lastTransactionError = .invalidStructure(error.localizedDescription)
+            return nil
+        }
+
+        revision &+= 1
+        lastTransactionError = nil
+        if transaction.recordsHistory {
+            undoHistory.append(
+                NodeMarkdownHistoryEntry(
+                    undoSteps: inverseSteps,
+                    redoSteps: transaction.steps,
+                    selectionBefore: transaction.selectionBefore,
+                    selectionAfter: transaction.selectionAfter,
+                    label: transaction.label
+                )
+            )
+            if undoHistory.count > historyLimit {
+                undoHistory.removeFirst(undoHistory.count - historyLimit)
+            }
+            redoHistory.removeAll(keepingCapacity: true)
+        }
+        if structural { assertInvariants() }
+        return NodeMarkdownTransactionResult(
+            transactionID: transaction.id,
+            revisionBefore: revisionBefore,
+            revisionAfter: revision,
+            affectedNodeIDs: affectedNodeIDs,
+            structural: structural,
+            positionMap: positionMap,
+            mappedSelection: transaction.selectionAfter ?? positionMap.map(transaction.selectionBefore)
+        )
+    }
+
+    @discardableResult
+    func undo() -> NodeMarkdownTransactionResult? {
+        guard let entry = undoHistory.popLast() else { return nil }
+        allowsProtectedHistoryMutation = true
+        defer { allowsProtectedHistoryMutation = false }
+        let transaction = NodeMarkdownTransaction(
+            baseRevision: revision,
+            steps: entry.undoSteps,
+            selectionBefore: entry.selectionAfter,
+            selectionAfter: entry.selectionBefore,
+            recordsHistory: false,
+            label: "Undo \(entry.label)"
+        )
+        guard let result = dispatch(transaction) else {
+            undoHistory.append(entry)
+            return nil
+        }
+        redoHistory.append(entry)
+        return result
+    }
+
+    @discardableResult
+    func redo() -> NodeMarkdownTransactionResult? {
+        guard let entry = redoHistory.popLast() else { return nil }
+        allowsProtectedHistoryMutation = true
+        defer { allowsProtectedHistoryMutation = false }
+        let transaction = NodeMarkdownTransaction(
+            baseRevision: revision,
+            steps: entry.redoSteps,
+            selectionBefore: entry.selectionBefore,
+            selectionAfter: entry.selectionAfter,
+            recordsHistory: false,
+            label: "Redo \(entry.label)"
+        )
+        guard let result = dispatch(transaction) else {
+            redoHistory.append(entry)
+            return nil
+        }
+        undoHistory.append(entry)
+        return result
     }
 
     @discardableResult
@@ -124,7 +270,10 @@ final class NodeMarkdownTextKit2DocumentState {
 
         nodes = rebuilt
         lastValidationError = nil
+        lastTransactionError = nil
         rebuildIndex()
+        undoHistory.removeAll(keepingCapacity: true)
+        redoHistory.removeAll(keepingCapacity: true)
         if incrementsRevision { revision &+= 1 }
         assertInvariants()
         return true
@@ -133,27 +282,17 @@ final class NodeMarkdownTextKit2DocumentState {
     @discardableResult
     func updateNode(id: UUID, transform: (inout NodeMarkdownTextKit2Node) -> Void) -> Bool {
         guard let row = rowByID[id], nodes.indices.contains(row) else { return false }
-        let original = nodes[row]
-        transform(&nodes[row])
-        guard (1...12).contains(nodes[row].level) else {
-            nodes[row] = original
-            return false
-        }
-        if original.isProtectedH3 {
-            nodes[row].level = 3
-            nodes[row].sourceID = original.sourceID
-            nodes[row].sourceFile = original.sourceFile
-        }
-        let hasSourceID = !nodes[row].sourceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let hasSourceFile = !nodes[row].sourceFile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        guard hasSourceID == hasSourceFile,
-              !hasSourceID || nodes[row].level == 3 else {
-            nodes[row] = original
-            return false
-        }
-        guard nodes[row] != original else { return false }
-        revision &+= 1
-        assertInvariants()
+        var replacement = nodes[row]
+        transform(&replacement)
+        guard replacement != nodes[row] else { return false }
+        let transaction = NodeMarkdownTransaction(
+            baseRevision: revision,
+            steps: [.replaceNode(nodeID: id, node: replacement)],
+            recordsHistory: false,
+            label: "Update Node"
+        )
+        guard dispatch(transaction) != nil else { return false }
+        assertUpdatedNodeInvariant(at: row)
         return true
     }
 
@@ -175,14 +314,37 @@ final class NodeMarkdownTextKit2DocumentState {
 
     @discardableResult
     func insertNode(_ node: NodeMarkdownTextKit2Node, at requestedRow: Int) -> Int? {
-        guard rowByID[node.id] == nil,
-              (1...12).contains(node.level),
-              (0...nodes.count).contains(requestedRow) else { return nil }
-        nodes.insert(node, at: requestedRow)
-        revision &+= 1
-        rebuildIndex(startingAt: requestedRow)
-        assertInvariants()
-        return requestedRow
+        let transaction = NodeMarkdownTransaction(
+            baseRevision: revision,
+            steps: [.insertNodes(row: requestedRow, nodes: [node])],
+            label: "Insert Node"
+        )
+        return dispatch(transaction) == nil ? nil : requestedRow
+    }
+
+    /// Splits one Node without reparsing the document. The original UUID remains on the
+    /// leading half and the newly-created UUID owns the trailing half.
+    @discardableResult
+    func splitNode(
+        at row: Int,
+        utf16Offset: Int,
+        newNodeID: UUID,
+        newLevel: Int
+    ) -> Bool {
+        guard nodes.indices.contains(row) else { return false }
+        let transaction = NodeMarkdownTransaction(
+            baseRevision: revision,
+            steps: [
+                .splitNode(
+                    nodeID: nodes[row].id,
+                    offset: utf16Offset,
+                    newNodeID: newNodeID,
+                    newLevel: newLevel
+                )
+            ],
+            label: "Split Node"
+        )
+        return dispatch(transaction) != nil
     }
 
     @discardableResult
@@ -192,11 +354,12 @@ final class NodeMarkdownTextKit2DocumentState {
         let rows = Array(requestedRows)
         guard !rows.isEmpty else { return [] }
         let removed = rows.map { nodes[$0] }
-        for row in rows.sorted(by: >) { nodes.remove(at: row) }
-        revision &+= 1
-        rebuildIndex()
-        assertInvariants()
-        return removed
+        let transaction = NodeMarkdownTransaction(
+            baseRevision: revision,
+            steps: [.deleteNodes(nodeIDs: removed.map(\.id))],
+            label: "Delete Nodes"
+        )
+        return dispatch(transaction) == nil ? [] : removed
     }
 
     func snapshotRows() -> [NodeMarkdownLegacyDocumentSnapshot.Row] {
@@ -211,6 +374,256 @@ final class NodeMarkdownTextKit2DocumentState {
         }
     }
 
+    private struct AppliedStep {
+        let inverseSteps: [NodeMarkdownTransactionStep]
+        let affectedNodeIDs: Set<UUID>
+        let structural: Bool
+        let mapOperation: NodeMarkdownPositionMapOperation?
+    }
+
+    private func applyStep(_ step: NodeMarkdownTransactionStep) throws -> AppliedStep {
+        switch step {
+        case let .replaceNode(nodeID, replacement):
+            guard let row = rowByID[nodeID], nodes.indices.contains(row) else {
+                throw NodeMarkdownTransactionError.missingNode(nodeID)
+            }
+            guard replacement.id == nodeID else {
+                throw NodeMarkdownTransactionError.invalidStructure("替换Node不得改变UUID")
+            }
+            try validateNode(replacement)
+            let original = nodes[row]
+            if original.isProtectedH3,
+               (replacement.level != 3
+                || replacement.sourceID != original.sourceID
+                || replacement.sourceFile != original.sourceFile) {
+                throw NodeMarkdownTransactionError.protectedNode(nodeID)
+            }
+            nodes[row] = replacement
+            if original.level != replacement.level {
+                structuralIndex.rebuild(nodes: nodes)
+            }
+            return AppliedStep(
+                inverseSteps: [.replaceNode(nodeID: nodeID, node: original)],
+                affectedNodeIDs: [nodeID],
+                structural: original.level != replacement.level,
+                mapOperation: .replaceText(
+                    nodeID: nodeID,
+                    oldRange: NSRange(location: 0, length: (original.content as NSString).length),
+                    insertedLength: (replacement.content as NSString).length
+                )
+            )
+
+        case let .replaceText(nodeID, range, replacement):
+            guard let row = rowByID[nodeID], nodes.indices.contains(row) else {
+                throw NodeMarkdownTransactionError.missingNode(nodeID)
+            }
+            let source = nodes[row].content as NSString
+            guard range.location != NSNotFound,
+                  range.location >= 0,
+                  range.length >= 0,
+                  NSMaxRange(range) <= source.length else {
+                throw NodeMarkdownTransactionError.invalidRange(nodeID: nodeID, range: range)
+            }
+            let removed = source.substring(with: range)
+            nodes[row].content = source.replacingCharacters(in: range, with: replacement)
+            let insertedLength = (replacement as NSString).length
+            return AppliedStep(
+                inverseSteps: [.replaceText(
+                    nodeID: nodeID,
+                    range: NSRange(location: range.location, length: insertedLength),
+                    replacement: removed
+                )],
+                affectedNodeIDs: [nodeID],
+                structural: false,
+                mapOperation: .replaceText(nodeID: nodeID, oldRange: range, insertedLength: insertedLength)
+            )
+
+        case let .setLevel(nodeID, level):
+            guard (1...12).contains(level) else {
+                throw NodeMarkdownTransactionError.invalidLevel(level)
+            }
+            guard let row = rowByID[nodeID], nodes.indices.contains(row) else {
+                throw NodeMarkdownTransactionError.missingNode(nodeID)
+            }
+            let originalLevel = nodes[row].level
+            if nodes[row].isProtectedH3, level != 3 {
+                throw NodeMarkdownTransactionError.protectedNode(nodeID)
+            }
+            if !nodes[row].sourceID.isEmpty || !nodes[row].sourceFile.isEmpty,
+               level != 3 {
+                throw NodeMarkdownTransactionError.protectedNode(nodeID)
+            }
+            nodes[row].level = level
+            if originalLevel != level {
+                structuralIndex.rebuild(nodes: nodes)
+            }
+            return AppliedStep(
+                inverseSteps: [.setLevel(nodeID: nodeID, level: originalLevel)],
+                affectedNodeIDs: [nodeID],
+                structural: originalLevel != level,
+                mapOperation: nil
+            )
+
+        case let .insertNodes(requestedRow, insertedNodes):
+            guard (0...nodes.count).contains(requestedRow), !insertedNodes.isEmpty else {
+                throw NodeMarkdownTransactionError.invalidStructure("插入Node的位置或内容无效")
+            }
+            var seen = Set<UUID>()
+            for node in insertedNodes {
+                try validateNode(node)
+                guard rowByID[node.id] == nil, seen.insert(node.id).inserted else {
+                    throw NodeMarkdownTransactionError.duplicateNode(node.id)
+                }
+            }
+            nodes.insert(contentsOf: insertedNodes, at: requestedRow)
+            rebuildIndex(startingAt: requestedRow)
+            return AppliedStep(
+                inverseSteps: [.deleteNodes(nodeIDs: insertedNodes.map(\.id))],
+                affectedNodeIDs: Set(insertedNodes.map(\.id)),
+                structural: true,
+                mapOperation: nil
+            )
+
+        case let .deleteNodes(nodeIDs):
+            guard !nodeIDs.isEmpty else {
+                throw NodeMarkdownTransactionError.invalidStructure("删除Node列表为空")
+            }
+            let rows = try nodeIDs.map { id -> Int in
+                guard let row = rowByID[id] else { throw NodeMarkdownTransactionError.missingNode(id) }
+                return row
+            }.sorted()
+            guard rows.count < nodes.count else {
+                throw NodeMarkdownTransactionError.invalidStructure("文档必须保留至少一个Node")
+            }
+            guard zip(rows, rows.dropFirst()).allSatisfy({ $1 == $0 + 1 }) else {
+                throw NodeMarkdownTransactionError.invalidStructure("一次删除必须是连续Node范围")
+            }
+            let firstRow = rows[0]
+            let removed = rows.map { nodes[$0] }
+            if !allowsProtectedHistoryMutation, removed.contains(where: \.isProtectedH3) {
+                throw NodeMarkdownTransactionError.protectedNode(removed.first(where: \.isProtectedH3)!.id)
+            }
+            let removedIDs = Set(removed.map(\.id))
+            let fallbackID = nodes.indices.contains(rows.last! + 1)
+                ? nodes[rows.last! + 1].id
+                : (firstRow > 0 ? nodes[firstRow - 1].id : nil)
+            nodes.removeSubrange(firstRow..<(firstRow + removed.count))
+            rebuildIndex(startingAt: firstRow)
+            return AppliedStep(
+                inverseSteps: [.insertNodes(row: firstRow, nodes: removed)],
+                affectedNodeIDs: removedIDs,
+                structural: true,
+                mapOperation: .delete(nodeIDs: removedIDs, fallbackID: fallbackID)
+            )
+
+        case let .splitNode(nodeID, offset, newNodeID, newLevel):
+            guard (1...12).contains(newLevel) else {
+                throw NodeMarkdownTransactionError.invalidLevel(newLevel)
+            }
+            guard let row = rowByID[nodeID], nodes.indices.contains(row) else {
+                throw NodeMarkdownTransactionError.missingNode(nodeID)
+            }
+            guard rowByID[newNodeID] == nil else {
+                throw NodeMarkdownTransactionError.duplicateNode(newNodeID)
+            }
+            let original = nodes[row]
+            let source = original.content as NSString
+            guard (0...source.length).contains(offset) else {
+                throw NodeMarkdownTransactionError.invalidRange(
+                    nodeID: nodeID,
+                    range: NSRange(location: offset, length: 0)
+                )
+            }
+            nodes[row].content = source.substring(to: offset)
+            let trailing = NodeMarkdownTextKit2Node(
+                id: newNodeID,
+                level: newLevel,
+                content: source.substring(from: offset),
+                sourceID: "",
+                sourceFile: ""
+            )
+            nodes.insert(trailing, at: row + 1)
+            rebuildIndex(startingAt: row)
+            return AppliedStep(
+                inverseSteps: [.joinNodes(leftID: nodeID, rightID: newNodeID)],
+                affectedNodeIDs: [nodeID, newNodeID],
+                structural: true,
+                mapOperation: .split(sourceID: nodeID, offset: offset, trailingID: newNodeID)
+            )
+
+        case let .joinNodes(leftID, rightID):
+            guard let leftRow = rowByID[leftID], let rightRow = rowByID[rightID] else {
+                throw NodeMarkdownTransactionError.missingNode(rowByID[leftID] == nil ? leftID : rightID)
+            }
+            guard rightRow == leftRow + 1 else {
+                throw NodeMarkdownTransactionError.invalidStructure("只能合并相邻Node")
+            }
+            if !allowsProtectedHistoryMutation,
+               nodes[leftRow].isProtectedH3 || nodes[rightRow].isProtectedH3 {
+                throw NodeMarkdownTransactionError.protectedNode(
+                    nodes[leftRow].isProtectedH3 ? leftID : rightID
+                )
+            }
+            let left = nodes[leftRow]
+            let right = nodes[rightRow]
+            let leftLength = (left.content as NSString).length
+            nodes[leftRow].content += right.content
+            nodes.remove(at: rightRow)
+            rebuildIndex(startingAt: leftRow)
+            return AppliedStep(
+                inverseSteps: [
+                    .replaceNode(nodeID: leftID, node: left),
+                    .insertNodes(row: rightRow, nodes: [right])
+                ],
+                affectedNodeIDs: [leftID, rightID],
+                structural: true,
+                mapOperation: .join(leftID: leftID, leftLength: leftLength, rightID: rightID)
+            )
+
+        case let .moveNodes(nodeIDs, destinationRow):
+            guard !nodeIDs.isEmpty else {
+                throw NodeMarkdownTransactionError.invalidStructure("移动Node列表为空")
+            }
+            let rows = try nodeIDs.map { id -> Int in
+                guard let row = rowByID[id] else { throw NodeMarkdownTransactionError.missingNode(id) }
+                return row
+            }.sorted()
+            guard zip(rows, rows.dropFirst()).allSatisfy({ $1 == $0 + 1 }),
+                  (0...nodes.count).contains(destinationRow) else {
+                throw NodeMarkdownTransactionError.invalidStructure("移动范围或目标位置无效")
+            }
+            let originalRow = rows[0]
+            let moving = Array(nodes[originalRow..<(originalRow + rows.count)])
+            nodes.removeSubrange(originalRow..<(originalRow + rows.count))
+            let adjustedDestination = destinationRow > originalRow
+                ? destinationRow - rows.count
+                : destinationRow
+            let insertionRow = max(0, min(adjustedDestination, nodes.count))
+            nodes.insert(contentsOf: moving, at: insertionRow)
+            rebuildIndex(startingAt: min(originalRow, insertionRow))
+            return AppliedStep(
+                inverseSteps: [.moveNodes(nodeIDs: nodeIDs, destinationRow: originalRow)],
+                affectedNodeIDs: Set(nodeIDs),
+                structural: true,
+                mapOperation: nil
+            )
+        }
+    }
+
+    private func validateNode(_ node: NodeMarkdownTextKit2Node) throws {
+        guard (1...12).contains(node.level) else {
+            throw NodeMarkdownTransactionError.invalidLevel(node.level)
+        }
+        let hasSourceID = !node.sourceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasSourceFile = !node.sourceFile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard hasSourceID == hasSourceFile else {
+            throw NodeMarkdownTransactionError.invalidStructure("SourceID与SourceFile必须成对存在")
+        }
+        guard !hasSourceID || node.level == 3 else {
+            throw NodeMarkdownTransactionError.invalidStructure("只有H3可以持有母本来源")
+        }
+    }
+
     private func rebuildIndex(startingAt start: Int = 0) {
         if start <= 0 {
             rowByID.removeAll(keepingCapacity: true)
@@ -218,6 +631,7 @@ final class NodeMarkdownTextKit2DocumentState {
             rowByID = rowByID.filter { $0.value < start }
         }
         for row in max(0, start)..<nodes.count { rowByID[nodes[row].id] = row }
+        structuralIndex.rebuild(nodes: nodes)
     }
 
     private func assertInvariants(file: StaticString = #fileID, line: UInt = #line) {
@@ -228,6 +642,21 @@ final class NodeMarkdownTextKit2DocumentState {
         for (row, node) in nodes.enumerated() {
             assert(rowByID[node.id] == row, "TextKit2 UUID index points at wrong row", file: file, line: line)
         }
+        #endif
+    }
+
+    /// 单Node内容修改不会增删、换位或改UUID。逐键扫描全部Node既不能增加
+    /// 这类事务的证明力，又让Debug输入速度随文档增长；这里只证明被改Node与索引仍一致。
+    private func assertUpdatedNodeInvariant(
+        at row: Int,
+        file: StaticString = #fileID,
+        line: UInt = #line
+    ) {
+        #if DEBUG
+        assert(nodes.indices.contains(row), "TextKit2 updated Node row is invalid", file: file, line: line)
+        let node = nodes[row]
+        assert(rowByID.count == nodes.count, "TextKit2 Node UUID index count diverged", file: file, line: line)
+        assert(rowByID[node.id] == row, "TextKit2 updated Node UUID index diverged", file: file, line: line)
         #endif
     }
 

@@ -55,7 +55,11 @@ extension NodeMarkdownTextKit2Coordinator {
         }
     }
 
-    func commitActiveNodeSession(reason: String, keepingSession: Bool = false) {
+    func commitActiveNodeSession(
+        reason: String,
+        keepingSession: Bool = false,
+        notifyExternal: Bool = true
+    ) {
         guard let session = activeNodeSession else { return }
         let isSourceLessH3 = session.draft.level == 3
             && session.draft.sourceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -63,7 +67,7 @@ extension NodeMarkdownTextKit2Coordinator {
         // 会话内的dirty只负责即时显示，不能作为是否交给外层的闸门。
         // AppKit可能先送文字修改、后送选区通知；即使基线曾经建立得过晚，
         // 外层仍可按UUID与持久文档做最终比较，避免漏保存和漏收脏包。
-        let shouldCommit = true
+        let shouldCommit = notifyExternal
         NodeMarkdownDiagnostic26.log(
             "会话提交 原因=\(reason) Node=\(NodeMarkdownDiagnostic26.shortID(session.nodeID.uuidString)) "
                 + "dirty=\(session.isDirty) 无来源H3=\(isSourceLessH3) 发送外层=\(shouldCommit) "
@@ -107,6 +111,19 @@ extension NodeMarkdownTextKit2Coordinator {
                 rows: documentState.snapshotRows()
             )
         )
+    }
+
+    /// Structural edits remain authoritative in DocumentState immediately, while the
+    /// SwiftUI projection is coalesced until the command has returned. This prevents a
+    /// parent view update from re-entering TextKit in the middle of Enter/Tab handling.
+    func scheduleDocumentSnapshotPublication() {
+        pendingStructuralSnapshotGeneration &+= 1
+        let generation = pendingStructuralSnapshotGeneration
+        DispatchQueue.main.async { [weak self] in
+            guard let self,
+                  self.pendingStructuralSnapshotGeneration == generation else { return }
+            self.publishDocumentSnapshot()
+        }
     }
 }
 #endif

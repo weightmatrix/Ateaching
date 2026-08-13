@@ -11,6 +11,10 @@ extension NodeMarkdownTextKit2Coordinator {
             NodeMarkdownTextKit2Diagnostics.log("跳过全文样式，isApplyingExternalText=\(isApplyingExternalText)，有效输入法组合=\(textView.hasActiveInputMethodComposition)。")
             return
         }
+        let diagnosticStart = NodeMarkdownDiagnostic35.now()
+        defer { recordDiagnostic35Duration("全文样式", since: diagnosticStart) }
+        recordDiagnostic35Count("全文样式次数")
+        recordDiagnostic35Count("全文样式处理Node", amount: rowLayouts.count)
         NodeMarkdownTextKit2Diagnostics.log("开始应用全文样式，rowLayouts=\(rowLayouts.count)，storage长度=\(textView.nodeTextStorage.length)。")
         isApplyingStyleUpdate = true
         textView.applyNodeMarkdownStyles(
@@ -43,6 +47,7 @@ extension NodeMarkdownTextKit2Coordinator {
                 || editingRowIndex != lastAppliedEditingRowIndex else { return }
 
         if searchQueryChanged {
+            recordDiagnostic35Count("样式入口-搜索全文")
             // 搜索词改变会影响任意行，只有这一种状态变化需要全篇重新应用搜索标记。
             applyRowStyles(to: textView)
             return
@@ -52,6 +57,7 @@ extension NodeMarkdownTextKit2Coordinator {
         [lastAppliedActiveRowIndex, activeRowIndex, lastAppliedEditingRowIndex, editingRowIndex]
             .compactMap { $0 }
             .forEach { rows.insert($0) }
+        recordDiagnostic35Count("局部样式入口-搜索或编辑状态")
         refreshRowStyles(in: textView, rows: rows)
         lastAppliedSearchQuery = searchQuery
         lastAppliedActiveRowIndex = activeRowIndex
@@ -63,6 +69,10 @@ extension NodeMarkdownTextKit2Coordinator {
         let validRows = rows.filter { rowLayouts.indices.contains($0) }.sorted()
         guard !validRows.isEmpty,
               !textView.hasActiveInputMethodComposition else { return }
+        let diagnosticStart = NodeMarkdownDiagnostic35.now()
+        defer { recordDiagnostic35Duration("局部样式", since: diagnosticStart) }
+        recordDiagnostic35Count("局部样式次数")
+        recordDiagnostic35Count("局部样式处理Node", amount: validRows.count)
         isApplyingStyleUpdate = true
         defer { isApplyingStyleUpdate = false }
         for rowIndex in validRows {

@@ -11,6 +11,7 @@ extension NodeMarkdownTextKit2Representable {
             workingDirectoryURL: workingDirectoryURL,
             documentStyle: documentStyle,
             activeRowIndex: activeRowIndex,
+            navigationRequestToken: navigationRequestToken,
             activeMatchLocationInRow: activeMatchLocationInRow,
             editingRowIndex: editingRowIndex,
             searchQuery: searchQuery,
@@ -33,7 +34,8 @@ extension NodeMarkdownTextKit2Representable {
             onCommitEditingNode: onCommitEditingNode,
             onEditingDraftDirtyChange: onEditingDraftDirtyChange,
             onRequestSave: onRequestSave,
-            onInputSessionStateChange: onInputSessionStateChange
+            onInputSessionStateChange: onInputSessionStateChange,
+            onBeginEditing: onBeginEditing
         )
     }
 }

@@ -16,7 +16,7 @@ enum TeachingCoursePackageStateEngine {
         let ranges = TeachingCoursePackageContentSignature.packageRanges(in: notebookDocument.nodes)
         var dirty = 0
         var newPackages = 0
-        var sourceUpdates = 0
+        let sourceUpdates = 0
         let conflicts = 0
         var sourceCache: [String: NodeMarkdownDocument] = [:]
 

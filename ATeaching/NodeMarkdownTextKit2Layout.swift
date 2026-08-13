@@ -31,6 +31,19 @@ struct NodeMarkdownTextKit2RowLayout: Equatable {
         )
     }
 
+    func reindexed(_ newRowIndex: Int, offsetBy delta: Int = 0) -> NodeMarkdownTextKit2RowLayout {
+        NodeMarkdownTextKit2RowLayout(
+            rowIndex: newRowIndex,
+            range: NSRange(location: max(0, range.location + delta), length: range.length),
+            contentRange: NSRange(location: max(0, contentRange.location + delta), length: contentRange.length),
+            prefix: prefix,
+            level: level,
+            lineStyle: lineStyle,
+            spacingBefore: spacingBefore,
+            isProtectedH3: isProtectedH3
+        )
+    }
+
     func changingLength(by delta: Int) -> NodeMarkdownTextKit2RowLayout? {
         let updatedRangeLength = range.length + delta
         let updatedContentLength = contentRange.length + delta
@@ -113,16 +126,15 @@ enum NodeMarkdownTextKit2RowLayoutReconciler {
             }
         }
 
-        var expectedLocation = 0
-        for layout in reconciled {
-            guard layout.range.location == expectedLocation,
-                  layout.range.exact(toLength: documentLength) != nil,
-                  layout.contentRange.exact(toLength: documentLength) != nil else {
+        // 输入布局在上一次结构事务中已经完整验证。普通字符只改变一个Node的长度，
+        // 后续范围统一增加同一个偏移，彼此之间的连续性在数学上不会改变；逐键再次
+        // 遍历全表没有新增证明。这里只验证改动接缝和文档末端，完整校验留给结构事务。
+        if rowIndex + 1 < reconciled.count {
+            guard NSMaxRange(reconciled[rowIndex].range) == reconciled[rowIndex + 1].range.location else {
                 return nil
             }
-            expectedLocation = NSMaxRange(layout.range)
         }
-        guard expectedLocation == documentLength else { return nil }
+        guard reconciled.last.map({ NSMaxRange($0.range) }) == documentLength else { return nil }
         return reconciled
     }
 }

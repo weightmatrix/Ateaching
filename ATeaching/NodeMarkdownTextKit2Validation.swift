@@ -42,18 +42,30 @@ extension NodeMarkdownTextKit2Coordinator {
             return false
         }
 
-        var expectedLocation = 0
-        for (row, range) in rowCharacterRanges.enumerated() {
-            guard range.location == expectedLocation,
-                  range.exact(toLength: sourceLength) != nil else {
-                NodeMarkdownTextKit2Diagnostics.log("状态校验失败：第\(row + 1)行范围\(NSStringFromRange(range))不连续或越界，期望起点\(expectedLocation)。")
+        if deep {
+            var expectedLocation = 0
+            for (row, range) in rowCharacterRanges.enumerated() {
+                guard range.location == expectedLocation,
+                      range.exact(toLength: sourceLength) != nil else {
+                    NodeMarkdownTextKit2Diagnostics.log("状态校验失败：第\(row + 1)行范围\(NSStringFromRange(range))不连续或越界，期望起点\(expectedLocation)。")
+                    return false
+                }
+                expectedLocation = NSMaxRange(range)
+            }
+            guard expectedLocation == sourceLength else {
+                NodeMarkdownTextKit2Diagnostics.log("状态校验失败：行范围末端\(expectedLocation)没有覆盖源码末端\(sourceLength)。")
                 return false
             }
-            expectedLocation = NSMaxRange(range)
-        }
-        guard expectedLocation == sourceLength else {
-            NodeMarkdownTextKit2Diagnostics.log("状态校验失败：行范围末端\(expectedLocation)没有覆盖源码末端\(sourceLength)。")
-            return false
+        } else if let row = currentRowIndex(in: textView) {
+            let range = rowCharacterRanges[row]
+            guard range.exact(toLength: sourceLength) != nil,
+                  (row == 0 || NSMaxRange(rowCharacterRanges[row - 1]) == range.location),
+                  (row + 1 == rowCharacterRanges.count
+                      || NSMaxRange(range) == rowCharacterRanges[row + 1].location),
+                  rowCharacterRanges.last.map(NSMaxRange) == sourceLength else {
+                NodeMarkdownTextKit2Diagnostics.log("轻校验失败：当前Node或相邻边界不连续。")
+                return false
+            }
         }
 
         for selectionValue in textView.selectedRanges {

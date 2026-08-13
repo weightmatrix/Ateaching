@@ -43,6 +43,7 @@ struct NodeMarkdownTextKitEditor: View {
     let workingDirectoryURL: URL?
     let documentStyle: NodeMarkdownDocumentStyle
     let activeRowIndex: Int?
+    let navigationRequestToken: Int
     let activeMatchLocationInRow: Int?
     let editingRowIndex: Int?
     let searchQuery: String
@@ -73,6 +74,7 @@ struct NodeMarkdownTextKitEditor: View {
                 workingDirectoryURL: workingDirectoryURL,
                 documentStyle: documentStyle,
                 activeRowIndex: activeRowIndex,
+                navigationRequestToken: navigationRequestToken,
                 activeMatchLocationInRow: activeMatchLocationInRow,
                 editingRowIndex: editingRowIndex,
                 searchQuery: searchQuery,

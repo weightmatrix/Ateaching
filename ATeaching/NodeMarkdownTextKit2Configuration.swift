@@ -10,6 +10,7 @@ extension NodeMarkdownTextKit2Coordinator {
         workingDirectoryURL: URL?,
         documentStyle: NodeMarkdownDocumentStyle,
         activeRowIndex: Int?,
+        navigationRequestToken: Int,
         activeMatchLocationInRow: Int?,
         editingRowIndex: Int?,
         searchQuery: String,
@@ -31,17 +32,24 @@ extension NodeMarkdownTextKit2Coordinator {
         onCommitEditingNode: ((NodeMarkdownLegacyEditingNodeDraft) -> Void)?,
         onEditingDraftDirtyChange: ((Bool) -> Void)?,
         onRequestSave: (() -> Void)?,
-        onInputSessionStateChange: ((Bool) -> Void)?
+        onInputSessionStateChange: ((Bool) -> Void)?,
+        onBeginEditing: (() -> Void)?
     ) {
         let incomingMetadataChanged = rowMetadata != self.rowMetadata
-        let incomingValidationError = NodeMarkdownTextKit2DocumentState.validationError(
-            text: externalText,
-            rowMetadata: rowMetadata
-        )
-        let incomingDocumentIsValid = incomingValidationError == nil
+        let hasExplicitExternalSync = externalTextSyncToken != lastExternalTextSyncToken
+        let shouldValidateIncomingDocument = hasExplicitExternalSync
+            || (!hasUnacknowledgedLocalText && incomingMetadataChanged)
+        let incomingValidationError = shouldValidateIncomingDocument
+            ? NodeMarkdownTextKit2DocumentState.validationError(
+                text: externalText,
+                rowMetadata: rowMetadata
+            )
+            : nil
+        let incomingDocumentIsValid = !shouldValidateIncomingDocument || incomingValidationError == nil
         self.workingDirectoryURL = workingDirectoryURL
         self.documentStyle = documentStyle
         self.activeRowIndex = activeRowIndex
+        self.navigationRequestToken = navigationRequestToken
         self.activeMatchLocationInRow = activeMatchLocationInRow
         self.searchQuery = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         if externalText == lastPublishedLocalText {
@@ -80,6 +88,7 @@ extension NodeMarkdownTextKit2Coordinator {
         self.onEditingDraftDirtyChange = onEditingDraftDirtyChange
         self.onRequestSave = onRequestSave
         self.onInputSessionStateChange = onInputSessionStateChange
+        self.onBeginEditing = onBeginEditing
         _ = externalTextSyncToken
     }
 }

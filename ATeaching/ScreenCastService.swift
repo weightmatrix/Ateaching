@@ -1,181 +1,600 @@
+import Combine
 import Foundation
 import Network
 import SwiftUI
-import Combine
 
+@MainActor
 final class ScreenCastService: ObservableObject {
-    @Published var isCasting = false
-    @Published var isReceiving = false
-    @Published var localIP = ""
-    @Published var connectedHost = ""
-    @Published var receivedDocument: NodeMarkdownDocument?
-    @Published var receivedStudentName: String?
-    @Published var statusMessage = ""
-    @Published var receiverColors: [String: Color] = [:]
+    enum Mode {
+        case idle
+        case casting
+        case receiving
+    }
 
-    private(set) var port: UInt16 = 55555
+    @Published private(set) var mode: Mode = .idle {
+        didSet {
+            guard oldValue != mode else { return }
+            diagnose("模式切换 \(oldValue.diagnosticName)->\(mode.diagnosticName)")
+        }
+    }
+    @Published private(set) var isConnected = false
+    @Published private(set) var pin = ""
+    @Published private(set) var hostName = ""
+    @Published private(set) var statusMessage = "未连接" {
+        didSet {
+            guard oldValue != statusMessage else { return }
+            diagnose("状态文字 \(oldValue)->\(statusMessage)")
+        }
+    }
+    @Published private(set) var members: [ScreenCastMember] = []
+    @Published private(set) var receivedDocuments: [ScreenCastContentKind: ScreenCastDocumentSnapshot] = [:]
+    @Published private(set) var receivedViewport: ScreenCastViewport?
+    @Published private(set) var strokes: [ScreenCastStroke] = []
+    @Published var enabledKinds: Set<ScreenCastContentKind> = [.teaching] {
+        didSet {
+            guard mode == .casting, enabledKinds != oldValue else { return }
+            ScreenCastContentHub.shared.setRequestedKinds(enabledKinds)
+            publishSessionState()
+            sendEnabledDocuments()
+        }
+    }
+    @Published var selectedReceivedKind: ScreenCastContentKind = .teaching
+
+    var isCasting: Bool { mode == .casting }
+    var isReceiving: Bool { mode == .receiving }
+    var receivedDocument: ScreenCastDocumentSnapshot? { receivedDocuments[selectedReceivedKind] }
+    var localAnnotationColorHex: String { localMember?.colorHex ?? "#007AFF" }
+    var diagnosticID: String { diagnosticInstanceID }
+
+    private let serviceType = "_ateaching-cast._tcp"
+    private let diagnosticInstanceID = String(UUID().uuidString.prefix(8))
+    private let queue = DispatchQueue(label: "Han.ATeaching.ScreenCast.Network", qos: .userInitiated)
+    private let deviceID: UUID
+    private let palette = [
+        "#007AFF", "#34C759", "#FF9500", "#AF52DE", "#FF2D55", "#00A7A7",
+        "#5856D6", "#A65E2E", "#64D2FF", "#FFD60A", "#BF5AF2", "#FF453A"
+    ]
+
     private var listener: NWListener?
-    private var connections: [NWConnection] = []
-    private var receiveConnection: NWConnection?
-    private var receiverColorIndex = 0
+    private var browser: NWBrowser?
+    private var hostPeers: [UUID: ScreenCastPeerConnection] = [:]
+    private var candidatePeers: [UUID: ScreenCastPeerConnection] = [:]
+    private var attemptedEndpoints: Set<String> = []
+    private var receiverPeer: ScreenCastPeerConnection?
+    private var localMember: ScreenCastMember?
+    private var requestedName = ""
+    private var contentCancellables: Set<AnyCancellable> = []
+    private var viewportTimer: Timer?
+    private var lastPublishedViewport: ScreenCastViewport?
+    private var hostIsPaused = false
 
-    private let colorPalette: [Color] = [.blue, .green, .orange, .purple, .teal, .mint, .pink, .indigo, .cyan, .brown]
+    init() {
+        let key = "ScreenCast.deviceID"
+        if let raw = UserDefaults.standard.string(forKey: key), let value = UUID(uuidString: raw) {
+            deviceID = value
+        } else {
+            let value = UUID()
+            deviceID = value
+            UserDefaults.standard.set(value.uuidString, forKey: key)
+        }
+        observeContentHub()
+        diagnose("ScreenCastService 初始化 device=\(String(deviceID.uuidString.prefix(8)))")
+    }
 
-    init() {}
+    func startCasting(pin: String, name: String) {
+        let cleanPIN = Self.normalizedPIN(pin)
+        let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        diagnose("startCasting进入 pin=\(cleanPIN) nameEmpty=\(cleanName.isEmpty) listener存在=\(listener != nil)")
+        guard cleanPIN.count == 4, cleanName.isEmpty == false else {
+            statusMessage = "请输入名字和四位数字"
+            diagnose("startCasting被参数校验拒绝")
+            return
+        }
 
-    // MARK: - Cast
+        stopAll(reason: "startCasting启动前清理旧会话")
+        mode = .casting
+        self.pin = cleanPIN
+        requestedName = cleanName
+        hostName = cleanName
+        localMember = ScreenCastMember(id: deviceID, name: cleanName, colorHex: palette[0])
+        members = localMember.map { [$0] } ?? []
+        statusMessage = "正在启动投屏"
+        ScreenCastContentHub.shared.setRequestedKinds(enabledKinds)
 
-    func startCasting() {
-        stopAll()
-        isCasting = true
-        localIP = Self.localWiFiAddress()
-        statusMessage = ""
-        let params = NWParameters.tcp
-        params.allowLocalEndpointReuse = true
+        let parameters = NWParameters.tcp
+        parameters.allowLocalEndpointReuse = true
         do {
-            listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
-            listener?.stateUpdateHandler = { [weak self] state in
-                if case .failed(let error) = state {
-                    Task { @MainActor in
-                        self?.statusMessage = "监听失败: \(error.localizedDescription)"
-                        self?.stopCasting()
-                    }
-                }
+            let listener = try NWListener(using: parameters)
+            diagnose("NWListener创建成功")
+            listener.service = NWListener.Service(
+                name: "ATeaching-\(deviceID.uuidString.prefix(8))",
+                type: serviceType
+            )
+            diagnose("Bonjour服务已设置 type=\(serviceType)")
+            listener.stateUpdateHandler = { [weak self] state in
+                Task { @MainActor [weak self] in self?.handleListenerState(state) }
             }
-            listener?.newConnectionHandler = { [weak self] conn in
-                self?.connections.append(conn)
-                conn.start(queue: .main)
+            listener.newConnectionHandler = { [weak self] connection in
+                Task { @MainActor [weak self] in self?.accept(connection) }
             }
-            listener?.start(queue: .main)
+            self.listener = listener
+            diagnose("Listener已被服务实例持有，准备start")
+            listener.start(queue: queue)
+            diagnose("Listener.start已提交 queue=\(queue.label)")
+            startViewportMonitoring()
         } catch {
-            statusMessage = "启动失败: \(error.localizedDescription)"
-            stopCasting()
+            diagnose("NWListener创建抛错 error=\(String(reflecting: error))")
+            stopAll(
+                reason: "NWListener创建抛错：\(String(reflecting: error))",
+                finalStatus: "启动失败：\(error.localizedDescription)"
+            )
         }
     }
 
-    func stopCasting() {
+    func changeCastingPIN(_ value: String) {
+        let cleanPIN = Self.normalizedPIN(value)
+        guard cleanPIN.count == 4, isCasting else { return }
+        pin = cleanPIN
+        for peer in hostPeers.values {
+            peer.send(.rejected, payload: ScreenCastRejection(reason: "主控已更换四位数字，请重新连接"))
+            peer.cancel()
+        }
+        hostPeers.removeAll()
+        rebuildHostMembers()
+        publishSessionState()
+        statusMessage = "四位数字已更新，等待重新连接"
+    }
+
+    func startReceiving(pin: String, name: String) {
+        let cleanPIN = Self.normalizedPIN(pin)
+        let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard cleanPIN.count == 4, cleanName.isEmpty == false else {
+            statusMessage = "请输入名字和四位数字"
+            return
+        }
+
+        stopAll(reason: "startReceiving启动前清理旧会话")
+        mode = .receiving
+        self.pin = cleanPIN
+        requestedName = cleanName
+        statusMessage = "正在同一 Wi-Fi 内寻找投屏"
+        UserDefaults.standard.set(cleanPIN, forKey: "ScreenCast.lastReceivePIN")
+
+        let browser = NWBrowser(for: .bonjour(type: serviceType, domain: nil), using: .tcp)
+        browser.stateUpdateHandler = { [weak self] state in
+            Task { @MainActor [weak self] in self?.handleBrowserState(state) }
+        }
+        browser.browseResultsChangedHandler = { [weak self] results, _ in
+            Task { @MainActor [weak self] in self?.connectToDiscoveredResults(results) }
+        }
+        self.browser = browser
+        browser.start(queue: queue)
+    }
+
+    func reconnect(with pin: String) {
+        guard isReceiving else { return }
+        startReceiving(pin: pin, name: requestedName)
+    }
+
+    func stopAll(
+        reason: String = "调用方请求",
+        finalStatus: String = "未连接",
+        file: StaticString = #fileID,
+        line: UInt = #line,
+        function: StaticString = #function
+    ) {
+        diagnose(
+            "stopAll进入 reason=\(reason) caller=\(file):\(line) \(function) "
+                + "listener=\(listener != nil) browser=\(browser != nil) hostPeers=\(hostPeers.count) candidates=\(candidatePeers.count)"
+        )
         listener?.cancel()
         listener = nil
-        for c in connections { c.cancel() }
-        connections.removeAll()
-        isCasting = false
+        viewportTimer?.invalidate()
+        viewportTimer = nil
+        lastPublishedViewport = nil
+        hostIsPaused = false
+        browser?.cancel()
+        browser = nil
+        hostPeers.values.forEach { $0.cancel() }
+        candidatePeers.values.forEach { $0.cancel() }
+        receiverPeer?.cancel()
+        hostPeers.removeAll()
+        candidatePeers.removeAll()
+        attemptedEndpoints.removeAll()
+        receiverPeer = nil
+        localMember = nil
+        mode = .idle
+        isConnected = false
+        pin = ""
+        hostName = ""
+        members = []
+        receivedDocuments = [:]
+        receivedViewport = nil
+        strokes = []
+        ScreenCastAnnotationHub.shared.replace(with: [])
+        statusMessage = finalStatus
+        ScreenCastContentHub.shared.setRequestedKinds([])
+        diagnose("stopAll完成")
     }
 
-    func pushDocument(_ document: NodeMarkdownDocument, studentName: String?) {
-        guard isCasting else { return }
-        let encoder = JSONEncoder()
-        guard let docData = try? encoder.encode(document.nodes) else { return }
-        let nameData = (studentName ?? "学生").data(using: .utf8)!
-        var payload = Data()
-        var nameLen = UInt32(nameData.count).bigEndian
-        var docLen = UInt32(docData.count).bigEndian
-        payload.append(Data(bytes: &nameLen, count: 4))
-        payload.append(nameData)
-        payload.append(Data(bytes: &docLen, count: 4))
-        payload.append(docData)
-        for conn in connections {
-            conn.send(content: payload, completion: .idempotent)
-        }
+    func publishViewport(_ viewport: ScreenCastViewport) {
+        guard isCasting, enabledKinds.contains(viewport.kind) else { return }
+        broadcast(.viewport, payload: viewport)
     }
 
-    // MARK: - Receive
+    func addLocalStroke(points: [ScreenCastPoint], lineWidth: Double = 3) {
+        guard isReceiving, let member = localMember, points.isEmpty == false else { return }
+        let stroke = ScreenCastStroke(
+            id: UUID(),
+            memberID: member.id,
+            colorHex: member.colorHex,
+            lineWidth: lineWidth,
+            points: points
+        )
+        strokes.append(stroke)
+        syncAnnotationHub()
+        receiverPeer?.send(.stroke, payload: stroke)
+    }
 
-    func startReceiving(host: String, port: UInt16) {
-        stopAll()
-        isReceiving = true
-        connectedHost = host
-        self.port = port
-        let conn = NWConnection(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
-        receiveConnection = conn
-        conn.stateUpdateHandler = { [weak self] state in
-            switch state {
-            case .ready:
-                Task { @MainActor in self?.onReceiveReady(conn) }
-            case .failed(let error):
-                Task { @MainActor in
-                    self?.statusMessage = "连接失败: \(error.localizedDescription)"
-                    self?.stopReceiving()
-                }
-            default: break
+    func removeLocalStroke(_ strokeID: UUID) {
+        guard isReceiving else { return }
+        strokes.removeAll { $0.id == strokeID }
+        syncAnnotationHub()
+        receiverPeer?.send(.removeStroke, payload: ScreenCastStrokeRemoval(strokeID: strokeID))
+    }
+
+    func clearLocalStrokes() {
+        guard isReceiving, let member = localMember else { return }
+        strokes.removeAll { $0.memberID == member.id }
+        syncAnnotationHub()
+        receiverPeer?.send(.clearMemberStrokes, payload: ScreenCastMemberStrokeClear(memberID: member.id))
+    }
+
+    static func normalizedPIN(_ value: String) -> String {
+        String(value.filter(\.isNumber).prefix(4))
+    }
+
+    static func randomPIN() -> String {
+        String(format: "%04d", Int.random(in: 0...9999))
+    }
+
+    private func observeContentHub() {
+        let hub = ScreenCastContentHub.shared
+        hub.$teachingSnapshot
+            .compactMap { $0 }
+            .sink { [weak self] snapshot in
+                guard let self, self.isCasting, self.enabledKinds.contains(.teaching) else { return }
+                self.broadcast(.document, payload: snapshot)
             }
+            .store(in: &contentCancellables)
+        hub.$markdownSnapshot
+            .compactMap { $0 }
+            .sink { [weak self] snapshot in
+                guard let self, self.isCasting, self.enabledKinds.contains(.markdown) else { return }
+                self.broadcast(.document, payload: snapshot)
+            }
+            .store(in: &contentCancellables)
+    }
+
+    private func handleListenerState(_ state: NWListener.State) {
+        diagnose("Listener状态回调 state=\(Self.listenerStateDescription(state)) isCasting=\(isCasting)")
+        guard isCasting else {
+            diagnose("Listener状态回调忽略：当前已非投屏模式")
+            return
         }
-        conn.start(queue: .main)
-    }
-
-    private func onReceiveReady(_ conn: NWConnection) {
-        statusMessage = "已连接"
-        conn.send(content: "REQUEST_DOC".data(using: .utf8)!, completion: .idempotent)
-        receivePayload(conn)
-    }
-
-    func stopReceiving() {
-        receiveConnection?.cancel()
-        receiveConnection = nil
-        isReceiving = false
-        receivedDocument = nil
-    }
-
-    private func receivePayload(_ conn: NWConnection) {
-        conn.receive(minimumIncompleteLength: 4, maximumLength: 65536) { [weak self] data, _, isComplete, error in
-            guard let self, let data = data, !isComplete, error == nil else { return }
-            self.parsePayload(data)
-            self.receivePayload(conn)
-        }
-    }
-
-    private func parsePayload(_ data: Data) {
-        guard data.count >= 8 else { return }
-        var offset = 0
-        let nameLen = Int(data.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self).bigEndian })
-        offset += 4
-        guard offset + nameLen <= data.count else { return }
-        let name = String(data: data.subdata(in: offset..<offset + nameLen), encoding: .utf8)
-        offset += nameLen
-        let docLen = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: UInt32.self).bigEndian })
-        offset += 4
-        guard offset + docLen <= data.count else { return }
-        let docData = data.subdata(in: offset..<offset + docLen)
-        if let nodes = try? JSONDecoder().decode([NodeMarkdownNode].self, from: docData) {
-            var doc = NodeMarkdownDocument(nodes: nodes)
-            _ = doc.ensureTrailingBlankLine(defaultLevel: 1)
-            receivedDocument = doc
-            receivedStudentName = name
-            assignColor(for: name ?? "学生")
-        }
-    }
-
-    private func assignColor(for name: String) {
-        if receiverColors[name] == nil {
-            receiverColors[name] = colorPalette[receiverColorIndex % colorPalette.count]
-            receiverColorIndex += 1
-        }
-    }
-
-    func annotationColor(for name: String?) -> Color {
-        guard let name else { return .blue }
-        return receiverColors[name] ?? .blue
-    }
-
-    func stopAll() {
-        stopCasting()
-        stopReceiving()
-    }
-
-    static func localWiFiAddress() -> String {
-        var addr = ""
-        var ifaddr: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return "127.0.0.1" }
-        defer { freeifaddrs(ifaddr) }
-        for ptr in sequence(first: first, next: { $0.pointee.ifa_next }) {
-            let name = String(cString: ptr.pointee.ifa_name)
-            guard name == "en0" || name == "en1" else { continue }
-            let sa = ptr.pointee.ifa_addr.pointee
-            guard sa.sa_family == UInt8(AF_INET) else { continue }
-            var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-            getnameinfo(ptr.pointee.ifa_addr, socklen_t(sa.sa_len), &hostname, socklen_t(hostname.count), nil, 0, NI_NUMERICHOST)
-            addr = String(cString: hostname)
+        switch state {
+        case .ready:
+            statusMessage = "投屏中，等待接收端"
+        case .failed(let error):
+            stopAll(
+                reason: "Listener失败：\(String(reflecting: error))",
+                finalStatus: "投屏失败：\(error.localizedDescription)"
+            )
+        default:
             break
         }
-        return addr.isEmpty ? "127.0.0.1" : addr
+    }
+
+    private func accept(_ connection: NWConnection) {
+        guard isCasting else {
+            connection.cancel()
+            return
+        }
+        let peer = ScreenCastPeerConnection(connection: connection)
+        hostPeers[peer.id] = peer
+        peer.onEnvelope = { [weak self, weak peer] envelope in
+            Task { @MainActor [weak self, weak peer] in
+                guard let peer else { return }
+                self?.handleHostEnvelope(envelope, from: peer)
+            }
+        }
+        peer.onStateChange = { [weak self, weak peer] state in
+            Task { @MainActor [weak self, weak peer] in
+                guard let peer else { return }
+                self?.handleHostPeerState(state, peer: peer)
+            }
+        }
+        peer.start(on: queue)
+    }
+
+    private func handleHostEnvelope(_ envelope: ScreenCastWireEnvelope, from peer: ScreenCastPeerConnection) {
+        switch envelope.kind {
+        case .hello:
+            guard let hello = try? JSONDecoder().decode(ScreenCastHello.self, from: envelope.payload) else { return }
+            guard hello.pin == pin else {
+                peer.send(.rejected, payload: ScreenCastRejection(reason: "四位数字不匹配"))
+                peer.cancel()
+                return
+            }
+            let existingColor = members.first(where: { $0.id == hello.deviceID })?.colorHex
+            let color = existingColor ?? receiverColor(for: hello.deviceID)
+            let member = ScreenCastMember(id: hello.deviceID, name: hello.name, colorHex: color)
+            peer.member = member
+            rebuildHostMembers()
+            let state = currentSessionState()
+            peer.send(.welcome, payload: ScreenCastWelcome(member: member, state: state))
+            publishSessionState()
+            sendEnabledDocuments(to: peer)
+            statusMessage = "投屏中，已连接 \(max(0, members.count - 1)) 人"
+        case .stroke:
+            guard peer.member != nil,
+                  let stroke = try? JSONDecoder().decode(ScreenCastStroke.self, from: envelope.payload) else { return }
+            strokes.append(stroke)
+            syncAnnotationHub()
+            broadcast(.stroke, payload: stroke, excluding: peer.id)
+        case .removeStroke:
+            guard let removal = try? JSONDecoder().decode(ScreenCastStrokeRemoval.self, from: envelope.payload) else { return }
+            strokes.removeAll { $0.id == removal.strokeID }
+            syncAnnotationHub()
+            broadcast(.removeStroke, payload: removal, excluding: peer.id)
+        case .clearMemberStrokes:
+            guard let clear = try? JSONDecoder().decode(ScreenCastMemberStrokeClear.self, from: envelope.payload) else { return }
+            strokes.removeAll { $0.memberID == clear.memberID }
+            syncAnnotationHub()
+            broadcast(.clearMemberStrokes, payload: clear, excluding: peer.id)
+        case .ping:
+            peer.send(.pong, payload: true)
+        default:
+            break
+        }
+    }
+
+    private func handleHostPeerState(_ state: NWConnection.State, peer: ScreenCastPeerConnection) {
+        switch state {
+        case .failed, .cancelled:
+            hostPeers.removeValue(forKey: peer.id)
+            rebuildHostMembers()
+            publishSessionState()
+            statusMessage = members.count > 1 ? "投屏中，已连接 \(members.count - 1) 人" : "投屏中，等待接收端"
+        default:
+            break
+        }
+    }
+
+    private func handleBrowserState(_ state: NWBrowser.State) {
+        guard isReceiving else { return }
+        if case .failed(let error) = state {
+            statusMessage = "搜索失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func connectToDiscoveredResults(_ results: Set<NWBrowser.Result>) {
+        guard isReceiving, receiverPeer == nil else { return }
+        for result in results {
+            let key = String(describing: result.endpoint)
+            guard attemptedEndpoints.insert(key).inserted else { continue }
+            let connection = NWConnection(to: result.endpoint, using: .tcp)
+            let peer = ScreenCastPeerConnection(connection: connection)
+            candidatePeers[peer.id] = peer
+            peer.onEnvelope = { [weak self, weak peer] envelope in
+                Task { @MainActor [weak self, weak peer] in
+                    guard let peer else { return }
+                    self?.handleReceiverEnvelope(envelope, from: peer)
+                }
+            }
+            peer.onStateChange = { [weak self, weak peer] state in
+                Task { @MainActor [weak self, weak peer] in
+                    guard let peer else { return }
+                    self?.handleReceiverPeerState(state, peer: peer)
+                }
+            }
+            peer.start(on: queue)
+        }
+    }
+
+    private func handleReceiverPeerState(_ state: NWConnection.State, peer: ScreenCastPeerConnection) {
+        guard isReceiving else { return }
+        switch state {
+        case .ready:
+            peer.send(.hello, payload: ScreenCastHello(name: requestedName, pin: pin, deviceID: deviceID))
+        case .failed, .cancelled:
+            candidatePeers.removeValue(forKey: peer.id)
+            if receiverPeer?.id == peer.id {
+                receiverPeer = nil
+                localMember = nil
+                isConnected = false
+                browser?.cancel()
+                browser = nil
+                statusMessage = "连接已断开，请确认四位数字后重新连接"
+            }
+        default:
+            break
+        }
+    }
+
+    private func handleReceiverEnvelope(_ envelope: ScreenCastWireEnvelope, from peer: ScreenCastPeerConnection) {
+        switch envelope.kind {
+        case .welcome:
+            guard receiverPeer == nil,
+                  let welcome = try? JSONDecoder().decode(ScreenCastWelcome.self, from: envelope.payload) else { return }
+            receiverPeer = peer
+            localMember = welcome.member
+            candidatePeers.values.filter { $0.id != peer.id }.forEach { $0.cancel() }
+            candidatePeers = [peer.id: peer]
+            apply(welcome.state)
+            isConnected = true
+            statusMessage = "已连接 \(welcome.state.hostName)"
+        case .rejected:
+            if let rejection = try? JSONDecoder().decode(ScreenCastRejection.self, from: envelope.payload) {
+                statusMessage = rejection.reason
+            }
+            peer.cancel()
+        case .sessionState:
+            guard let state = try? JSONDecoder().decode(ScreenCastSessionState.self, from: envelope.payload) else { return }
+            apply(state)
+        case .document:
+            guard let document = try? JSONDecoder().decode(ScreenCastDocumentSnapshot.self, from: envelope.payload) else { return }
+            receivedDocuments[document.kind] = document
+            if receivedDocuments[selectedReceivedKind] == nil {
+                selectedReceivedKind = document.kind
+            }
+        case .viewport:
+            receivedViewport = try? JSONDecoder().decode(ScreenCastViewport.self, from: envelope.payload)
+        case .stroke:
+            guard let stroke = try? JSONDecoder().decode(ScreenCastStroke.self, from: envelope.payload) else { return }
+            strokes.removeAll { $0.id == stroke.id }
+            strokes.append(stroke)
+            syncAnnotationHub()
+        case .removeStroke:
+            guard let removal = try? JSONDecoder().decode(ScreenCastStrokeRemoval.self, from: envelope.payload) else { return }
+            strokes.removeAll { $0.id == removal.strokeID }
+            syncAnnotationHub()
+        case .clearMemberStrokes:
+            guard let clear = try? JSONDecoder().decode(ScreenCastMemberStrokeClear.self, from: envelope.payload) else { return }
+            strokes.removeAll { $0.memberID == clear.memberID }
+            syncAnnotationHub()
+        case .ping:
+            peer.send(.pong, payload: true)
+        default:
+            break
+        }
+    }
+
+    private func apply(_ state: ScreenCastSessionState) {
+        pin = state.pin
+        hostName = state.hostName
+        members = state.members
+        let allowed = Set(state.enabledKinds)
+        receivedDocuments = receivedDocuments.filter { allowed.contains($0.key) }
+        if allowed.contains(selectedReceivedKind) == false, let first = state.enabledKinds.first {
+            selectedReceivedKind = first
+        }
+        statusMessage = state.isPaused ? "主控已暂停，保留最后画面" : "已连接 \(state.hostName)"
+    }
+
+    private func currentSessionState() -> ScreenCastSessionState {
+        ScreenCastSessionState(
+            pin: pin,
+            hostName: hostName,
+            enabledKinds: ScreenCastContentKind.allCases.filter { enabledKinds.contains($0) },
+            members: members,
+            isPaused: hostIsPaused
+        )
+    }
+
+    private func publishSessionState() {
+        guard isCasting else { return }
+        broadcast(.sessionState, payload: currentSessionState())
+    }
+
+    private func rebuildHostMembers() {
+        let receivers = hostPeers.values.compactMap(\.member).sorted { lhs, rhs in
+            if lhs.name == rhs.name { return lhs.id.uuidString < rhs.id.uuidString }
+            return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+        }
+        members = (localMember.map { [$0] } ?? []) + receivers
+        isConnected = receivers.isEmpty == false
+    }
+
+    private func receiverColor(for id: UUID) -> String {
+        let bytes = withUnsafeBytes(of: id.uuid) { Array($0) }
+        let checksum = bytes.reduce(0) { ($0 &* 31) &+ Int($1) }
+        let colorCount = max(1, palette.count - 1)
+        let start = Int(checksum.magnitude % UInt(colorCount))
+        let usedColors = Set(members.map(\.colorHex))
+        for offset in 0..<colorCount {
+            let candidate = palette[1 + (start + offset) % colorCount]
+            if usedColors.contains(candidate) == false { return candidate }
+        }
+        let red = 64 + Int(bytes[0]) % 160
+        let green = 64 + Int(bytes[5]) % 160
+        let blue = 64 + Int(bytes[10]) % 160
+        return String(format: "#%02X%02X%02X", red, green, blue)
+    }
+
+    private func sendEnabledDocuments() {
+        hostPeers.values.filter { $0.member != nil }.forEach(sendEnabledDocuments(to:))
+    }
+
+    private func sendEnabledDocuments(to peer: ScreenCastPeerConnection) {
+        for kind in ScreenCastContentKind.allCases where enabledKinds.contains(kind) {
+            if let snapshot = ScreenCastContentHub.shared.snapshot(for: kind) {
+                peer.send(.document, payload: snapshot)
+            }
+        }
+    }
+
+    private func broadcast<T: Encodable>(_ kind: ScreenCastWireKind, payload: T, excluding peerID: UUID? = nil) {
+        for peer in hostPeers.values where peer.member != nil && peer.id != peerID {
+            peer.send(kind, payload: payload)
+        }
+    }
+
+    private func startViewportMonitoring() {
+        viewportTimer?.invalidate()
+        viewportTimer = Timer.scheduledTimer(withTimeInterval: 0.12, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.sampleAndPublishViewport() }
+        }
+    }
+
+    private func syncAnnotationHub() {
+        ScreenCastAnnotationHub.shared.replace(with: strokes)
+    }
+
+    private func sampleAndPublishViewport() {
+        guard isCasting else { return }
+        guard let viewport = ScreenCastViewportMonitor.sample(enabledKinds: enabledKinds) else {
+            if hostIsPaused == false {
+                hostIsPaused = true
+                publishSessionState()
+            }
+            return
+        }
+        if hostIsPaused {
+            hostIsPaused = false
+            publishSessionState()
+        }
+        guard viewport != lastPublishedViewport else { return }
+        lastPublishedViewport = viewport
+        broadcast(.viewport, payload: viewport)
+    }
+
+    private func diagnose(_ message: String) {
+        ScreenCastDiagnostic40.record(
+            message,
+            instanceID: diagnosticInstanceID,
+            mode: mode.diagnosticName
+        )
+    }
+
+    private static func listenerStateDescription(_ state: NWListener.State) -> String {
+        switch state {
+        case .setup: return "setup"
+        case .waiting(let error): return "waiting(\(String(reflecting: error)))"
+        case .ready: return "ready"
+        case .failed(let error): return "failed(\(String(reflecting: error)))"
+        case .cancelled: return "cancelled"
+        @unknown default: return "unknown"
+        }
+    }
+}
+
+private extension ScreenCastService.Mode {
+    var diagnosticName: String {
+        switch self {
+        case .idle: return "idle"
+        case .casting: return "casting"
+        case .receiving: return "receiving"
+        }
     }
 }

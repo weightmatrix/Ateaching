@@ -75,6 +75,26 @@ extension NodeMarkdownTextKit2TextView {
         )
     }
 
+    /// Structural transactions install the destination row style before writing the
+    /// selection. Keeping selection out of this primitive prevents NSTextView from
+    /// scrolling against an intermediate TextKit layout.
+    @discardableResult
+    func replaceSourceTextWithoutSelecting(
+        in range: NSRange,
+        with replacement: NSAttributedString
+    ) -> Bool {
+        guard let safeRange = range.exact(toLength: nodeTextStorage.length),
+              let projected = projectedSourceText(
+                replacing: safeRange,
+                with: replacement.string
+              ) else { return false }
+        nodeTextContentStorage.performEditingTransaction {
+            nodeTextStorage.replaceCharacters(in: safeRange, with: replacement)
+        }
+        nodeSourceTextSnapshot = projected
+        return true
+    }
+
     func documentString() -> String {
         assertSingleTextStorage()
         return nodeSourceTextSnapshot

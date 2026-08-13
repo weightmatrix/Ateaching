@@ -361,7 +361,7 @@ struct TeachingHomeView: View {
                                                 item.iconName = iconName
                                             }
                                         } label: {
-                                            Label(iconName, systemImage: iconName)
+                                            Label(TeachingStudentItem.displayName(forIcon: iconName), systemImage: iconName)
                                         }
                                     }
                                 }
@@ -373,7 +373,12 @@ struct TeachingHomeView: View {
                                                 item.color = color
                                             }
                                         } label: {
-                                            Label(color.displayName, systemImage: "paintpalette")
+                                            HStack {
+                                                Circle()
+                                                    .fill(color.value)
+                                                    .frame(width: 10, height: 10)
+                                                Text(color.displayName)
+                                            }
                                         }
                                     }
                                 }
@@ -715,11 +720,51 @@ struct TeachingStudentItem: Identifiable, Equatable, Codable {
     static let supportedIcons: [String] = [
         "person.fill",
         "star.fill",
+        "heart.fill",
         "bolt.fill",
         "leaf.fill",
+        "flame.fill",
         "moon.fill",
-        "sun.max.fill"
+        "sun.max.fill",
+        "cloud.fill",
+        "umbrella.fill",
+        "snowflake",
+        "drop.fill",
+        "book.fill",
+        "graduationcap.fill",
+        "pencil",
+        "paintbrush.fill",
+        "music.note",
+        "gamecontroller.fill",
+        "camera.fill",
+        "globe"
     ]
+
+    static func displayName(forIcon iconName: String) -> String {
+        switch iconName {
+        case "person.fill": return "人物"
+        case "star.fill": return "星星"
+        case "heart.fill": return "爱心"
+        case "bolt.fill": return "闪电"
+        case "leaf.fill": return "树叶"
+        case "flame.fill": return "火焰"
+        case "moon.fill": return "月亮"
+        case "sun.max.fill": return "太阳"
+        case "cloud.fill": return "云朵"
+        case "umbrella.fill": return "雨伞"
+        case "snowflake": return "雪花"
+        case "drop.fill": return "水滴"
+        case "book.fill": return "书本"
+        case "graduationcap.fill": return "学士帽"
+        case "pencil": return "铅笔"
+        case "paintbrush.fill": return "画笔"
+        case "music.note": return "音符"
+        case "gamecontroller.fill": return "手柄"
+        case "camera.fill": return "相机"
+        case "globe": return "地球"
+        default: return "图标"
+        }
+    }
 
     var id: UUID = UUID()
     var name: String
@@ -729,34 +774,52 @@ struct TeachingStudentItem: Identifiable, Equatable, Codable {
 }
 
 enum TeachingStudentColor: String, CaseIterable, Identifiable, Codable {
-    case blue
-    case green
+    case red
     case orange
+    case yellow
+    case green
+    case mint
+    case teal
+    case cyan
+    case blue
+    case indigo
     case purple
     case pink
-    case red
+    case brown
 
     var id: String { rawValue }
 
     var displayName: String {
         switch self {
-        case .blue: return "蓝色"
-        case .green: return "绿色"
+        case .red: return "红色"
         case .orange: return "橙色"
+        case .yellow: return "黄色"
+        case .green: return "绿色"
+        case .mint: return "薄荷色"
+        case .teal: return "青色"
+        case .cyan: return "青蓝色"
+        case .blue: return "蓝色"
+        case .indigo: return "靛蓝色"
         case .purple: return "紫色"
         case .pink: return "粉色"
-        case .red: return "红色"
+        case .brown: return "棕色"
         }
     }
 
     var value: Color {
         switch self {
-        case .blue: return .blue
-        case .green: return .green
+        case .red: return .red
         case .orange: return .orange
+        case .yellow: return .yellow
+        case .green: return .green
+        case .mint: return .mint
+        case .teal: return .teal
+        case .cyan: return .cyan
+        case .blue: return .blue
+        case .indigo: return .indigo
         case .purple: return .purple
         case .pink: return .pink
-        case .red: return .red
+        case .brown: return .brown
         }
     }
 }

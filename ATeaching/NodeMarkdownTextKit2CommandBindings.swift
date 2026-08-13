@@ -8,8 +8,13 @@ extension NodeMarkdownTextKit2Coordinator {
     func configureCommandHandlers(for textView: NodeMarkdownTextKit2TextView) {
         textView.onRequestInsertImage = { [weak self, weak textView] in
             guard let self, let textView, let rowIndex = self.currentRowIndex(in: textView) else { return }
-            guard let updatedRowText = self.onRequestInsertImageAtRow?(rowIndex) else { return }
+            let transaction = self.beginDiagnostic41("图片粘贴/文件插入 row=\(rowIndex)", in: textView)
+            guard let updatedRowText = self.onRequestInsertImageAtRow?(rowIndex) else {
+                self.finishDiagnostic41(transaction, in: textView, stage: "父页面未返回图片正文")
+                return
+            }
             self.applyPreparedImageText(updatedRowText, at: rowIndex, in: textView)
+            self.finishDiagnostic41(transaction, in: textView)
         }
         textView.onRequestDeleteNodePackage = { [weak self, weak textView] in
             guard let self, let textView, let rowIndex = self.currentRowIndex(in: textView) else { return }
@@ -46,15 +51,23 @@ extension NodeMarkdownTextKit2Coordinator {
         }
         textView.onRequestOpenDrawingBoard = { [weak self, weak textView] in
             guard let self, let textView, let rowIndex = self.currentRowIndex(in: textView) else { return }
+            let transaction = self.beginDiagnostic41("打开画图板 row=\(rowIndex)", in: textView)
             self.onRequestOpenDrawingBoardAtRow?(rowIndex)
+            self.finishDiagnostic41(transaction, in: textView, stage: "画图板请求返回")
         }
         textView.onHandleTabCommand = { [weak self, weak textView] increaseLevel in
             guard let self, let textView else { return false }
-            return self.handleTabCommand(in: textView, increaseLevel: increaseLevel)
+            let transaction = self.beginDiagnostic41(increaseLevel ? "Tab" : "Shift+Tab", in: textView)
+            let handled = self.handleTabCommand(in: textView, increaseLevel: increaseLevel)
+            self.finishDiagnostic41(transaction, in: textView, stage: "命令返回 handled=\(handled)")
+            return handled
         }
         textView.onHandleInsertNewline = { [weak self, weak textView] in
             guard let self, let textView else { return false }
-            return self.handleInsertNewline(in: textView)
+            let transaction = self.beginDiagnostic41("回车", in: textView)
+            let handled = self.handleInsertNewline(in: textView)
+            self.finishDiagnostic41(transaction, in: textView, stage: "命令返回 handled=\(handled)")
+            return handled
         }
         textView.onHandleDeleteBackward = { [weak self, weak textView] in
             guard let self, let textView else { return false }
@@ -74,7 +87,9 @@ extension NodeMarkdownTextKit2Coordinator {
         }
         textView.onHandlePrimaryClick = { [weak self, weak textView] in
             guard let self, let textView else { return }
+            let transaction = self.beginDiagnostic41("点击进入编辑", in: textView)
             self.handlePrimaryClick(in: textView)
+            self.finishDiagnostic41(transaction, in: textView)
         }
         textView.onRequestSave = { [weak self] in
             self?.onRequestSave?()
