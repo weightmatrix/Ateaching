@@ -7,6 +7,7 @@ struct NodeMarkdownProseMirrorIndex: Equatable {
     private(set) var subtreeEnds: [Int] = []
     private(set) var owningH3Rows: [Int?] = []
     private(set) var h3RangeByID: [UUID: Range<Int>] = [:]
+    private(set) var numberingPaths: [[Int]] = []
 
     init(nodes: [NodeMarkdownTextKit2Node]) {
         rebuild(nodes: nodes)
@@ -17,9 +18,11 @@ struct NodeMarkdownProseMirrorIndex: Equatable {
         parentRows = Array(repeating: nil, count: nodes.count)
         subtreeEnds = Array(repeating: nodes.count, count: nodes.count)
         owningH3Rows = Array(repeating: nil, count: nodes.count)
+        numberingPaths = Array(repeating: [], count: nodes.count)
         h3RangeByID.removeAll(keepingCapacity: true)
         var openRows = Array<Int?>(repeating: nil, count: 13)
         var activeH3: Int?
+        var numberingCounters = Array(repeating: 0, count: 13)
 
         for (row, node) in nodes.enumerated() {
             rowByID[node.id] = row
@@ -44,6 +47,13 @@ struct NodeMarkdownProseMirrorIndex: Equatable {
             default: break
             }
             owningH3Rows[row] = activeH3
+            numberingCounters[node.level] += 1
+            if node.level < 12 {
+                for level in (node.level + 1)...12 { numberingCounters[level] = 0 }
+            }
+            numberingPaths[row] = (1...node.level).compactMap {
+                numberingCounters[$0] > 0 ? numberingCounters[$0] : nil
+            }
         }
         for level in 1...12 {
             if let open = openRows[level] { subtreeEnds[open] = nodes.count }
@@ -64,6 +74,13 @@ struct NodeMarkdownProseMirrorIndex: Equatable {
         owningH3Rows.indices.contains(row) ? owningH3Rows[row] : nil
     }
     func packageRange(rootID: UUID) -> Range<Int>? { h3RangeByID[rootID] }
+    func numberingPath(for row: Int) -> [Int]? {
+        numberingPaths.indices.contains(row) ? numberingPaths[row] : nil
+    }
+
+    func numberingText(for row: Int) -> String? {
+        numberingPath(for: row)?.map(String.init).joined(separator: ".")
+    }
 }
 
 struct NodeMarkdownNodePosition: Equatable {
@@ -198,6 +215,7 @@ struct NodeMarkdownTransactionResult: Equatable {
     let structural: Bool
     let positionMap: NodeMarkdownPositionMap
     let mappedSelection: NodeMarkdownNodeSelection?
+    let impact: NodeMarkdownTransactionImpact
 }
 
 enum NodeMarkdownTransactionError: Error, Equatable, CustomStringConvertible {

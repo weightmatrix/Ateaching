@@ -21,7 +21,7 @@ extension NodeMarkdownTextKit2TextView {
         let displayRect = visibleRect.isEmpty ? bounds : visibleRect
         nodeTextLayoutManager.ensureLayout(for: visibleTextContainerRect(in: displayRect))
         setNeedsDisplay(displayRect)
-        NodeMarkdownTextKit2Diagnostics.log("行样式事务完成：刷新行=\(rows)，装饰重画区域=\(NSStringFromRect(displayRect))，viewportRange=\(nodeTextLayoutManager.textViewportLayoutController.viewportRange.map(String.init(describing:)) ?? "nil")。")
+        _ = rows
     }
 
     @discardableResult
@@ -37,14 +37,6 @@ extension NodeMarkdownTextKit2TextView {
                 for: layout,
                 lineRect: lineRect,
                 documentStart: documentStart
-            )
-            let baselineY = textBaselineY(for: layout, documentStart: documentStart)
-            NodeMarkdownDiagnostic31.recordGeometry(
-                in: self,
-                layout: layout,
-                lineRect: lineRect,
-                markerRect: markerRect,
-                baselineY: baselineY
             )
             guard markerRect.intersects(dirtyRect) else { continue }
             drawMarker(for: layout, in: markerRect)
@@ -78,10 +70,7 @@ extension NodeMarkdownTextKit2TextView {
         guard attributed.length > 0 else { return 0 }
         let visibleLayouts = visibleRowLayouts(in: dirtyRect)
         guard !visibleLayouts.isEmpty else { return 0 }
-        guard visibleLayouts.allSatisfy({ $0.range.exact(toLength: attributed.length) != nil }) else {
-            NodeMarkdownTextKit2Diagnostics.log("跳过高亮绘制：可见行范围与真实TextStorage不一致。")
-            return 0
-        }
+        guard visibleLayouts.allSatisfy({ $0.range.exact(toLength: attributed.length) != nil }) else { return 0 }
 
         let visibleRange = visibleLayouts.reduce(nil as NSRange?) { result, layout in
             let current = layout.range
@@ -159,6 +148,9 @@ extension NodeMarkdownTextKit2TextView {
         for layout: NodeMarkdownTextKit2RowLayout,
         documentStart: any NSTextLocation
     ) -> NSRect? {
+        if layout.contentRange.length == 0 {
+            return Self.emptyParagraphRect(for: layout, textContainerOrigin: textContainerOrigin)
+        }
         guard let location = nodeTextContentStorage.location(documentStart, offsetBy: layout.range.location),
               let fragment = nodeTextLayoutManager.textLayoutFragment(for: location),
               let lineFragment = fragment.textLineFragment(for: location, isUpstreamAffinity: false) else {
@@ -166,21 +158,12 @@ extension NodeMarkdownTextKit2TextView {
         }
         let fragmentFrame = fragment.layoutFragmentFrame
         let lineBounds = lineFragment.typographicBounds
-        var rect = NSRect(
+        let rect = NSRect(
             x: textContainerOrigin.x + fragmentFrame.minX + lineBounds.minX,
             y: textContainerOrigin.y + fragmentFrame.minY + lineBounds.minY,
             width: lineBounds.width,
             height: lineBounds.height
         )
-        if layout.contentRange.length == 0 {
-            let font = Self.resolvedFont(for: layout.lineStyle.roleStyle)
-            let paragraphStyle = Self.paragraphStyle(for: layout, font: font)
-            let minHeight = paragraphStyle.minimumLineHeight
-            if rect.height < minHeight {
-                rect.origin.y -= (minHeight - rect.height) * 0.5
-                rect.size.height = minHeight
-            }
-        }
         return rect
     }
 
@@ -191,24 +174,35 @@ extension NodeMarkdownTextKit2TextView {
         guard let location = nodeTextContentStorage.location(
             documentStart,
             offsetBy: layout.range.location
-        ),
-        let fragment = nodeTextLayoutManager.textLayoutFragment(for: location) else {
+        ) else {
             return nil
         }
-
-        let fragmentFrame = fragment.layoutFragmentFrame
-        let lineRects = fragment.textLineFragments.map { lineFragment in
-            let bounds = lineFragment.typographicBounds
-            return NSRect(
-                x: textContainerOrigin.x + fragmentFrame.minX + bounds.minX,
-                y: textContainerOrigin.y + fragmentFrame.minY + bounds.minY,
-                width: bounds.width,
-                height: bounds.height
+        let rowEnd = NSMaxRange(layout.range)
+        var measuredRect: NSRect?
+        nodeTextLayoutManager.enumerateTextLayoutFragments(
+            from: location,
+            options: [.ensuresLayout]
+        ) { [weak self] fragment in
+            guard let self else { return false }
+            let fragmentStart = self.nodeTextContentStorage.offset(
+                from: documentStart,
+                to: fragment.rangeInElement.location
             )
+            guard fragmentStart < rowEnd else { return false }
+            let fragmentFrame = fragment.layoutFragmentFrame
+            for lineFragment in fragment.textLineFragments {
+                let bounds = lineFragment.typographicBounds
+                let lineRect = NSRect(
+                    x: self.textContainerOrigin.x + fragmentFrame.minX + bounds.minX,
+                    y: self.textContainerOrigin.y + fragmentFrame.minY + bounds.minY,
+                    width: bounds.width,
+                    height: bounds.height
+                )
+                measuredRect = measuredRect.map { $0.union(lineRect) } ?? lineRect
+            }
+            return true
         }
-        guard var rect = lineRects.reduce(nil as NSRect?, { partial, lineRect in
-            partial.map { $0.union(lineRect) } ?? lineRect
-        }) else {
+        guard var rect = measuredRect else {
             return firstLineRect(for: layout, documentStart: documentStart)
         }
 

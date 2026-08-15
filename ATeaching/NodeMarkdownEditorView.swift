@@ -1634,16 +1634,11 @@ struct NodeMarkdownEditorView: View {
     }
 
     private func refreshTextKitDraftFromDocument(forceExternalSync: Bool = false) {
-        let previousToken = externalTextSyncToken
         invalidatePendingTextKitParsing()
         textKitDraft = NodeMarkdownPlainTextCodec.serialize(document: document)
         textKitDraftRowMetadata = textKitRowMetadata
         if forceExternalSync {
             externalTextSyncToken &+= 1
-            let activeRowDescription = activeEditorRowIndex.map(String.init) ?? "nil"
-            NodeMarkdownDiagnostic41.event(
-                "父页面强制外部同步 token=\(previousToken)->\(externalTextSyncToken) nodes=\(document.nodes.count) draftUTF16=\((textKitDraft as NSString).length) activeRow=\(activeRowDescription)"
-            )
         }
     }
 
@@ -3132,23 +3127,16 @@ struct NodeMarkdownEditorView: View {
     /// 图片文件由父页面按H3作用域落盘，但正文插入必须回到发起请求的TextKit管线执行。
     /// 这样图片粘贴仍是一次本行编辑，不需要父页面强制替换整篇文档。
     private func prepareImageTextAtRow(_ rowIndex: Int) -> String? {
-        let activeRowDescription = activeEditorRowIndex.map(String.init) ?? "nil"
-        NodeMarkdownDiagnostic41.event("父页面准备图片 row=\(rowIndex) nodes=\(document.nodes.count) activeRow=\(activeRowDescription)")
         // 图片写入必须建立在编辑器刚刚提交的完整Node草稿上。
         // 这保证Tab/Shift+Tab更新过的level、UUID及来源字段不会被父文档旧值覆盖。
         commitPendingDraftBeforeSyncIfNeeded()
-        guard document.nodes.indices.contains(rowIndex) else {
-            NodeMarkdownDiagnostic41.event("图片准备失败：目标行越界 row=\(rowIndex)")
-            return nil
-        }
+        guard document.nodes.indices.contains(rowIndex) else { return nil }
         guard let h3Index = documentIndex.owningH3Row(for: rowIndex), document.nodes.indices.contains(h3Index) else {
-            NodeMarkdownDiagnostic41.event("图片准备失败：所属H3无效 row=\(rowIndex)")
             statusMessage = "未定位到所属H3包"
             return nil
         }
         let h3Node = document.nodes[h3Index]
         guard h3Node.level == 3 else {
-            NodeMarkdownDiagnostic41.event("图片准备失败：所属节点不是H3 h3=\(h3Index) level=\(h3Node.level)")
             statusMessage = "未定位到所属H3包"
             return nil
         }
@@ -3177,7 +3165,6 @@ struct NodeMarkdownEditorView: View {
             selectedURL: selectedURL,
             scope: imageScope
         ) else {
-            NodeMarkdownDiagnostic41.event("图片准备失败：资产服务返回nil file=\(selectedURL.lastPathComponent)")
             statusMessage = "插入图片失败"
             return nil
         }
@@ -3187,7 +3174,6 @@ struct NodeMarkdownEditorView: View {
             to: document.nodes[rowIndex].text
         )
         statusMessage = isTemporaryImageScope(imageScope) ? "已插入图片到暂存区" : "已插入图片"
-        NodeMarkdownDiagnostic41.event("图片准备成功 row=\(rowIndex) h3=\(h3Index) updatedUTF16=\((updatedText as NSString).length)")
         return updatedText
         #else
         return nil
@@ -3196,8 +3182,6 @@ struct NodeMarkdownEditorView: View {
 
     private func openDrawingBoardAtRow(_ rowIndex: Int) {
         #if os(macOS)
-        let activeRowDescription = activeEditorRowIndex.map(String.init) ?? "nil"
-        NodeMarkdownDiagnostic41.event("父页面打开画图板 row=\(rowIndex) documentNodes=\(document.nodes.count) activeRow=\(activeRowDescription)")
         guard document.nodes.indices.contains(rowIndex) else { return }
         guard !isRowInNewPackage(rowIndex) else {
             statusMessage = "新包不允许画图"
@@ -3212,25 +3196,20 @@ struct NodeMarkdownEditorView: View {
 
     private func insertDrawingAsset(drawingURL: URL) {
         #if os(macOS)
-        let targetRowDescription = drawingBoardTargetRowIndex.map(String.init) ?? "nil"
-        NodeMarkdownDiagnostic41.event("父页面收到画图完成 URL=\(drawingURL.lastPathComponent) targetRow=\(targetRowDescription) documentNodes=\(document.nodes.count)")
         defer {
             drawingBoardTargetRowIndex = nil
             try? FileManager.default.removeItem(at: drawingURL)
         }
         guard let rowIndex = drawingBoardTargetRowIndex, document.nodes.indices.contains(rowIndex) else {
-            NodeMarkdownDiagnostic41.event("画图插入失败：目标行无效")
             statusMessage = "未定位到画图插入行"
             return
         }
         guard let h3Index = documentIndex.owningH3Row(for: rowIndex), document.nodes.indices.contains(h3Index) else {
-            NodeMarkdownDiagnostic41.event("画图插入失败：所属H3无效 row=\(rowIndex)")
             statusMessage = "未定位到所属H3包"
             return
         }
         let sourceFile = document.nodes[h3Index].sourceFile.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !sourceFile.isEmpty else {
-            NodeMarkdownDiagnostic41.event("画图插入失败：SourceFile为空 h3=\(h3Index)")
             statusMessage = "该包未绑定母本，不能插入画图"
             return
         }
@@ -3239,7 +3218,6 @@ struct NodeMarkdownEditorView: View {
             sourceFile: sourceFile,
             notebookFileURL: fileURL
         ) else {
-            NodeMarkdownDiagnostic41.event("画图插入失败：图片资产服务返回nil")
             statusMessage = "插入画图失败"
             return
         }
@@ -3253,7 +3231,6 @@ struct NodeMarkdownEditorView: View {
             structuralIndex: documentIndex
         )
         refreshTextKitDraftFromDocument(forceExternalSync: true)
-        NodeMarkdownDiagnostic41.event("画图已写入Document并请求外部同步 row=\(rowIndex) textUTF16=\((updatedText as NSString).length) syncToken=\(externalTextSyncToken)")
         markDocumentDirty()
         scheduleSnapshotRebuild()
         rebuildSearchResults()

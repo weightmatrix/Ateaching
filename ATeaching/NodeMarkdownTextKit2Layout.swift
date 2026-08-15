@@ -18,6 +18,19 @@ struct NodeMarkdownTextKit2RowLayout: Equatable {
     let spacingBefore: CGFloat
     let isProtectedH3: Bool
 
+    func replacingSpacingBefore(_ spacingBefore: CGFloat) -> NodeMarkdownTextKit2RowLayout {
+        NodeMarkdownTextKit2RowLayout(
+            rowIndex: rowIndex,
+            range: range,
+            contentRange: contentRange,
+            prefix: prefix,
+            level: level,
+            lineStyle: lineStyle,
+            spacingBefore: spacingBefore,
+            isProtectedH3: isProtectedH3
+        )
+    }
+
     func offsetBy(_ delta: Int) -> NodeMarkdownTextKit2RowLayout {
         NodeMarkdownTextKit2RowLayout(
             rowIndex: rowIndex,

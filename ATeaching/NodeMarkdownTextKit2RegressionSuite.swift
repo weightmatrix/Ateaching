@@ -23,6 +23,10 @@ enum NodeMarkdownTextKit2RegressionSuite {
         testProseMirrorStructuralIndexAndHistory()
         testProtectedH3SplitCanUndo()
         testProseMirrorRejectsStaleTransaction()
+        testTransactionImpactAndNodeVersions()
+        testDeterministicTransactionReplay()
+        testOutlineNumberingIndex()
+        testRenderCacheIsBounded()
         testHeightIndex()
         testLargeIndexLookup()
         testCommittedNodeCollectsDirtyAndNewPackages()
@@ -33,9 +37,11 @@ enum NodeMarkdownTextKit2RegressionSuite {
         testNativeDeletionDefersSelectionAndRefreshesSeam()
         testInputMethodUsesCurrentNodeTypography()
         testBody3AndBody4UseIndependentStyles()
+        testNodeAndWrappedLineSpacingStayIndependent()
         testParagraphBoundaryUsesFollowingNodeTextStyle()
         testFormulaAndTextShareVisualCenter()
         testMarkerUsesMeasuredTextBaseline()
+        testImageTokenProtectionKeepsWidthEditable()
         #endif
     }
 
@@ -284,6 +290,101 @@ enum NodeMarkdownTextKit2RegressionSuite {
         assert(state.undo() != nil)
         assert(state.snapshot.plainText == "Package\nFollowing")
         assert(state.node(at: 0)?.isProtectedH3 == true)
+    }
+
+    private static func testTransactionImpactAndNodeVersions() {
+        let ids = (0..<1_000).map { _ in UUID() }
+        let state = NodeMarkdownTextKit2DocumentState(
+            text: Array(repeating: "Node", count: ids.count).joined(separator: "\n"),
+            rowMetadata: ids.map { metadata($0, level: 7) }
+        )
+        let target = ids[500]
+        let untouched = ids[999]
+        let untouchedRevision = state.nodeRevision(for: untouched)
+        let result = state.dispatch(
+            NodeMarkdownTransaction(
+                baseRevision: state.revision,
+                steps: [.replaceText(
+                    nodeID: target,
+                    range: NSRange(location: 4, length: 0),
+                    replacement: "!"
+                )],
+                label: "Version isolation"
+            )
+        )
+        assert(result?.impact.contentNodeIDs == [target])
+        assert(result?.impact.structuralRange == nil)
+        assert(state.nodeRevision(for: target) > 1)
+        assert(state.nodeRevision(for: untouched) == untouchedRevision)
+        assert(state.node(at: 999)?.content == "Node")
+    }
+
+    private static func testOutlineNumberingIndex() {
+        let ids = (0..<6).map { _ in UUID() }
+        let state = NodeMarkdownTextKit2DocumentState(
+            text: "A\nB\nC\nD\nE\nF",
+            rowMetadata: [
+                metadata(ids[0], level: 1),
+                metadata(ids[1], level: 2),
+                metadata(ids[2], level: 3),
+                metadata(ids[3], level: 3),
+                metadata(ids[4], level: 2),
+                metadata(ids[5], level: 3)
+            ]
+        )
+        assert(state.numberingText(for: 0) == "1")
+        assert(state.numberingText(for: 2) == "1.1.1")
+        assert(state.numberingText(for: 3) == "1.1.2")
+        assert(state.numberingText(for: 5) == "1.2.1")
+    }
+
+    private static func testDeterministicTransactionReplay() {
+        let ids = (0..<4).map { _ in UUID() }
+        let metadataRows = [
+            metadata(ids[0], level: 1),
+            metadata(ids[1], level: 3),
+            metadata(ids[2], level: 4),
+            metadata(ids[3], level: 7)
+        ]
+        let inserted = NodeMarkdownTextKit2Node(
+            id: UUID(), level: 4, content: "Inserted", sourceID: "", sourceFile: ""
+        )
+        let batches: [[NodeMarkdownTransactionStep]] = [
+            [.replaceText(nodeID: ids[2], range: NSRange(location: 5, length: 0), replacement: "!")],
+            [.insertNodes(row: 3, nodes: [inserted])],
+            [.setLevel(nodeID: ids[3], level: 8)]
+        ]
+        let first = NodeMarkdownTransactionReplayer.replay(
+            text: "H1\nH3\nChild\nBody",
+            rowMetadata: metadataRows,
+            stepBatches: batches
+        )
+        let second = NodeMarkdownTransactionReplayer.replay(
+            text: "H1\nH3\nChild\nBody",
+            rowMetadata: metadataRows,
+            stepBatches: batches
+        )
+        assert(first == second)
+        assert(first?.last?.nodes.map(\.id) == [ids[0], ids[1], ids[2], inserted.id, ids[3]])
+        assert(first?.last?.nodes[2].content == "Child!")
+        assert(first?.last?.nodes[4].level == 8)
+    }
+
+    private static func testRenderCacheIsBounded() {
+        let cache = NodeMarkdownTextKit2RenderCache<Int>(capacity: 16)
+        let documentID = UUID()
+        for value in 0..<40 {
+            cache[NodeMarkdownTextKit2RenderCacheKey(
+                documentID: documentID,
+                nodeID: UUID(),
+                nodeRevision: 1,
+                styleRevision: 1,
+                visualRevision: 1,
+                width: 1_000,
+                scaleMilli: 2_000
+            )] = value
+        }
+        assert(cache.count == 16)
     }
 
     private static func testHeightIndex() {
@@ -560,6 +661,82 @@ enum NodeMarkdownTextKit2RegressionSuite {
         assert(colorsMatch(separatorColor, NSColor(style.body4.renderedColor)))
     }
 
+    private static func testNodeAndWrappedLineSpacingStayIndependent() {
+        var style = NodeMarkdownDocumentStyle()
+        style.body1.paragraphSpacingBefore = 3
+        style.body1.paragraphSpacingAfter = 7
+        style.body1.peerLineSpacing = 19
+        style.body2.paragraphSpacingBefore = 11
+        style.body2.paragraphSpacingAfter = 2
+        style.body2.peerLineSpacing = 23
+
+        let body1 = style.body1
+        let body2 = style.body2
+        assert(NodeMarkdownRenderContract.interRowSpacing(
+            previousLevel: 7,
+            previousRoleStyle: body1,
+            currentLevel: 7,
+            currentRoleStyle: body1
+        ) == 7)
+        assert(NodeMarkdownRenderContract.interRowSpacing(
+            previousLevel: 7,
+            previousRoleStyle: body1,
+            currentLevel: 8,
+            currentRoleStyle: body2
+        ) == 11)
+
+        let lineStyle = NodeMarkdownRenderContract.default.lineStyle(
+            level: 7,
+            prefix: "",
+            documentStyle: style
+        )
+        let layout = NodeMarkdownTextKit2RowLayout(
+            rowIndex: 0,
+            range: NSRange(location: 0, length: 0),
+            contentRange: NSRange(location: 0, length: 0),
+            prefix: "",
+            level: 7,
+            lineStyle: lineStyle,
+            spacingBefore: 7,
+            isProtectedH3: false
+        )
+        let font = NodeMarkdownTextKit2TextView.resolvedFont(for: body1)
+        let paragraph = NodeMarkdownTextKit2TextView.paragraphStyle(for: layout, font: font)
+        assert(paragraph.lineSpacing == 19)
+        assert(paragraph.paragraphSpacingBefore == 7)
+        let blockContentLayout = layout.replacingSpacingBefore(0)
+        let blockParagraph = NodeMarkdownTextKit2TextView.paragraphStyle(
+            for: blockContentLayout,
+            font: font
+        )
+        assert(blockParagraph.paragraphSpacingBefore == 0)
+        let emptyRect = NodeMarkdownTextKit2TextView.emptyParagraphRect(
+            for: blockContentLayout,
+            textContainerOrigin: .zero
+        )
+        assert(emptyRect.minY == 0)
+        assert(emptyRect.height >= paragraph.minimumLineHeight)
+
+        let geometry = NodeMarkdownExactGeometry.block(
+            key: NodeMarkdownExactLayoutKey(
+                documentID: UUID(),
+                nodeID: UUID(),
+                nodeRevision: 1,
+                styleRevision: 1,
+                widthPixels: 1_000,
+                scaleMilli: 2_000
+            ),
+            contentHeight: 41,
+            spacingBefore: 7,
+            fragmentCount: 1,
+            contentVisualBounds: CGRect(x: 10, y: 2, width: 100, height: 37)
+        )
+        assert(geometry.contentHeight == 41)
+        assert(geometry.spacingBefore == 7)
+        assert(geometry.height == 48)
+        assert(geometry.visualBounds.minY == 9)
+    }
+
     private static func testFormulaAndTextShareVisualCenter() {
         let bounds = NodeMarkdownRenderContract.centeredInlineAttachmentBounds(
             fontAscender: 45.12,
@@ -598,6 +775,37 @@ enum NodeMarkdownTextKit2RegressionSuite {
             fallback: 123
         )
         assert(fallback == 123)
+    }
+
+    private static func testImageTokenProtectionKeepsWidthEditable() {
+        let source = "before ![image](Pic/a.png){width=600} after"
+        guard let token = NodeMarkdownImageResourceManager.parseImageTokens(in: source).first else {
+            assertionFailure("Expected image token")
+            return
+        }
+        let tokenText = token.sourceText as NSString
+        let pathRange = tokenText.range(of: "Pic/a.png")
+        let protectedEdit = NodeMarkdownImageEditProtection.protectedEdit(
+            sourceText: source,
+            affectedRange: NSRange(
+                location: token.sourceRange.location + pathRange.location,
+                length: 1
+            ),
+            replacement: ""
+        )
+        assert(protectedEdit?.replacementRange == token.sourceRange)
+        assert(protectedEdit?.replacement == "")
+
+        let widthRange = tokenText.range(of: "600")
+        let widthEdit = NodeMarkdownImageEditProtection.protectedEdit(
+            sourceText: source,
+            affectedRange: NSRange(
+                location: token.sourceRange.location + widthRange.location,
+                length: widthRange.length
+            ),
+            replacement: "420"
+        )
+        assert(widthEdit == nil)
     }
 
     private static func colorsMatch(_ lhs: NSColor, _ rhs: NSColor) -> Bool {

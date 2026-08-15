@@ -142,7 +142,9 @@ struct NodeMarkdownRenderContract: Hashable {
     ) -> CGFloat {
         guard let previousLevel, let previousRoleStyle else { return 0 }
         if previousLevel == currentLevel {
-            return max(0, CGFloat(currentRoleStyle.peerLineSpacing) * scale)
+            let paragraphBefore = max(0, CGFloat(currentRoleStyle.paragraphSpacingBefore) * scale)
+            let paragraphAfter = max(0, CGFloat(currentRoleStyle.paragraphSpacingAfter) * scale)
+            return max(paragraphBefore, paragraphAfter)
         }
         let previousAfter = max(0, CGFloat(previousRoleStyle.paragraphSpacingAfter) * scale)
         let currentBefore = max(0, CGFloat(currentRoleStyle.paragraphSpacingBefore) * scale)

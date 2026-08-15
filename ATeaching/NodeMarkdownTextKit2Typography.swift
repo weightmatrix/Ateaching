@@ -44,5 +44,27 @@ extension NodeMarkdownTextKit2TextView {
         return paragraph
     }
 
+    static func blockVerticalInset(for layout: NodeMarkdownTextKit2RowLayout) -> CGFloat {
+        layout.lineStyle.hasBackgroundBar
+            ? NodeMarkdownRenderContract.default.layout.backgroundVerticalPadding
+            : 0
+    }
+
+    static func emptyParagraphRect(
+        for layout: NodeMarkdownTextKit2RowLayout,
+        textContainerOrigin: NSPoint
+    ) -> NSRect {
+        let font = resolvedFont(for: layout.lineStyle.roleStyle)
+        let paragraph = paragraphStyle(for: layout, font: font)
+        let naturalHeight = ceil(max(1, font.ascender - font.descender + max(0, font.leading)))
+        let lineHeight = max(naturalHeight, paragraph.minimumLineHeight)
+        return NSRect(
+            x: textContainerOrigin.x + renderedContentX(for: layout),
+            y: textContainerOrigin.y + layout.spacingBefore,
+            width: 0,
+            height: lineHeight
+        )
+    }
+
 }
 #endif

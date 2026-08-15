@@ -11,21 +11,11 @@ final class ScreenCastService: ObservableObject {
         case receiving
     }
 
-    @Published private(set) var mode: Mode = .idle {
-        didSet {
-            guard oldValue != mode else { return }
-            diagnose("模式切换 \(oldValue.diagnosticName)->\(mode.diagnosticName)")
-        }
-    }
+    @Published private(set) var mode: Mode = .idle
     @Published private(set) var isConnected = false
     @Published private(set) var pin = ""
     @Published private(set) var hostName = ""
-    @Published private(set) var statusMessage = "未连接" {
-        didSet {
-            guard oldValue != statusMessage else { return }
-            diagnose("状态文字 \(oldValue)->\(statusMessage)")
-        }
-    }
+    @Published private(set) var statusMessage = "未连接"
     @Published private(set) var members: [ScreenCastMember] = []
     @Published private(set) var receivedDocuments: [ScreenCastContentKind: ScreenCastDocumentSnapshot] = [:]
     @Published private(set) var receivedViewport: ScreenCastViewport?
@@ -44,10 +34,8 @@ final class ScreenCastService: ObservableObject {
     var isReceiving: Bool { mode == .receiving }
     var receivedDocument: ScreenCastDocumentSnapshot? { receivedDocuments[selectedReceivedKind] }
     var localAnnotationColorHex: String { localMember?.colorHex ?? "#007AFF" }
-    var diagnosticID: String { diagnosticInstanceID }
 
     private let serviceType = "_ateaching-cast._tcp"
-    private let diagnosticInstanceID = String(UUID().uuidString.prefix(8))
     private let queue = DispatchQueue(label: "Han.ATeaching.ScreenCast.Network", qos: .userInitiated)
     private let deviceID: UUID
     private let palette = [
@@ -78,16 +66,13 @@ final class ScreenCastService: ObservableObject {
             UserDefaults.standard.set(value.uuidString, forKey: key)
         }
         observeContentHub()
-        diagnose("ScreenCastService 初始化 device=\(String(deviceID.uuidString.prefix(8)))")
     }
 
     func startCasting(pin: String, name: String) {
         let cleanPIN = Self.normalizedPIN(pin)
         let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        diagnose("startCasting进入 pin=\(cleanPIN) nameEmpty=\(cleanName.isEmpty) listener存在=\(listener != nil)")
         guard cleanPIN.count == 4, cleanName.isEmpty == false else {
             statusMessage = "请输入名字和四位数字"
-            diagnose("startCasting被参数校验拒绝")
             return
         }
 
@@ -105,12 +90,10 @@ final class ScreenCastService: ObservableObject {
         parameters.allowLocalEndpointReuse = true
         do {
             let listener = try NWListener(using: parameters)
-            diagnose("NWListener创建成功")
             listener.service = NWListener.Service(
                 name: "ATeaching-\(deviceID.uuidString.prefix(8))",
                 type: serviceType
             )
-            diagnose("Bonjour服务已设置 type=\(serviceType)")
             listener.stateUpdateHandler = { [weak self] state in
                 Task { @MainActor [weak self] in self?.handleListenerState(state) }
             }
@@ -118,12 +101,9 @@ final class ScreenCastService: ObservableObject {
                 Task { @MainActor [weak self] in self?.accept(connection) }
             }
             self.listener = listener
-            diagnose("Listener已被服务实例持有，准备start")
             listener.start(queue: queue)
-            diagnose("Listener.start已提交 queue=\(queue.label)")
             startViewportMonitoring()
         } catch {
-            diagnose("NWListener创建抛错 error=\(String(reflecting: error))")
             stopAll(
                 reason: "NWListener创建抛错：\(String(reflecting: error))",
                 finalStatus: "启动失败：\(error.localizedDescription)"
@@ -178,15 +158,9 @@ final class ScreenCastService: ObservableObject {
 
     func stopAll(
         reason: String = "调用方请求",
-        finalStatus: String = "未连接",
-        file: StaticString = #fileID,
-        line: UInt = #line,
-        function: StaticString = #function
+        finalStatus: String = "未连接"
     ) {
-        diagnose(
-            "stopAll进入 reason=\(reason) caller=\(file):\(line) \(function) "
-                + "listener=\(listener != nil) browser=\(browser != nil) hostPeers=\(hostPeers.count) candidates=\(candidatePeers.count)"
-        )
+        _ = reason
         listener?.cancel()
         listener = nil
         viewportTimer?.invalidate()
@@ -214,7 +188,6 @@ final class ScreenCastService: ObservableObject {
         ScreenCastAnnotationHub.shared.replace(with: [])
         statusMessage = finalStatus
         ScreenCastContentHub.shared.setRequestedKinds([])
-        diagnose("stopAll完成")
     }
 
     func publishViewport(_ viewport: ScreenCastViewport) {
@@ -277,11 +250,7 @@ final class ScreenCastService: ObservableObject {
     }
 
     private func handleListenerState(_ state: NWListener.State) {
-        diagnose("Listener状态回调 state=\(Self.listenerStateDescription(state)) isCasting=\(isCasting)")
-        guard isCasting else {
-            diagnose("Listener状态回调忽略：当前已非投屏模式")
-            return
-        }
+        guard isCasting else { return }
         switch state {
         case .ready:
             statusMessage = "投屏中，等待接收端"
@@ -569,32 +538,4 @@ final class ScreenCastService: ObservableObject {
         broadcast(.viewport, payload: viewport)
     }
 
-    private func diagnose(_ message: String) {
-        ScreenCastDiagnostic40.record(
-            message,
-            instanceID: diagnosticInstanceID,
-            mode: mode.diagnosticName
-        )
-    }
-
-    private static func listenerStateDescription(_ state: NWListener.State) -> String {
-        switch state {
-        case .setup: return "setup"
-        case .waiting(let error): return "waiting(\(String(reflecting: error)))"
-        case .ready: return "ready"
-        case .failed(let error): return "failed(\(String(reflecting: error)))"
-        case .cancelled: return "cancelled"
-        @unknown default: return "unknown"
-        }
-    }
-}
-
-private extension ScreenCastService.Mode {
-    var diagnosticName: String {
-        switch self {
-        case .idle: return "idle"
-        case .casting: return "casting"
-        case .receiving: return "receiving"
-        }
-    }
 }

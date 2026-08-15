@@ -46,15 +46,13 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
     var onRequestSave: (() -> Void)?
     var onInputMethodCommit: ((InputMethodCommit) -> Void)?
     var onInputMethodTransactionFailure: ((String) -> Void)?
-    var onDiagnostic35Draw: ((Double, CGFloat) -> Void)?
-    var onDiagnostic35CompositionUpdate: ((NSRange) -> Void)?
+    var onTransientLayoutChange: (() -> Void)?
     var quickInputSettings = MarkdownQuickInputSettings()
     var isApplyingQuickInputReplacement = false
     var isEnforcingInputMethodAttributes = false
     /// 当前Node的标准输入样式。NSTextView.typingAttributes可能被输入法临时改写，
     /// 因此组合文字不能把它当作唯一来源。
     var nodeMarkdownTypingAttributes: [NSAttributedString.Key: Any] = [:]
-    var diagnostic31Transaction: NodeMarkdownDiagnostic31.Transaction?
     var suppressesAutomaticSelectionScrolling = false
     var usesScreenMinimumFormulaFontSize = true
     private var inputMethodTransactionActive = false
@@ -91,7 +89,6 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
             textContainer: textContainer
         )
         assertSingleTextStorage()
-        NodeMarkdownTextKit2Diagnostics.report(stage: "TextView唯一对象链创建完成", textView: self)
     }
 
     required init?(coder: NSCoder) {
@@ -120,19 +117,8 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
     }
 
     override func scrollRangeToVisible(_ range: NSRange) {
-        guard !suppressesAutomaticSelectionScrolling else {
-            NodeMarkdownDiagnostic41.event("拦截scrollRangeToVisible range=\(NSStringFromRange(range)) selection=\(NSStringFromRange(selectedRange()))")
-            return
-        }
-        let before = enclosingScrollView?.contentView.bounds.origin
+        guard !suppressesAutomaticSelectionScrolling else { return }
         super.scrollRangeToVisible(range)
-        let after = enclosingScrollView?.contentView.bounds.origin
-        if before != after {
-            let caller = Thread.callStackSymbols.dropFirst().prefix(6).joined(separator: " ← ")
-            NodeMarkdownDiagnostic41.event(
-                "执行scrollRangeToVisible range=\(NSStringFromRange(range)) origin=\(String(describing: before))->\(String(describing: after)) caller=\(caller)"
-            )
-        }
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
@@ -140,19 +126,10 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        #if DEBUG
-        let diagnosticStart = NodeMarkdownDiagnostic35.now()
-        #endif
         _ = drawNodeMarkdownBackgroundBars(in: dirtyRect)
         _ = drawNodeMarkdownInlineHighlights(in: dirtyRect)
         super.draw(dirtyRect)
         _ = drawNodeMarkdownMarkers(in: dirtyRect)
-        #if DEBUG
-        onDiagnostic35Draw?(
-            NodeMarkdownDiagnostic35.milliseconds(since: diagnosticStart),
-            dirtyRect.height
-        )
-        #endif
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -166,19 +143,26 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
             nodeTextLayoutManager.ensureLayout(for: containerRect)
         }
         let clickPoint = convert(event.locationInWindow, from: nil)
-        NodeMarkdownDiagnostic41.event(
-            "点击命中准备 point=\(NSStringFromPoint(clickPoint)) origin=\(String(describing: viewportOrigin)) viewportRange=\(String(describing: nodeTextLayoutManager.textViewportLayoutController.viewportRange))"
-        )
+        // Claim the Node before NSTextView starts its mouse tracking. Entering the
+        // field editor can publish SwiftUI state synchronously; without an active
+        // Node that update is allowed to reload table rows and cancels this click.
+        // Image attachments are also restored to source before TextKit hit-testing.
+        onHandlePrimaryClick?()
         // Content缓冲区已经不含隐藏前缀，点击位置应完全交给NSTextView/TextKit2。
         super.mouseDown(with: event)
-        NodeMarkdownDiagnostic41.event(
-            "点击命中完成 point=\(NSStringFromPoint(clickPoint)) selection=\(NSStringFromRange(selectedRange())) origin=\(String(describing: enclosingScrollView?.contentView.bounds.origin))"
-        )
-        onHandlePrimaryClick?()
+        if event.clickCount == 1,
+           !event.modifierFlags.contains(.shift),
+           selectedRange().length > 0 {
+            let location = min(
+                characterIndexForInsertion(at: clickPoint),
+                (nodeSourceTextSnapshot as NSString).length
+            )
+            setSelectedRange(NSRange(location: location, length: 0))
+        }
         // 单击进入编辑可能切换源码/渲染样式，TextKit会据此自动调整滚动位置。
         // 点击位置原本就在当前视野内，因此这不是需要“追焦点”的场景；恢复
         // 点击前视野。拖拽形成选区时保留系统原生自动滚动。
-        if selectedRange().length == 0, let viewportOrigin {
+        if event.clickCount == 1, let viewportOrigin {
             restoreViewportAfterCaretClick(to: viewportOrigin)
         }
     }
@@ -210,14 +194,6 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
         selectedRange: NSRange,
         replacementRange: NSRange
     ) {
-        #if DEBUG
-        onDiagnostic35CompositionUpdate?(replacementRange)
-        #endif
-        NodeMarkdownDiagnostic31.record(
-            "setMarkedText前 selectedRange=\(NSStringFromRange(selectedRange)) replacementRange=\(NSStringFromRange(replacementRange))",
-            in: self,
-            rowLayouts: nodeMarkdownRowLayouts
-        )
         guard beginInputMethodTransactionIfNeeded(replacementRange: replacementRange) else {
             NSSound.beep()
             return
@@ -232,7 +208,7 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
         )
         enforceCanonicalAttributesOnMarkedText(canonicalAttributes)
         updateInputMethodRenderingLayouts()
-        NodeMarkdownDiagnostic31.record("setMarkedText后", in: self, rowLayouts: nodeMarkdownRowLayouts)
+        onTransientLayoutChange?()
     }
 
     func enforceCanonicalAttributesOnMarkedText(
@@ -301,9 +277,7 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
 
     override func unmarkText() {
         let wasActive = inputMethodTransactionActive
-        NodeMarkdownDiagnostic31.record("unmarkText前", in: self, rowLayouts: nodeMarkdownRowLayouts)
         super.unmarkText()
-        NodeMarkdownDiagnostic31.record("unmarkText后", in: self, rowLayouts: nodeMarkdownRowLayouts)
         if wasActive {
             scheduleInputMethodCommit()
         }
@@ -311,13 +285,7 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
 
     override func insertText(_ insertString: Any, replacementRange: NSRange) {
         let wasActive = inputMethodTransactionActive
-        NodeMarkdownDiagnostic31.record(
-            "insertText前 replacementRange=\(NSStringFromRange(replacementRange))",
-            in: self,
-            rowLayouts: nodeMarkdownRowLayouts
-        )
         super.insertText(insertString, replacementRange: replacementRange)
-        NodeMarkdownDiagnostic31.record("insertText后", in: self, rowLayouts: nodeMarkdownRowLayouts)
         if wasActive {
             updateInputMethodRenderingLayouts()
             scheduleInputMethodCommit()
@@ -337,15 +305,9 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
         guard let exactRange = requestedRange.exact(toLength: sourceLength) else {
             inputMethodTransactionActive = false
             inputMethodSourceBefore = ""
-            NodeMarkdownTextKit2Diagnostics.log(
-                "拒绝输入法事务：AppKit替换范围\(NSStringFromRange(requestedRange))不在真实源码长度\(sourceLength)内。"
-            )
             return false
         }
         inputMethodAffectedRange = exactRange
-        NodeMarkdownTextKit2Diagnostics.log(
-            "输入法事务开始，代次=\(inputMethodGeneration)，源码长度=\(sourceLength)，替换范围=\(NSStringFromRange(inputMethodAffectedRange))。"
-        )
         return true
     }
 
@@ -358,16 +320,15 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
             guard let self,
                   self.inputMethodCommitPending,
                   self.inputMethodGeneration == generation else { return }
-            self.finishInputMethodCommit(generation: generation)
+            self.finishInputMethodCommit()
         }
     }
 
-    private func finishInputMethodCommit(generation: UInt64) {
+    private func finishInputMethodCommit() {
         let sourceBefore = inputMethodSourceBefore
         let sourceLengthBefore = (sourceBefore as NSString).length
         guard let affectedRange = inputMethodAffectedRange.exact(toLength: sourceLengthBefore) else {
             failInputMethodCommit(
-                generation: generation,
                 reason: "提交时替换范围已与事务开始时的源码不一致"
             )
             return
@@ -380,7 +341,6 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
                 length: replacementLength
               ).exact(toLength: nodeTextStorage.length) else {
             failInputMethodCommit(
-                generation: generation,
                 reason: "TextStorage长度无法与输入法替换事务对应"
             )
             return
@@ -393,9 +353,6 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
 
         inputMethodCommitPending = false
         inputMethodSourceBefore = ""
-        NodeMarkdownTextKit2Diagnostics.log(
-            "输入法事务提交，代次=\(generation)，正式替换范围=\(NSStringFromRange(affectedRange))，正式文字长度=\((replacement as NSString).length)，源码长度=\((nodeSourceTextSnapshot as NSString).length)。"
-        )
         onInputMethodCommit?(
             InputMethodCommit(
                 sourceBefore: sourceBefore,
@@ -406,12 +363,11 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
         inputMethodRowLayoutsBefore.removeAll(keepingCapacity: true)
     }
 
-    private func failInputMethodCommit(generation: UInt64, reason: String) {
+    private func failInputMethodCommit(reason: String) {
         inputMethodTransactionActive = false
         inputMethodCommitPending = false
         inputMethodSourceBefore = ""
         inputMethodRowLayoutsBefore.removeAll(keepingCapacity: true)
-        NodeMarkdownTextKit2Diagnostics.log("输入法事务失败，代次=\(generation)：\(reason)。将从Node快照恢复，不推测文字或位置。")
         onInputMethodTransactionFailure?(reason)
     }
 
@@ -425,9 +381,6 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
             replacing: inputMethodAffectedRange,
             characterDelta: characterDelta
         ) else {
-            NodeMarkdownTextKit2Diagnostics.log(
-                "输入法临时布局拒绝投影：替换范围不属于单一真实Node。"
-            )
             return
         }
         nodeMarkdownRowLayouts = projected

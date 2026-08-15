@@ -10,7 +10,7 @@ struct TeachingCourseSyncProgressSnapshot: Hashable {
         var displayName: String {
             switch self {
             case .prepareAllStudents:
-                return "上课准备"
+                return "整理"
             case .exportAllPDF:
                 return "PDF生成"
             case .checkConsistency:
@@ -43,6 +43,7 @@ struct TeachingCourseSyncResult: Hashable {
     var successCount: Int
     var failures: [Failure]
     var consistencyReportsByStudent: [String: TeachingCourseConsistencySummary] = [:]
+    var removedImageCount: Int = 0
 }
 
 enum TeachingCourseSyncService {
@@ -62,6 +63,7 @@ enum TeachingCourseSyncService {
         var successCount = 0
         var failures: [TeachingCourseSyncResult.Failure] = []
         let total = students.count
+        let imageCleanup = try NodeMarkdownImageResourceManager.removeUnreferencedManagedImagesInWorkspace()
 
         await onProgress(
             TeachingCourseSyncProgressSnapshot(
@@ -105,7 +107,8 @@ enum TeachingCourseSyncService {
         return TeachingCourseSyncResult(
             action: .prepareAllStudents,
             successCount: successCount,
-            failures: failures
+            failures: failures,
+            removedImageCount: imageCleanup.deletedImageCount
         )
     }
 

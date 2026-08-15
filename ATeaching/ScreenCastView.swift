@@ -55,18 +55,6 @@ struct ScreenCastView: View {
         } message: {
             Text("同一 Wi-Fi 内，四位数字相同的设备会自动匹配。")
         }
-        .onAppear {
-            ScreenCastDiagnostic40.record(
-                "投屏页出现 isCasting=\(service.isCasting) isReceiving=\(service.isReceiving) status=\(service.statusMessage)",
-                instanceID: service.diagnosticID
-            )
-        }
-        .onDisappear {
-            ScreenCastDiagnostic40.record(
-                "投屏页离开 isCasting=\(service.isCasting) isReceiving=\(service.isReceiving) status=\(service.statusMessage)",
-                instanceID: service.diagnosticID
-            )
-        }
     }
 
     private var actionBand: some View {
@@ -81,10 +69,6 @@ struct ScreenCastView: View {
                 } else {
                     pendingPIN = ScreenCastService.randomPIN()
                     pinAction = .cast
-                    ScreenCastDiagnostic40.record(
-                        "用户点击投屏，打开四位数字确认 pendingPIN=\(pendingPIN)",
-                        instanceID: service.diagnosticID
-                    )
                 }
             }
 
@@ -240,14 +224,7 @@ struct ScreenCastView: View {
 
     private func performPINAction() {
         let normalized = ScreenCastService.normalizedPIN(pendingPIN)
-        ScreenCastDiagnostic40.record(
-            "确认四位数字 action=\(pinAction?.rawValue ?? "nil") pin=\(normalized) nameEmpty=\(cleanName.isEmpty)",
-            instanceID: service.diagnosticID
-        )
-        guard normalized.count == 4 else {
-            ScreenCastDiagnostic40.record("确认被拒绝：PIN不是四位", instanceID: service.diagnosticID)
-            return
-        }
+        guard normalized.count == 4 else { return }
         switch pinAction {
         case .cast:
             service.startCasting(pin: normalized, name: cleanName)
@@ -262,10 +239,6 @@ struct ScreenCastView: View {
         case nil:
             break
         }
-        ScreenCastDiagnostic40.record(
-            "确认动作返回 isCasting=\(service.isCasting) isReceiving=\(service.isReceiving) status=\(service.statusMessage)",
-            instanceID: service.diagnosticID
-        )
         pinAction = nil
     }
 }

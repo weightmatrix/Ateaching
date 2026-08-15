@@ -48,34 +48,27 @@ struct TeachingSyncPanelView: View {
     @State private var auditKeyword = ""
     @State private var auditItems: [TeachingCourseAuditLogItem] = []
     @State private var stressRounds = 3
+    @State private var showsAdvancedTools = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("同步")
+            Text("同步与验收")
                 .font(.headline)
 
             if showTopActionButtons {
                 HStack(spacing: 8) {
                     Button {
-                        runPrepareAllStudents()
+                        runExportAllPDF()
                     } label: {
-                        Label("上课准备", systemImage: "figure.and.child.holdinghands")
+                        Label("PDF", systemImage: "doc.richtext")
                     }
                     .appGlassButtonStyle(.prominent)
                     .disabled(isRunning || students.isEmpty)
 
                     Button {
-                        runExportAllPDF()
+                        runPrepareAllStudents()
                     } label: {
-                        Label("PDF", systemImage: "doc.richtext")
-                    }
-                    .appGlassButtonStyle()
-                    .disabled(isRunning || students.isEmpty)
-
-                    Button {
-                        runCheckConsistencyAllStudents()
-                    } label: {
-                        Label("巡检", systemImage: "checklist")
+                        Label("整理", systemImage: "sparkles")
                     }
                     .appGlassButtonStyle()
                     .disabled(isRunning || students.isEmpty)
@@ -87,23 +80,6 @@ struct TeachingSyncPanelView: View {
                     }
                     .appGlassButtonStyle()
                     .disabled(isRunning)
-
-                    Button {
-                        showAuditSheet = true
-                        reloadAuditLogs()
-                    } label: {
-                        Label("审计", systemImage: "doc.text.magnifyingglass")
-                    }
-                    .appGlassButtonStyle()
-                    .disabled(isRunning)
-
-                    Button {
-                        runStressTestAllStudents()
-                    } label: {
-                        Label("压测", systemImage: "speedometer")
-                    }
-                    .appGlassButtonStyle()
-                    .disabled(isRunning || students.isEmpty)
 
                     if isRunning {
                         Button(role: .destructive) {
@@ -117,25 +93,57 @@ struct TeachingSyncPanelView: View {
                 }
             }
 
-            HStack(spacing: 8) {
-                Picker("修复策略", selection: $repairStrategy) {
-                    ForEach(TeachingCourseRepairStrategy.allCases, id: \.self) { strategy in
-                        Text(strategy.displayName).tag(strategy)
+            DisclosureGroup("高级工具", isExpanded: $showsAdvancedTools) {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 8) {
+                        Button {
+                            runCheckConsistencyAllStudents()
+                        } label: {
+                            Label("巡检", systemImage: "checklist")
+                        }
+                        .appGlassButtonStyle()
+                        .disabled(isRunning || students.isEmpty)
+
+                        Button {
+                            showAuditSheet = true
+                            reloadAuditLogs()
+                        } label: {
+                            Label("审计", systemImage: "doc.text.magnifyingglass")
+                        }
+                        .appGlassButtonStyle()
+                        .disabled(isRunning)
+
+                        Button {
+                            runStressTestAllStudents()
+                        } label: {
+                            Label("压测", systemImage: "speedometer")
+                        }
+                        .appGlassButtonStyle()
+                        .disabled(isRunning || students.isEmpty)
+                    }
+
+                    HStack(spacing: 8) {
+                        Picker("修复策略", selection: $repairStrategy) {
+                            ForEach(TeachingCourseRepairStrategy.allCases, id: \.self) { strategy in
+                                Text(strategy.displayName).tag(strategy)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .frame(maxWidth: 160)
+
+                        Button {
+                            rollbackLatestRepairBatch()
+                        } label: {
+                            Label("回滚最近修复", systemImage: "arrow.uturn.backward.circle")
+                        }
+                        .appGlassButtonStyle()
+                        .disabled(isRunning || isRepairingConsistency)
+
+                        Stepper("轮次 \(stressRounds)", value: $stressRounds, in: 1...20)
+                            .frame(maxWidth: 130)
                     }
                 }
-                .pickerStyle(.menu)
-                .frame(maxWidth: 160)
-
-                Button {
-                    rollbackLatestRepairBatch()
-                } label: {
-                    Label("回滚最近修复", systemImage: "arrow.uturn.backward.circle")
-                }
-                .appGlassButtonStyle()
-                .disabled(isRunning || isRepairingConsistency)
-
-                Stepper("轮次 \(stressRounds)", value: $stressRounds, in: 1...20)
-                    .frame(maxWidth: 130)
+                .padding(.top, 8)
             }
 
             if let progress {
@@ -362,11 +370,12 @@ struct TeachingSyncPanelView: View {
     }
 
     private func resultText(_ result: TeachingCourseSyncResult, participantCount: Int) -> String {
+        let cleanup = result.removedImageCount > 0 ? "，删除空图\(result.removedImageCount)张" : ""
         if result.failures.isEmpty {
-            return "\(result.action.displayName)完成：\(result.successCount)/\(participantCount)"
+            return "\(result.action.displayName)完成：\(result.successCount)/\(participantCount)\(cleanup)"
         }
         let failedNames = result.failures.map(\.studentName).joined(separator: "、")
-        return "\(result.action.displayName)完成：成功\(result.successCount)，失败\(result.failures.count)（\(failedNames)）"
+        return "\(result.action.displayName)完成：成功\(result.successCount)，失败\(result.failures.count)（\(failedNames)）\(cleanup)"
     }
 
     private func canRetry(_ job: TeachingCourseJobSnapshot) -> Bool {

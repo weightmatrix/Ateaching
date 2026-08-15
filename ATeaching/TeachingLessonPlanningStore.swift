@@ -49,7 +49,8 @@ enum TeachingLessonPlanningStore {
     ) throws -> Int {
         var planning = try load(.planning, fileManager: fileManager)
         let ready = planning.filter { record in
-            guard let start = TeachingLessonStatisticsStore.date(from: record.startAt) else { return false }
+            guard !TeachingLessonPlanningPlaceholder.isPlaceholder(record),
+                  let start = TeachingLessonStatisticsStore.date(from: record.startAt) else { return false }
             return start < now
         }
         guard !ready.isEmpty else { return 0 }

@@ -202,7 +202,6 @@ private struct TeachingNotebookSplitPDF: Sendable {
 
 private struct TeachingNotebookExportPayload: Sendable {
     let pdf: Data
-    let h1PDF: Data
     let splitPDFs: [TeachingNotebookSplitPDF]
     let html: Data
 }
@@ -1746,6 +1745,7 @@ enum TeachingCourseWorkflowService {
             notebookURL: notebookURL,
             requireAllNewPackagesResolved: allowedNewPackageIDs == nil
         )
+        _ = try? NodeMarkdownImageResourceManager.removeUnreferencedManagedImagesInWorkspace()
         try saveSyncBaselineMap(execution.baselineMap, student: student)
         let workflowConflictRecords = execution.conflictRecords.map {
             TeachingCourseSyncConflictRecord(
@@ -2814,12 +2814,6 @@ enum TeachingCourseWorkflowService {
                 document: document,
                 style: style
             )
-            let h1PDFData = try NodeMarkdownPDFExporter.renderData(
-                sourceFileURL: notebookURL,
-                document: document,
-                style: style,
-                paginationMode: .h1StartsNewPage
-            )
             let splitPDFs = try NodeMarkdownH1FileSectionBuilder.build(
                 document: document,
                 sourceBaseName: baseName
@@ -2840,7 +2834,6 @@ enum TeachingCourseWorkflowService {
             )
             return TeachingNotebookExportPayload(
                 pdf: pdfData,
-                h1PDF: h1PDFData,
                 splitPDFs: splitPDFs,
                 html: htmlData
             )
@@ -2863,12 +2856,10 @@ enum TeachingCourseWorkflowService {
                 destinationURL: pdfTargetURL,
                 pdfData: exportData.pdf
             )
-            let h1PDFTargetURL = pdfFolderURL.appendingPathComponent("\(baseName)_分H1.PDF", isDirectory: false)
-            try TeachingCoursePDFExporter.writeNotebookPDFData(
-                sourceFileURL: notebookURL,
-                destinationURL: h1PDFTargetURL,
-                pdfData: exportData.h1PDF
-            )
+            let obsoleteH1PDFURL = pdfFolderURL.appendingPathComponent("\(baseName)_分H1.PDF", isDirectory: false)
+            if FileManager.default.fileExists(atPath: obsoleteH1PDFURL.path) {
+                try FileManager.default.removeItem(at: obsoleteH1PDFURL)
+            }
             let splitPDFDirectoryURL = pdfFolderURL.appendingPathComponent("\(baseName)_分文件", isDirectory: true)
             try replaceSplitPDFDirectory(
                 at: splitPDFDirectoryURL,
@@ -2879,7 +2870,6 @@ enum TeachingCourseWorkflowService {
             try exportData.html.write(to: htmlTargetURL, options: .atomic)
             return (
                 pdf: pdfTargetURL.path,
-                h1PDF: h1PDFTargetURL.path,
                 splitPDFDirectory: splitPDFDirectoryURL.path,
                 html: htmlTargetURL.path
             )
@@ -2890,7 +2880,7 @@ enum TeachingCourseWorkflowService {
             operation: "finishClassExportPDFAndHTML",
             student: student,
             phase: "exported-manual-channel",
-            detail: "PDF=\(exportedPaths.pdf); 分H1 PDF=\(exportedPaths.h1PDF); 分文件PDF=\(exportedPaths.splitPDFDirectory); HTML=\(exportedPaths.html)"
+            detail: "PDF=\(exportedPaths.pdf); 分文件PDF=\(exportedPaths.splitPDFDirectory); HTML=\(exportedPaths.html)"
         )
         return exportedPaths.pdf
     }

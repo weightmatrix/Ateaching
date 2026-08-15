@@ -400,7 +400,7 @@ private struct TeachingLessonPlanningBoardView: View {
             interval: interval,
             visibleInterval: visibleInterval,
             records: records,
-            lockedBefore: planningLockDate,
+            lockedBefore: nil,
             fixedDayWidth: fixedDayWidth,
             showsTitle: showsTitle,
             canInsertWeeklyTemplate: kind == .planning,
@@ -542,13 +542,9 @@ private struct TeachingLessonPlanningBoardView: View {
             Button("打开信息") { openStudentDocument(for: record, kind: .information) }
             Button("打开课反") { openStudentDocument(for: record, kind: .classInfo) }
             Button("后退半小时") { shiftLesson(record, minutes: -30) }
-                .disabled(isLocked(record))
             Button("前进半小时") { shiftLesson(record, minutes: 30) }
-                .disabled(isLocked(record))
             Button("修改") {
-                if !isLocked(record) {
-                    editingRecord = record
-                }
+                editingRecord = record
             }
             Button("删除", role: .destructive) {
                 deleteRecord(record)
@@ -656,10 +652,6 @@ private struct TeachingLessonPlanningBoardView: View {
         kind == .planning ? records + lessonRecords : records
     }
 
-    private var planningLockDate: Date? {
-        kind == .planning ? Date() : nil
-    }
-
     private var visibleWeekIntervals: [DateInterval] {
         let calendar = Calendar.current
         let firstWeekStart = TeachingLessonScheduleBuilder.weekStart(for: visibleInterval.start)
@@ -685,6 +677,10 @@ private struct TeachingLessonPlanningBoardView: View {
         do {
             if kind == .planning {
                 displayedMonth = persistedPlanningDisplayedMonth()
+                let moved = try TeachingLessonPlanningStore.promotePastPlanningRecordsToLessonHistory()
+                if moved > 0 {
+                    onLessonHistoryChanged()
+                }
             }
             records = try TeachingLessonPlanningStore.load(kind.storeKind)
             selectedStudentID = selectedStudentID ?? studentOptions.first?.id
@@ -700,19 +696,6 @@ private struct TeachingLessonPlanningBoardView: View {
             statusMessage = "\(kind.title)已保存。"
         } catch {
             statusMessage = "\(kind.title)保存失败：\(error.localizedDescription)"
-        }
-    }
-
-    private func promotePastPlanning() {
-        do {
-            let moved = try TeachingLessonPlanningStore.promotePastPlanningRecordsToLessonHistory()
-            if moved > 0 {
-                load()
-                onLessonHistoryChanged()
-                statusMessage = "已把\(moved)节当前时刻之前的排课转为成课历史。"
-            }
-        } catch {
-            statusMessage = "排课历史转入失败：\(error.localizedDescription)"
         }
     }
 
@@ -788,11 +771,19 @@ private struct TeachingLessonPlanningBoardView: View {
         var next = source
         next.startAt = TeachingLessonStatisticsStore.makeISO8601String(from: draft.start)
         next.endAt = TeachingLessonStatisticsStore.makeISO8601String(from: draft.end)
-        if let index = records.firstIndex(where: { $0.id == source.id }) {
-            pushUndoSnapshot()
-            records[index] = next
-            editingRecord = nil
-            save()
+        do {
+            if let index = records.firstIndex(where: { $0.id == source.id }) {
+                pushUndoSnapshot()
+                records[index] = next
+                editingRecord = nil
+                save()
+            } else {
+                try updateHistoryRecord(next)
+                editingRecord = nil
+                statusMessage = "课程已修改。"
+            }
+        } catch {
+            statusMessage = "修改失败：\(error.localizedDescription)"
         }
     }
 
@@ -814,7 +805,6 @@ private struct TeachingLessonPlanningBoardView: View {
                 let end = date(on: day, hour: endComponents.hour ?? 0, minute: endComponents.minute ?? 0)
                 guard let start,
                       let end,
-                      !isPastPlanningDate(start),
                       !TeachingLessonScheduleBuilder.hasConflict(start: start, end: end, in: conflictRecords) else { continue }
                 var next = source
                 next.id = UUID()
@@ -861,11 +851,21 @@ private struct TeachingLessonPlanningBoardView: View {
             statusMessage = "移动失败：时间冲突。"
             return
         }
-        guard let index = records.firstIndex(where: { $0.id == record.id }) else { return }
-        pushUndoSnapshot()
-        records[index].startAt = TeachingLessonStatisticsStore.makeISO8601String(from: newStart)
-        records[index].endAt = TeachingLessonStatisticsStore.makeISO8601String(from: newEnd)
-        save()
+        var next = record
+        next.startAt = TeachingLessonStatisticsStore.makeISO8601String(from: newStart)
+        next.endAt = TeachingLessonStatisticsStore.makeISO8601String(from: newEnd)
+        do {
+            if let index = records.firstIndex(where: { $0.id == record.id }) {
+                pushUndoSnapshot()
+                records[index] = next
+                save()
+            } else {
+                try updateHistoryRecord(next)
+                statusMessage = "课程已移动。"
+            }
+        } catch {
+            statusMessage = "移动失败：\(error.localizedDescription)"
+        }
     }
 
     /// 开始和结束时间同步平移，并复用课程拖动的锁定、冲突、撤回与保存规则。
@@ -887,12 +887,33 @@ private struct TeachingLessonPlanningBoardView: View {
             statusMessage = "移动失败：时间冲突。"
             return
         }
-        guard let index = records.firstIndex(where: { $0.id == record.id }) else { return }
-        pushUndoSnapshot()
-        records[index].startAt = TeachingLessonStatisticsStore.makeISO8601String(from: newStart)
-        records[index].endAt = TeachingLessonStatisticsStore.makeISO8601String(from: newEnd)
-        save()
-        statusMessage = minutes < 0 ? "课程已后退半小时。" : "课程已前进半小时。"
+        var next = record
+        next.startAt = TeachingLessonStatisticsStore.makeISO8601String(from: newStart)
+        next.endAt = TeachingLessonStatisticsStore.makeISO8601String(from: newEnd)
+        do {
+            if let index = records.firstIndex(where: { $0.id == record.id }) {
+                pushUndoSnapshot()
+                records[index] = next
+                save()
+            } else {
+                try updateHistoryRecord(next)
+            }
+            statusMessage = minutes < 0 ? "课程已后退半小时。" : "课程已前进半小时。"
+        } catch {
+            statusMessage = "移动失败：\(error.localizedDescription)"
+        }
+    }
+
+    /// 修改课程所属的成课历史记录并通知父页面刷新。
+    private func updateHistoryRecord(_ record: TeachingLessonRecord) throws {
+        var history = try TeachingLessonStatisticsStore.loadLessonRecords()
+        if let index = history.firstIndex(where: { $0.id == record.id }) {
+            history[index] = record
+        } else {
+            history.append(record)
+        }
+        try TeachingLessonStatisticsStore.saveLessonRecords(history)
+        onLessonHistoryChanged()
     }
 
     private func pasteLesson(on day: Date, hour: Int) {
@@ -1132,9 +1153,21 @@ private struct TeachingLessonPlanningBoardView: View {
     }
 
     private func deleteRecord(_ record: TeachingLessonRecord) {
-        pushUndoSnapshot()
-        records.removeAll { $0.id == record.id }
-        save()
+        do {
+            if records.contains(where: { $0.id == record.id }) {
+                pushUndoSnapshot()
+                records.removeAll { $0.id == record.id }
+                save()
+            } else {
+                var history = try TeachingLessonStatisticsStore.loadLessonRecords()
+                history.removeAll { $0.id == record.id }
+                try TeachingLessonStatisticsStore.saveLessonRecords(history)
+                onLessonHistoryChanged()
+                statusMessage = "课程已删除。"
+            }
+        } catch {
+            statusMessage = "删除失败：\(error.localizedDescription)"
+        }
     }
 
     private func pushUndoSnapshot() {
@@ -1159,16 +1192,6 @@ private struct TeachingLessonPlanningBoardView: View {
         records = next
         save()
         statusMessage = "已恢复。"
-    }
-
-    private func isLocked(_ record: TeachingLessonRecord) -> Bool {
-        guard let start = TeachingLessonStatisticsStore.date(from: record.startAt) else { return false }
-        return isPastPlanningDate(start)
-    }
-
-    private func isPastPlanningDate(_ date: Date) -> Bool {
-        guard let lockDate = planningLockDate else { return false }
-        return date < lockDate
     }
 
     private func monthStart(_ date: Date) -> Date {
@@ -1248,6 +1271,7 @@ struct TeachingPlanningInteractiveWeekView: View {
     var onOpenStudentInfo: (TeachingLessonRecord) -> Void = { _ in }
     var onOpenClassInfo: (TeachingLessonRecord) -> Void = { _ in }
     let onDeleteLesson: (TeachingLessonRecord) -> Void
+    var readOnly: Bool = false
 
     @State private var draggingRecordID: UUID?
     @State private var dragTranslations: [UUID: CGSize] = [:]
@@ -1351,16 +1375,18 @@ struct TeachingPlanningInteractiveWeekView: View {
                             }
                             .contentShape(Rectangle())
                             .onTapGesture {
-                                guard isDayVisible(day), !isDayLocked(day) else { return }
+                                guard !readOnly, isDayVisible(day), !isDayLocked(day) else { return }
                                 onInsertLesson(day, hour)
                             }
                             .onLongPressGesture(minimumDuration: 0.35) {
-                                guard isDayVisible(day), !isDayLocked(day) else { return }
+                                guard !readOnly, isDayVisible(day), !isDayLocked(day) else { return }
                                 onInsertLesson(day, hour)
                             }
                             .contextMenu {
-                                Button("粘贴") {
-                                    onPasteLesson(day, hour)
+                                if !readOnly {
+                                    Button("粘贴") {
+                                        onPasteLesson(day, hour)
+                                    }
                                 }
                             }
                     }
@@ -1443,6 +1469,7 @@ struct TeachingPlanningInteractiveWeekView: View {
             LongPressGesture(minimumDuration: 0.25)
                 .sequenced(before: DragGesture(minimumDistance: 0))
                 .onChanged { value in
+                    guard !readOnly else { return }
                     if case let .second(true, drag?) = value {
                         draggingRecordID = record.id
                         dragTranslations[record.id] = drag.translation
@@ -1451,7 +1478,7 @@ struct TeachingPlanningInteractiveWeekView: View {
                 .onEnded { value in
                     draggingRecordID = nil
                     dragTranslations[record.id] = nil
-                    guard case let .second(true, drag?) = value else { return }
+                    guard !readOnly, case let .second(true, drag?) = value else { return }
                     let dayDelta = Int((drag.translation.width / max(1, dayWidth + columnSpacing)).rounded())
                     let hourDelta = Int((drag.translation.height / rowHeight).rounded())
                     onMoveLesson(record, dayDelta, hourDelta)
@@ -1490,15 +1517,17 @@ struct TeachingPlanningInteractiveWeekView: View {
             }
             Button("打开信息") { onOpenStudentInfo(record) }
             Button("打开课反") { onOpenClassInfo(record) }
-            Button("后退半小时") { onShiftLesson(record, -30) }
-                .disabled(locked)
-            Button("前进半小时") { onShiftLesson(record, 30) }
-                .disabled(locked)
-            Button("修改") { onEditLesson(record) }
-                .disabled(locked)
-            Divider()
-            Button("删除", role: .destructive) {
-                onDeleteLesson(record)
+            if !readOnly {
+                Button("后退半小时") { onShiftLesson(record, -30) }
+                    .disabled(locked)
+                Button("前进半小时") { onShiftLesson(record, 30) }
+                    .disabled(locked)
+                Button("修改") { onEditLesson(record) }
+                    .disabled(locked)
+                Divider()
+                Button("删除", role: .destructive) {
+                    onDeleteLesson(record)
+                }
             }
         }
     }

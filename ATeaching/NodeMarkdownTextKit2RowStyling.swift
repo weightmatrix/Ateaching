@@ -192,12 +192,6 @@ extension NodeMarkdownTextKit2TextView {
             textColor: textColor,
             usesScreenMinimumFontSize: usesScreenMinimumFormulaFontSize
         )
-        applyFormulaLineHeight(
-            to: styled,
-            rowRange: layout.range,
-            formulaRanges: formulaRanges,
-            font: font
-        )
         let imageRanges = Self.applyImageAttachments(
             to: styled,
             source: nsText,
@@ -215,43 +209,6 @@ extension NodeMarkdownTextKit2TextView {
             protectedRanges: formulaRanges + imageRanges,
             hideHTMLDelimiters: true
         )
-    }
-
-    /// TextKit2 normally measures attachments, but a vertically centered formula can extend
-    /// above and below the ordinary font metrics. Reserve its full rendered height explicitly
-    /// so fractions and roots never overlap neighboring Node rows.
-    private func applyFormulaLineHeight(
-        to styled: NSMutableAttributedString,
-        rowRange: NSRange,
-        formulaRanges: [NSRange],
-        font: NSFont
-    ) {
-        var maxAboveBaseline = font.ascender
-        var maxBelowBaseline = -font.descender
-        for range in formulaRanges {
-            guard range.location >= 0, range.location < styled.length,
-                  let attachment = styled.attribute(
-                    .attachment, at: range.location, effectiveRange: nil
-                  ) as? NodeMarkdownTextKit2FormulaAttachment else { continue }
-            maxAboveBaseline = max(maxAboveBaseline, attachment.formulaAscent)
-            maxBelowBaseline = max(maxBelowBaseline, attachment.formulaDescent)
-        }
-        guard maxAboveBaseline != font.ascender || maxBelowBaseline != -font.descender,
-              let safeRowRange = rowRange.exact(toLength: styled.length),
-              safeRowRange.length > 0 else { return }
-
-        let paragraph: NSMutableParagraphStyle = {
-            if let existing = styled.attribute(
-                .paragraphStyle, at: safeRowRange.location, effectiveRange: nil
-            ) as? NSParagraphStyle {
-                return existing.mutableCopy() as? NSMutableParagraphStyle ?? NSMutableParagraphStyle()
-            }
-            return NSMutableParagraphStyle()
-        }()
-        let naturalHeight = ceil(max(1, font.ascender - font.descender + max(0, font.leading)))
-        let formulaHeight = ceil(maxAboveBaseline + maxBelowBaseline)
-        paragraph.minimumLineHeight = max(naturalHeight, formulaHeight)
-        styled.addAttribute(.paragraphStyle, value: paragraph, range: safeRowRange)
     }
 
     private func applySearchHighlightIfNeeded(

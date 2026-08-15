@@ -42,6 +42,12 @@ struct NodeMarkdownImageToken: Hashable {
     }
 }
 
+struct NodeMarkdownImageCleanupResult: Hashable {
+    let scannedImageCount: Int
+    let referencedImageCount: Int
+    let deletedImageCount: Int
+}
+
 private struct NodeMarkdownUndoImageStashRecord: Codable, Hashable {
     let originalPath: String
     let stashPath: String
@@ -195,6 +201,73 @@ enum NodeMarkdownImageResourceManager {
             }
         }
         return results
+    }
+
+    /// Removes only managed images whose physical paths are not referenced by any
+    /// NodeMarkdown or Markdown document in the workspace.
+    static func removeUnreferencedManagedImagesInWorkspace() throws -> NodeMarkdownImageCleanupResult {
+        let workspaceRoot = try ArchiveStorage.ensureWorkspace().standardizedFileURL
+        let fileManager = FileManager.default
+        guard let enumerator = fileManager.enumerator(
+            at: workspaceRoot,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else {
+            return NodeMarkdownImageCleanupResult(
+                scannedImageCount: 0,
+                referencedImageCount: 0,
+                deletedImageCount: 0
+            )
+        }
+
+        var documentURLs: [URL] = []
+        var managedImageURLs: [URL] = []
+        for case let url as URL in enumerator {
+            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
+            let fileExtension = url.pathExtension.lowercased()
+            if ["csv", "nodemarkdown", "md", "markdown"].contains(fileExtension) {
+                documentURLs.append(url.standardizedFileURL)
+            }
+            if managedImageExtensions.contains(fileExtension),
+               isManagedWorkspaceImageURL(url, workspaceRoot: workspaceRoot) {
+                managedImageURLs.append(url.standardizedFileURL)
+            }
+        }
+
+        var referencedPaths = Set<String>()
+        for documentURL in documentURLs {
+            let fileExtension = documentURL.pathExtension.lowercased()
+            if fileExtension == "csv" || fileExtension == "nodemarkdown",
+               let payload = try? NodeMarkdownFileManager.read(fileURL: documentURL) {
+                referencedPaths.formUnion(
+                    referencedImageFilePaths(in: payload.0, notebookFileURL: documentURL)
+                )
+                continue
+            }
+            guard let source = try? String(contentsOf: documentURL, encoding: .utf8) else { continue }
+            for token in parseImageTokens(in: source) {
+                guard let resolved = resolvedImageURL(
+                    relativePath: token.relativePath,
+                    notebookFileURL: documentURL
+                ) else { continue }
+                referencedPaths.insert(resolved.standardizedFileURL.path)
+            }
+        }
+
+        var deletedCount = 0
+        for imageURL in managedImageURLs where !referencedPaths.contains(imageURL.path) {
+            do {
+                try fileManager.removeItem(at: imageURL)
+                deletedCount += 1
+            } catch {
+                continue
+            }
+        }
+        return NodeMarkdownImageCleanupResult(
+            scannedImageCount: managedImageURLs.count,
+            referencedImageCount: managedImageURLs.filter { referencedPaths.contains($0.path) }.count,
+            deletedImageCount: deletedCount
+        )
     }
 
     @discardableResult
@@ -466,6 +539,13 @@ enum NodeMarkdownImageResourceManager {
         let candidatePath = candidate.standardizedFileURL.path
         let rootPath = root.standardizedFileURL.path
         return candidatePath == rootPath || candidatePath.hasPrefix(rootPath + "/")
+    }
+
+    private static func isManagedWorkspaceImageURL(_ url: URL, workspaceRoot: URL) -> Bool {
+        let standardized = url.standardizedFileURL
+        guard isDescendant(standardized, of: workspaceRoot) else { return false }
+        let components = standardized.pathComponents
+        return components.contains(picDirectoryName) || containsTemporaryRoot(in: components)
     }
 
     private static func deleteManagedImageFiles(atPaths filePaths: Set<String>, notebookFileURL: URL) -> Int {

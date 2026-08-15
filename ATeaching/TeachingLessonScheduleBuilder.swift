@@ -145,6 +145,122 @@ enum TeachingLessonScheduleBuilder {
         return lines.joined(separator: "\n")
     }
 
+    // MARK: 月费用统计复制文本
+
+    /// 复制·学生·月费用：第一行`<年月>学生费用统计`，第二行标题行，之后按学生逐行汇总。
+    static func studentMonthlyFeeText(month: Date, records: [TeachingLessonRecord]) -> String {
+        let interval = monthInterval(for: month)
+        let aggregates = monthlyFeeAggregates(in: interval, records: records, groupByStudent: true)
+        let lines = alignedPipeTable(
+            header: ["学生", "机构", "课时", "费用"],
+            rows: aggregates.map { aggregate in
+                [
+                    aggregate.studentName,
+                    aggregate.institutionName,
+                    "\(formatHours(aggregate.hours))小时",
+                    "\(formatMoney(aggregate.fee))元"
+                ]
+            }
+        )
+        return ([monthTitle(for: month) + "学生费用统计"] + lines).joined(separator: "\n")
+    }
+
+    /// 复制·机构·月费用：第一行`<年月>机构费用统计`，第二行标题行，之后按机构逐行汇总。
+    static func institutionMonthlyFeeText(month: Date, records: [TeachingLessonRecord]) -> String {
+        let interval = monthInterval(for: month)
+        let aggregates = monthlyFeeAggregates(in: interval, records: records, groupByStudent: false)
+        let lines = alignedPipeTable(
+            header: ["机构", "课时", "费用"],
+            rows: aggregates.map { aggregate in
+                [
+                    aggregate.institutionName,
+                    "\(formatHours(aggregate.hours))小时",
+                    "\(formatMoney(aggregate.fee))元"
+                ]
+            }
+        )
+        return ([monthTitle(for: month) + "机构费用统计"] + lines).joined(separator: "\n")
+    }
+
+    private struct MonthlyFeeAggregate {
+        var studentKey: String
+        var studentName: String
+        var institutionKey: String
+        var institutionName: String
+        var hours: Double
+        var fee: Double
+    }
+
+    private static func monthlyFeeAggregates(
+        in interval: DateInterval,
+        records: [TeachingLessonRecord],
+        groupByStudent: Bool
+    ) -> [MonthlyFeeAggregate] {
+        var buckets: [String: MonthlyFeeAggregate] = [:]
+        for record in records {
+            guard !TeachingLessonPlanningPlaceholder.isPlaceholder(record),
+                  let start = TeachingLessonStatisticsStore.date(from: record.startAt),
+                  let end = TeachingLessonStatisticsStore.date(from: record.endAt),
+                  start < end,
+                  end > interval.start,
+                  start < interval.end else {
+                continue
+            }
+            let clippedStart = max(start, interval.start)
+            let clippedEnd = min(end, interval.end)
+            let hours = max(0, clippedEnd.timeIntervalSince(clippedStart) / 3600)
+            let fee = (record.priceForTwoHours ?? 0) * hours / 2
+            let studentName = record.studentName.isEmpty ? "未命名学生" : record.studentName
+            let institutionName = record.institutionName.isEmpty ? "未命名机构" : record.institutionName
+            let studentKey = record.studentID?.uuidString ?? "学生名:\(studentName)"
+            let institutionKey = record.institutionID?.uuidString ?? "机构名:\(institutionName)"
+            let bucketKey = groupByStudent ? "\(studentKey)|\(institutionKey)" : institutionKey
+            var aggregate = buckets[bucketKey] ?? MonthlyFeeAggregate(
+                studentKey: studentKey,
+                studentName: studentName,
+                institutionKey: institutionKey,
+                institutionName: institutionName,
+                hours: 0,
+                fee: 0
+            )
+            aggregate.hours += hours
+            aggregate.fee += fee
+            buckets[bucketKey] = aggregate
+        }
+
+        let rows = Array(buckets.values)
+        if groupByStudent {
+            return rows.sorted { lhs, rhs in
+                let studentOrder = lhs.studentName.localizedCaseInsensitiveCompare(rhs.studentName)
+                if studentOrder != .orderedSame {
+                    return studentOrder == .orderedAscending
+                }
+                return lhs.institutionName.localizedCaseInsensitiveCompare(rhs.institutionName) == .orderedAscending
+            }
+        }
+        return rows.sorted {
+            $0.institutionName.localizedCaseInsensitiveCompare($1.institutionName) == .orderedAscending
+        }
+    }
+
+    /// 生成用` | `分隔、所有竖线按显示宽度对齐的表格行；首行为标题行。
+    private static func alignedPipeTable(header: [String], rows: [[String]]) -> [String] {
+        var widths = header.map(displayWidth(of:))
+        for row in rows {
+            for (index, cell) in row.enumerated() where index < widths.count {
+                widths[index] = max(widths[index], displayWidth(of: cell))
+            }
+        }
+        func formatLine(_ cells: [String]) -> String {
+            cells.enumerated().map { index, cell in
+                if index == cells.count - 1 { return cell }
+                return paddedDisplay(cell, width: widths[index])
+            }
+            .joined(separator: " | ")
+        }
+        return [formatLine(header)] + rows.map(formatLine)
+    }
+
     private static func groupedStudentPlainText(
         title: String,
         records: [TeachingLessonRecord],

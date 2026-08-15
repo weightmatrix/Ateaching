@@ -168,7 +168,6 @@ private final class ATeachingMacApplicationDelegate: NSObject, NSApplicationDele
     private func runScreenCastListenerProbe() {
         let service = ScreenCastService()
         screenCastListenerProbe = service
-        ScreenCastDiagnostic40.record("自动自检开始：验证签名App内NWListener可进入ready", instanceID: service.diagnosticID)
         service.startCasting(pin: "4040", name: "ATeaching Listener Probe")
 
         Task { @MainActor [weak self] in
@@ -178,10 +177,6 @@ private final class ATeachingMacApplicationDelegate: NSObject, NSApplicationDele
                     break
                 }
             }
-            ScreenCastDiagnostic40.record(
-                "自动自检结束：状态=\(service.statusMessage) 模式=\(String(describing: service.mode))",
-                instanceID: service.diagnosticID
-            )
             service.stopAll(reason: "自动自检完成")
             self?.screenCastListenerProbe = nil
             NSApplication.shared.terminate(nil)

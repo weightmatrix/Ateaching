@@ -36,8 +36,10 @@ struct NodeMarkdownTextKit2Node: Equatable, Identifiable {
 }
 
 struct NodeMarkdownTextKit2DocumentSnapshot: Equatable {
+    let documentID: UUID
     let revision: UInt64
     let nodes: [NodeMarkdownTextKit2Node]
+    let nodeRevisions: [UUID: UInt64]
 
     var plainText: String { nodes.map(\.content).joined(separator: "\n") }
     var rowMetadata: [NodeMarkdownTextKitRowMetadata] { nodes.map(\.metadata) }
@@ -72,9 +74,11 @@ final class NodeMarkdownTextKit2DocumentState {
         }
     }
 
+    let documentID = UUID()
     private(set) var revision: UInt64 = 0
     private(set) var nodes: [NodeMarkdownTextKit2Node] = []
     private(set) var rowByID: [UUID: Int] = [:]
+    private(set) var nodeRevisions: [UUID: UInt64] = [:]
     private(set) var structuralIndex = NodeMarkdownProseMirrorIndex(nodes: [])
     private(set) var lastValidationError: ValidationError?
     private(set) var lastTransactionError: NodeMarkdownTransactionError?
@@ -88,8 +92,15 @@ final class NodeMarkdownTextKit2DocumentState {
     }
 
     var snapshot: NodeMarkdownTextKit2DocumentSnapshot {
-        NodeMarkdownTextKit2DocumentSnapshot(revision: revision, nodes: nodes)
+        NodeMarkdownTextKit2DocumentSnapshot(
+            documentID: documentID,
+            revision: revision,
+            nodes: nodes,
+            nodeRevisions: nodeRevisions
+        )
     }
+
+    func nodeRevision(for id: UUID) -> UInt64 { nodeRevisions[id, default: 0] }
 
     func row(for id: UUID) -> Int? { rowByID[id] }
 
@@ -99,6 +110,8 @@ final class NodeMarkdownTextKit2DocumentState {
     }
     func owningH3Row(for row: Int) -> Int? { structuralIndex.owningH3Row(for: row) }
     func packageRange(rootID: UUID) -> Range<Int>? { structuralIndex.packageRange(rootID: rootID) }
+    func numberingPath(for row: Int) -> [Int]? { structuralIndex.numberingPath(for: row) }
+    func numberingText(for row: Int) -> String? { structuralIndex.numberingText(for: row) }
 
     func node(at row: Int) -> NodeMarkdownTextKit2Node? {
         guard nodes.indices.contains(row) else { return nil }
@@ -122,7 +135,8 @@ final class NodeMarkdownTextKit2DocumentState {
                 affectedNodeIDs: [],
                 structural: false,
                 positionMap: NodeMarkdownPositionMap(),
-                mappedSelection: transaction.selectionAfter ?? transaction.selectionBefore
+                mappedSelection: transaction.selectionAfter ?? transaction.selectionBefore,
+                impact: .none
             )
         }
 
@@ -133,7 +147,12 @@ final class NodeMarkdownTextKit2DocumentState {
         let rollbackNodes = needsRollbackSnapshot ? nodes : nil
         let rollbackIndex = needsRollbackSnapshot ? rowByID : nil
         let rollbackStructuralIndex = needsRollbackSnapshot ? structuralIndex : nil
+        let rollbackNodeRevisions = needsRollbackSnapshot ? nodeRevisions : nil
         let revisionBefore = revision
+        let impactStartRow = earliestAffectedRow(for: transaction.steps)
+        let insertedNodeIDs = insertedNodeIDs(in: transaction.steps)
+        let deletedNodeIDs = deletedNodeIDs(in: transaction.steps)
+        let contentNodeIDs = contentNodeIDs(in: transaction.steps)
         var inverseSteps: [NodeMarkdownTransactionStep] = []
         var affectedNodeIDs = Set<UUID>()
         var structural = false
@@ -150,24 +169,30 @@ final class NodeMarkdownTextKit2DocumentState {
                 }
             }
         } catch let error as NodeMarkdownTransactionError {
-            if let rollbackNodes, let rollbackIndex, let rollbackStructuralIndex {
+            if let rollbackNodes, let rollbackIndex, let rollbackStructuralIndex, let rollbackNodeRevisions {
                 nodes = rollbackNodes
                 rowByID = rollbackIndex
                 structuralIndex = rollbackStructuralIndex
+                nodeRevisions = rollbackNodeRevisions
             }
             lastTransactionError = error
             return nil
         } catch {
-            if let rollbackNodes, let rollbackIndex, let rollbackStructuralIndex {
+            if let rollbackNodes, let rollbackIndex, let rollbackStructuralIndex, let rollbackNodeRevisions {
                 nodes = rollbackNodes
                 rowByID = rollbackIndex
                 structuralIndex = rollbackStructuralIndex
+                nodeRevisions = rollbackNodeRevisions
             }
             lastTransactionError = .invalidStructure(error.localizedDescription)
             return nil
         }
 
         revision &+= 1
+        deletedNodeIDs.forEach { nodeRevisions[$0] = nil }
+        for id in affectedNodeIDs where rowByID[id] != nil {
+            nodeRevisions[id, default: 0] &+= 1
+        }
         lastTransactionError = nil
         if transaction.recordsHistory {
             undoHistory.append(
@@ -184,7 +209,25 @@ final class NodeMarkdownTextKit2DocumentState {
             }
             redoHistory.removeAll(keepingCapacity: true)
         }
-        if structural { assertInvariants() }
+        if structural { repairIndicesIfNeeded() }
+        let structuralRange: Range<Int>? = structural ? {
+            let lower = max(0, min(impactStartRow ?? 0, nodes.count))
+            return lower..<nodes.count
+        }() : nil
+        var layoutNodeIDs = affectedNodeIDs.subtracting(deletedNodeIDs)
+        if let start = impactStartRow {
+            for row in max(0, start - 1)...min(nodes.count - 1, start + 1) where nodes.indices.contains(row) {
+                layoutNodeIDs.insert(nodes[row].id)
+            }
+        }
+        let impact = NodeMarkdownTransactionImpact(
+            contentNodeIDs: contentNodeIDs,
+            layoutNodeIDs: layoutNodeIDs,
+            insertedNodeIDs: insertedNodeIDs,
+            deletedNodeIDs: deletedNodeIDs,
+            structuralRange: structuralRange,
+            numberingStartRow: structural ? max(0, impactStartRow ?? 0) : nil
+        )
         return NodeMarkdownTransactionResult(
             transactionID: transaction.id,
             revisionBefore: revisionBefore,
@@ -192,7 +235,8 @@ final class NodeMarkdownTextKit2DocumentState {
             affectedNodeIDs: affectedNodeIDs,
             structural: structural,
             positionMap: positionMap,
-            mappedSelection: transaction.selectionAfter ?? positionMap.map(transaction.selectionBefore)
+            mappedSelection: transaction.selectionAfter ?? positionMap.map(transaction.selectionBefore),
+            impact: impact
         )
     }
 
@@ -268,14 +312,21 @@ final class NodeMarkdownTextKit2DocumentState {
             )
         }
 
+        let oldNodesByID = Dictionary(uniqueKeysWithValues: nodes.map { ($0.id, $0) })
+        let oldRevisions = nodeRevisions
         nodes = rebuilt
+        nodeRevisions = Dictionary(uniqueKeysWithValues: rebuilt.map { node in
+            let oldRevision = oldRevisions[node.id, default: 0]
+            let next = oldNodesByID[node.id] == node ? oldRevision : oldRevision &+ 1
+            return (node.id, max(1, next))
+        })
         lastValidationError = nil
         lastTransactionError = nil
         rebuildIndex()
         undoHistory.removeAll(keepingCapacity: true)
         redoHistory.removeAll(keepingCapacity: true)
         if incrementsRevision { revision &+= 1 }
-        assertInvariants()
+        repairIndicesIfNeeded()
         return true
     }
 
@@ -292,7 +343,7 @@ final class NodeMarkdownTextKit2DocumentState {
             label: "Update Node"
         )
         guard dispatch(transaction) != nil else { return false }
-        assertUpdatedNodeInvariant(at: row)
+        repairUpdatedNodeIndexIfNeeded(at: row)
         return true
     }
 
@@ -610,6 +661,57 @@ final class NodeMarkdownTextKit2DocumentState {
         }
     }
 
+    private func earliestAffectedRow(for steps: [NodeMarkdownTransactionStep]) -> Int? {
+        steps.compactMap { step in
+            switch step {
+            case let .replaceNode(nodeID, _), let .replaceText(nodeID, _, _), let .setLevel(nodeID, _):
+                return rowByID[nodeID]
+            case let .insertNodes(row, _):
+                return row
+            case let .deleteNodes(nodeIDs), let .moveNodes(nodeIDs, _):
+                return nodeIDs.compactMap { rowByID[$0] }.min()
+            case let .splitNode(nodeID, _, _, _):
+                return rowByID[nodeID]
+            case let .joinNodes(leftID, rightID):
+                return [rowByID[leftID], rowByID[rightID]].compactMap { $0 }.min()
+            }
+        }.min()
+    }
+
+    private func insertedNodeIDs(in steps: [NodeMarkdownTransactionStep]) -> Set<UUID> {
+        steps.reduce(into: Set<UUID>()) { result, step in
+            switch step {
+            case let .insertNodes(_, nodes): result.formUnion(nodes.map(\.id))
+            case let .splitNode(_, _, newNodeID, _): result.insert(newNodeID)
+            default: break
+            }
+        }
+    }
+
+    private func deletedNodeIDs(in steps: [NodeMarkdownTransactionStep]) -> Set<UUID> {
+        steps.reduce(into: Set<UUID>()) { result, step in
+            switch step {
+            case let .deleteNodes(nodeIDs): result.formUnion(nodeIDs)
+            case let .joinNodes(_, rightID): result.insert(rightID)
+            default: break
+            }
+        }
+    }
+
+    private func contentNodeIDs(in steps: [NodeMarkdownTransactionStep]) -> Set<UUID> {
+        steps.reduce(into: Set<UUID>()) { result, step in
+            switch step {
+            case let .replaceNode(nodeID, _), let .replaceText(nodeID, _, _): result.insert(nodeID)
+            case let .splitNode(nodeID, _, newNodeID, _):
+                result.insert(nodeID)
+                result.insert(newNodeID)
+            case let .joinNodes(leftID, _): result.insert(leftID)
+            case let .insertNodes(_, nodes): result.formUnion(nodes.map(\.id))
+            default: break
+            }
+        }
+    }
+
     private func validateNode(_ node: NodeMarkdownTextKit2Node) throws {
         guard (1...12).contains(node.level) else {
             throw NodeMarkdownTransactionError.invalidLevel(node.level)
@@ -634,30 +736,28 @@ final class NodeMarkdownTextKit2DocumentState {
         structuralIndex.rebuild(nodes: nodes)
     }
 
-    private func assertInvariants(file: StaticString = #fileID, line: UInt = #line) {
-        #if DEBUG
-        assert(!nodes.isEmpty, "TextKit2 document must contain at least one Node", file: file, line: line)
-        assert(rowByID.count == nodes.count, "TextKit2 Node UUID index diverged", file: file, line: line)
-        assert(Set(nodes.map(\.id)).count == nodes.count, "TextKit2 document contains duplicate UUIDs", file: file, line: line)
-        for (row, node) in nodes.enumerated() {
-            assert(rowByID[node.id] == row, "TextKit2 UUID index points at wrong row", file: file, line: line)
+    @discardableResult
+    private func repairIndicesIfNeeded() -> Bool {
+        guard !nodes.isEmpty,
+              NodeMarkdownRuntimeInvariant.duplicateNodeID(in: nodes) == nil else {
+            lastTransactionError = .invalidStructure("Node文档不变量失败：文档为空或UUID重复")
+            return false
         }
-        #endif
+        guard NodeMarkdownRuntimeInvariant.rowIndexIsValid(nodes: nodes, rowByID: rowByID) else {
+            rebuildIndex()
+            return NodeMarkdownRuntimeInvariant.rowIndexIsValid(nodes: nodes, rowByID: rowByID)
+        }
+        return true
     }
 
     /// 单Node内容修改不会增删、换位或改UUID。逐键扫描全部Node既不能增加
     /// 这类事务的证明力，又让Debug输入速度随文档增长；这里只证明被改Node与索引仍一致。
-    private func assertUpdatedNodeInvariant(
-        at row: Int,
-        file: StaticString = #fileID,
-        line: UInt = #line
-    ) {
-        #if DEBUG
-        assert(nodes.indices.contains(row), "TextKit2 updated Node row is invalid", file: file, line: line)
-        let node = nodes[row]
-        assert(rowByID.count == nodes.count, "TextKit2 Node UUID index count diverged", file: file, line: line)
-        assert(rowByID[node.id] == row, "TextKit2 updated Node UUID index diverged", file: file, line: line)
-        #endif
+    private func repairUpdatedNodeIndexIfNeeded(at row: Int) {
+        guard nodes.indices.contains(row), rowByID.count == nodes.count,
+              rowByID[nodes[row].id] == row else {
+            rebuildIndex()
+            return
+        }
     }
 
     private static func lines(in text: String) -> [String] {

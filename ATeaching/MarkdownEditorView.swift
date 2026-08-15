@@ -143,8 +143,8 @@ private enum MarkdownEditorPerformanceProbe {
 }
 
 #if os(macOS)
-/// Permanent diagnostic for ordinary Markdown TextKit2 typing and scrolling.
-/// Keep this when cleaning temporary diagnostics; it is the long-document performance baseline.
+/// Compatibility shell retained until the old call sites are removed.
+/// Collection and output are disabled; Diagnostic 47 is the only active recorder.
 @MainActor
 private enum MarkdownTextKit2Diagnostic38 {
     struct Session {
@@ -223,74 +223,13 @@ private enum MarkdownTextKit2Diagnostic38 {
         }
     }
 
-    static func output(_ session: Session) {
-        let elapsed = Double(session.lastInputAt &- session.startedAt) / 1_000_000
-        let percentage = session.documentLength > 0
-            ? Double(session.lastLocation) / Double(session.documentLength) * 100
-            : 0
-        let counters = session.counters.keys.sorted().map {
-            "\($0)=\(session.counters[$0, default: 0])"
-        }.joined(separator: "，")
-        let stages = session.stageTotalMS.keys.sorted().map { stage -> String in
-            let total = session.stageTotalMS[stage, default: 0]
-            let count = session.stageCount[stage, default: 0]
-            let average = count > 0 ? total / Double(count) : 0
-            let maximum = session.stageMaxMS[stage, default: 0]
-            return "\(stage)=总\(format(total))/均\(format(average))/峰\(format(maximum))ms×\(count)"
-        }.joined(separator: "；")
-        let slowSamples = session.slowSamples.joined(separator: "；")
-        append(
-            "会话#\(session.id) 文档UTF16=\(session.documentLength) 缓存行=\(session.lineCount) "
-                + "位置=\(session.lastLocation)(\(String(format: "%.1f", percentage))%) "
-                + "输入=\(session.inputCount)(直接\(session.directInputCount)/组合\(session.compositionInputCount)) "
-                + "连续时长=\(format(elapsed))ms 计数=[\(counters)] 耗时=[\(stages)] 慢事件=[\(slowSamples)]"
-        )
-    }
+    static func output(_ session: Session) {}
 
-    static func diagnosticFilePath() -> String {
-        prepareLogIfNeeded()
-        return logURL?.path ?? "无法建立诊断记录文件"
-    }
+    static func diagnosticFilePath() -> String { "" }
 
-    private static func append(_ message: String) {
-        let tagged = "【诊断·38】\(message)"
-        print(tagged)
-        prepareLogIfNeeded()
-        guard let logURL,
-              let data = ("- `\(timestamp())` \(tagged)\n").data(using: .utf8),
-              let handle = try? FileHandle(forWritingTo: logURL) else { return }
-        defer { try? handle.close() }
-        _ = try? handle.seekToEnd()
-        try? handle.write(contentsOf: data)
-    }
+    private static func append(_ message: String) {}
 
-    private static func prepareLogIfNeeded() {
-        guard !preparedLog else { return }
-        preparedLog = true
-        let manager = FileManager.default
-        guard let applicationSupport = manager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
-        let folder = applicationSupport
-            .appendingPathComponent("ATeaching", isDirectory: true)
-            .appendingPathComponent("诊断", isDirectory: true)
-        do {
-            try manager.createDirectory(at: folder, withIntermediateDirectories: true)
-            let url = folder.appendingPathComponent("ATeaching诊断记录.MD", isDirectory: false)
-            let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未知"
-            let header = "# ATeaching诊断记录\n\n"
-                + "# 诊断·38 普通Markdown TextKit2大文档输入\n\n"
-                + "- 建立时间：\(timestamp())\n"
-                + "- 软件版本：\(version)\n"
-                + "- 固定物理位置：`\(url.path)`\n"
-                + "- 记录规则：连续输入只在内存聚合，停止4.2秒后落盘一条，以覆盖原有的三秒预览同步；不读取正文内容，不修改选区、布局或视野。\n"
-                + "- 旧诊断记录已清除，本文件只保留诊断·38。\n"
-                + "- 保留规则：诊断·38是普通Markdown TextKit2卡顿的长期基线，不随临时诊断清理删除。\n\n"
-            try header.write(to: url, atomically: true, encoding: .utf8)
-            logURL = url
-            print("【诊断·38】诊断记录：\(url.path)")
-        } catch {
-            print("【诊断·38】无法建立诊断记录：\(error.localizedDescription)")
-        }
-    }
+    private static func prepareLogIfNeeded() {}
 
     private static func format(_ value: Double) -> String { String(format: "%.3f", value) }
 
@@ -4168,15 +4107,9 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
         commitBridge.commitHandler = { [weak coordinator = context.coordinator] in
             coordinator?.commitPendingTextToBinding()
         }
-        textView.onDiagnostic38Duration = { [weak coordinator = context.coordinator] stage, milliseconds in
-            coordinator?.recordDiagnostic38Duration(stage, milliseconds: milliseconds)
-        }
-        textView.onDiagnostic38Count = { [weak coordinator = context.coordinator] name, amount in
-            coordinator?.recordDiagnostic38Count(name, amount: amount)
-        }
-        textView.onDiagnostic38SlowSample = { [weak coordinator = context.coordinator] sample in
-            coordinator?.recordDiagnostic38SlowSample(sample)
-        }
+        textView.onDiagnostic38Duration = nil
+        textView.onDiagnostic38Count = nil
+        textView.onDiagnostic38SlowSample = nil
         context.coordinator.resetClipViewBoundsOrigin(scrollView.contentView.bounds.origin)
         context.coordinator.lastSourceSnapshot = text
         context.coordinator.lastObservedBindingText = text
@@ -4314,8 +4247,6 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
         private var pendingDeletionLog = "none"
         private var pendingDeletionKind: EditorDeletionKind = .none
         private var pendingEditIsLocalCharacter = false
-        private var diagnostic38Session: MarkdownTextKit2Diagnostic38.Session?
-        private var diagnostic38FlushGeneration = 0
 
         init(_ parent: MarkdownTextKit2PlainTextEditor) {
             self.parent = parent
@@ -4566,78 +4497,17 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
         }
 
         private func beginDiagnostic38Input(in textView: NSTextView, affectedRange: NSRange) {
-            #if DEBUG
-            let documentLength = textView.textStorage?.length ?? 0
-            let lineCount = (textView as? MarkdownTextKit2PlainTextView)?.diagnosticCachedLineCount ?? 0
-            let isComposition = (textView as? MarkdownTextKit2PlainTextView)?.hasActiveMarkedText ?? false
-            if var session = diagnostic38Session {
-                MarkdownTextKit2Diagnostic38.recordInput(
-                    in: &session,
-                    documentLength: documentLength,
-                    lineCount: lineCount,
-                    location: affectedRange.location,
-                    isComposition: isComposition
-                )
-                diagnostic38Session = session
-            } else {
-                diagnostic38Session = MarkdownTextKit2Diagnostic38.makeSession(
-                    documentLength: documentLength,
-                    lineCount: lineCount,
-                    location: affectedRange.location,
-                    isComposition: isComposition
-                )
-                _ = MarkdownTextKit2Diagnostic38.diagnosticFilePath()
-            }
-            diagnostic38FlushGeneration &+= 1
-            let generation = diagnostic38FlushGeneration
-            let immediateProbeStart = MarkdownTextKit2Diagnostic38.now()
-            DispatchQueue.main.async { [weak self] in
-                self?.recordDiagnostic38Duration("输入后主线程即时排队", since: immediateProbeStart)
-                self?.recordDiagnostic38Count("输入后主线程即时探针")
-            }
-            let frameProbeStart = MarkdownTextKit2Diagnostic38.now()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.016) { [weak self] in
-                let elapsed = MarkdownTextKit2Diagnostic38.milliseconds(since: frameProbeStart)
-                self?.recordDiagnostic38Duration("输入后一帧超期", milliseconds: max(0, elapsed - 16))
-                self?.recordDiagnostic38Count("输入后一帧探针")
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 4.2) { [weak self] in
-                guard let self,
-                      generation == self.diagnostic38FlushGeneration,
-                      let session = self.diagnostic38Session else { return }
-                self.diagnostic38Session = nil
-                MarkdownTextKit2Diagnostic38.output(session)
-            }
-            #endif
+            _ = textView
+            _ = affectedRange
         }
 
-        func recordDiagnostic38Duration(_ stage: String, since start: UInt64) {
-            recordDiagnostic38Duration(stage, milliseconds: MarkdownTextKit2Diagnostic38.milliseconds(since: start))
-        }
+        func recordDiagnostic38Duration(_ stage: String, since start: UInt64) {}
 
-        func recordDiagnostic38Duration(_ stage: String, milliseconds: Double) {
-            #if DEBUG
-            guard var session = diagnostic38Session else { return }
-            session.addDuration(stage, milliseconds: milliseconds)
-            diagnostic38Session = session
-            #endif
-        }
+        func recordDiagnostic38Duration(_ stage: String, milliseconds: Double) {}
 
-        func recordDiagnostic38Count(_ name: String, amount: Int = 1) {
-            #if DEBUG
-            guard var session = diagnostic38Session else { return }
-            session.addCount(name, amount: amount)
-            diagnostic38Session = session
-            #endif
-        }
+        func recordDiagnostic38Count(_ name: String, amount: Int = 1) {}
 
-        func recordDiagnostic38SlowSample(_ sample: String) {
-            #if DEBUG
-            guard var session = diagnostic38Session else { return }
-            session.addSlowSample(sample)
-            diagnostic38Session = session
-            #endif
-        }
+        func recordDiagnostic38SlowSample(_ sample: String) {}
 
         @objc func clipViewBoundsDidChange(_ notification: Notification) {
             guard let clipView = notification.object as? NSClipView else { return }

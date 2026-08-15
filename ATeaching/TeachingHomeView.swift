@@ -169,23 +169,16 @@ struct TeachingHomeView: View {
             .appGlassButtonStyle(.prominent)
         } else if selectedPage == .sync {
             Button {
-                syncPrepareToken += 1
-            } label: {
-                actionLabel("准备", systemImage: "figure.and.child.holdinghands")
-            }
-            .appGlassButtonStyle(.prominent)
-
-            Button {
                 syncExportToken += 1
             } label: {
                 actionLabel("PDF", systemImage: "doc.richtext")
             }
-            .appGlassButtonStyle()
+            .appGlassButtonStyle(.prominent)
 
             Button {
-                syncCheckToken += 1
+                syncPrepareToken += 1
             } label: {
-                actionLabel("巡检", systemImage: "checklist")
+                actionLabel("整理", systemImage: "sparkles")
             }
             .appGlassButtonStyle()
 
@@ -193,20 +186,6 @@ struct TeachingHomeView: View {
                 syncReadinessToken += 1
             } label: {
                 actionLabel("验收", systemImage: "checkmark.shield")
-            }
-            .appGlassButtonStyle()
-
-            Button {
-                syncAuditToken += 1
-            } label: {
-                actionLabel("审计", systemImage: "doc.text.magnifyingglass")
-            }
-            .appGlassButtonStyle()
-
-            Button {
-                syncStressToken += 1
-            } label: {
-                actionLabel("压测", systemImage: "speedometer")
             }
             .appGlassButtonStyle()
 

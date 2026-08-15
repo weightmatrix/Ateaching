@@ -36,17 +36,10 @@ struct TeachingLessonStatisticsSubpageView: View {
     @State private var displayedMonth = Date()
     @State private var statusMessage = ""
     @State private var showInstitutionEditor = false
-    @State private var showLessonEditor = false
     @State private var editingInstitution: TeachingInstitutionRecord?
     @State private var dataInstitution: TeachingInstitutionRecord?
-    @State private var editingLesson: TeachingLessonRecord?
-    @State private var pendingNewLessonStart: Date?
     @State private var deleteTarget: TeachingInstitutionRecord?
     @State private var deleteImpactedStudents: [TeachingStudentItem] = []
-    @State private var lessonDeleteTarget: TeachingLessonRecord?
-    @State private var copiedLessonRecord: TeachingLessonRecord?
-    @State private var lessonUndoStack: [[TeachingLessonRecord]] = []
-    @State private var lessonRedoStack: [[TeachingLessonRecord]] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -86,19 +79,14 @@ struct TeachingLessonStatisticsSubpageView: View {
         .task {
             loadAllData()
         }
+        .onChange(of: mode) { _ in
+            loadAllData()
+        }
         .sheet(isPresented: $showInstitutionEditor) {
             TeachingInstitutionEditorSheet(
                 institution: editingInstitution,
                 existingInstitutions: institutions,
                 onSave: saveInstitution
-            )
-        }
-        .sheet(isPresented: $showLessonEditor) {
-            TeachingLessonEditorSheet(
-                lesson: editingLesson,
-                students: students,
-                initialStart: pendingNewLessonStart,
-                onSave: saveLesson
             )
         }
         .sheet(item: $dataInstitution) { institution in
@@ -120,20 +108,6 @@ struct TeachingLessonStatisticsSubpageView: View {
         } message: {
             Text(deleteConfirmationMessage)
         }
-        .alert("删除课程", isPresented: Binding(
-            get: { lessonDeleteTarget != nil },
-            set: { if !$0 { lessonDeleteTarget = nil } }
-        )) {
-            Button("取消", role: .cancel) {
-                lessonDeleteTarget = nil
-            }
-            Button("删除", role: .destructive) {
-                confirmDeleteLesson()
-            }
-        } message: {
-            Text("确定从上课单删除这节课？")
-        }
-        .background(TeachingLessonKeyboardShortcutView(onUndo: undoLessonChange, onRedo: redoLessonChange))
     }
 
     @ViewBuilder
@@ -188,18 +162,17 @@ struct TeachingLessonStatisticsSubpageView: View {
         }
 
         if mode == .schedule {
-            Button {
-                editingLesson = nil
-                pendingNewLessonStart = nil
-                showLessonEditor = true
-            } label: {
-                compactActionLabel("添加", systemImage: "plus", iconOnly: iconOnly)
-            }
-            .appGlassButtonStyle(.prominent)
-            .accessibilityLabel("添加课程")
-
-            Button {
-                exportSchedule()
+            Menu {
+                Button("导出成课图片") {
+                    exportSchedule()
+                }
+                Divider()
+                Button("复制·学生·月费用") {
+                    copyStudentMonthlyFee()
+                }
+                Button("复制·机构·月费用") {
+                    copyInstitutionMonthlyFee()
+                }
             } label: {
                 compactActionLabel("导出", systemImage: "square.and.arrow.up", iconOnly: iconOnly)
             }
@@ -258,19 +231,10 @@ struct TeachingLessonStatisticsSubpageView: View {
                 showsTitle: false,
                 canInsertWeeklyTemplate: true,
                 onInsertWeeklyTemplate: {},
-                onInsertLesson: { day, hour in
-                    insertScheduleLesson(day: day, hour: hour)
-                },
-                onMoveLesson: { record, dayDelta, hourDelta in
-                    moveScheduleLesson(record, dayDelta: dayDelta, hourDelta: hourDelta)
-                },
-                onShiftLesson: { record, minutes in
-                    shiftScheduleLesson(record, minutes: minutes)
-                },
-                onEditLesson: { record in
-                    editingLesson = record
-                    showLessonEditor = true
-                },
+                onInsertLesson: { _, _ in },
+                onMoveLesson: { _, _, _ in },
+                onShiftLesson: { _, _ in },
+                onEditLesson: { _ in },
                 onCopyStudent: { record in
                     copyScheduleText(
                         scope: .student(
@@ -307,16 +271,10 @@ struct TeachingLessonStatisticsSubpageView: View {
                         availabilityForInstitutionID: record.institutionID
                     )
                 },
-                onCopyLesson: { record in
-                    copiedLessonRecord = record
-                    statusMessage = "已复制课程。"
-                },
-                onPasteLesson: { day, hour in
-                    pasteScheduleLesson(on: day, hour: hour)
-                },
-                onDeleteLesson: { record in
-                    lessonDeleteTarget = record
-                }
+                onCopyLesson: { _ in },
+                onPasteLesson: { _, _ in },
+                onDeleteLesson: { _ in },
+                readOnly: true
             )
             .frame(width: scheduleHorizontalMonthWidth, height: scheduleInteractiveHeight)
         }
@@ -650,6 +608,7 @@ struct TeachingLessonStatisticsSubpageView: View {
 
     private func loadAllData() {
         do {
+            _ = try TeachingLessonPlanningStore.promotePastPlanningRecordsToLessonHistory()
             institutions = try TeachingLessonStatisticsStore.loadInstitutions()
             lessonRecords = try TeachingLessonStatisticsStore.loadLessonRecords()
             students = try TeachingStudentSettingsStore.loadStudents()
@@ -728,95 +687,6 @@ struct TeachingLessonStatisticsSubpageView: View {
         }
     }
 
-    private func saveLesson(_ draft: TeachingLessonEditorDraft) {
-        do {
-            let record: TeachingLessonRecord
-            if let source = draft.sourceLesson {
-                record = try updatedLessonRecord(source, start: draft.start, end: draft.end)
-            } else {
-                record = try newLessonRecord(studentID: draft.studentID, start: draft.start, end: draft.end)
-            }
-            try saveLessonRecord(record)
-            showLessonEditor = false
-            editingLesson = nil
-            pendingNewLessonStart = nil
-            statusMessage = "课程已保存。"
-        } catch {
-            statusMessage = "课程保存失败：\(error.localizedDescription)"
-        }
-    }
-
-    private func saveLessonRecord(_ record: TeachingLessonRecord) throws {
-        guard let start = TeachingLessonStatisticsStore.date(from: record.startAt),
-              let end = TeachingLessonStatisticsStore.date(from: record.endAt),
-              start < end else {
-            throw LessonEditError.invalidTimeRange
-        }
-        guard !hasLessonConflict(start: start, end: end, excluding: record.id) else {
-            throw LessonEditError.conflict
-        }
-        pushLessonUndoSnapshot()
-        if let index = lessonRecords.firstIndex(where: { $0.id == record.id }) {
-            lessonRecords[index] = record
-        } else {
-            lessonRecords.append(record)
-        }
-        try TeachingLessonStatisticsStore.saveLessonRecords(lessonRecords)
-    }
-
-    private func newLessonRecord(studentID: UUID?, start: Date, end: Date) throws -> TeachingLessonRecord {
-        guard let studentID,
-              let student = students.first(where: { $0.id == studentID }) else {
-            throw LessonEditError.missingStudent
-        }
-        guard let profile = try TeachingStudentSettingsStore.loadStudentProfile(studentID: studentID) else {
-            throw LessonEditError.missingStudentStatistics
-        }
-        let statistics = profile.lessonStatistics.normalized()
-        guard statistics.isComplete,
-              let institutionID = statistics.institutionID,
-              let institutionName = statistics.institutionName,
-              let price = statistics.priceForTwoHours else {
-            throw LessonEditError.missingStudentStatistics
-        }
-        let color = institutions.first(where: { $0.id == institutionID })?.effectiveColorHex
-            ?? TeachingLessonStatisticsStore.defaultInstitutionColorHex
-        let iconName = institutions.first(where: { $0.id == institutionID })?.iconName
-        return TeachingLessonRecord(
-            startAt: TeachingLessonStatisticsStore.makeISO8601String(from: start),
-            endAt: TeachingLessonStatisticsStore.makeISO8601String(from: end),
-            studentID: student.id,
-            studentName: student.name,
-            gradeCode: nil,
-            institutionID: institutionID,
-            institutionName: institutionName,
-            priceForTwoHours: price,
-            institutionColorHex: color,
-            institutionIconName: iconName
-        )
-    }
-
-    private func updatedLessonRecord(_ source: TeachingLessonRecord, start: Date, end: Date) throws -> TeachingLessonRecord {
-        guard start < end else {
-            throw LessonEditError.invalidTimeRange
-        }
-        var next = source
-        next.startAt = TeachingLessonStatisticsStore.makeISO8601String(from: start)
-        next.endAt = TeachingLessonStatisticsStore.makeISO8601String(from: end)
-        return next
-    }
-
-    private func hasLessonConflict(start: Date, end: Date, excluding id: UUID?) -> Bool {
-        lessonRecords.contains { record in
-            guard record.id != id,
-                  let oldStart = TeachingLessonStatisticsStore.date(from: record.startAt),
-                  let oldEnd = TeachingLessonStatisticsStore.date(from: record.endAt) else {
-                return false
-            }
-            return start < oldEnd && end > oldStart
-        }
-    }
-
     private func editableLessonRecords() -> [TeachingLessonRecord] {
         let calendar = Calendar.current
         let start = monthStart(for: displayedMonth)
@@ -835,18 +705,6 @@ struct TeachingLessonStatisticsSubpageView: View {
         }
     }
 
-    private func confirmDeleteLesson() {
-        guard let target = lessonDeleteTarget else { return }
-        do {
-            lessonRecords.removeAll { $0.id == target.id }
-            try TeachingLessonStatisticsStore.saveLessonRecords(lessonRecords)
-            lessonDeleteTarget = nil
-            statusMessage = "课程已删除。"
-        } catch {
-            statusMessage = "课程删除失败：\(error.localizedDescription)"
-        }
-    }
-
     private var scheduleVisibleInterval: DateInterval {
         TeachingLessonScheduleBuilder.monthInterval(for: displayedMonth)
     }
@@ -860,78 +718,6 @@ struct TeachingLessonStatisticsSubpageView: View {
         30 + CGFloat(24 - 8) * 36.7 + 24
     }
 
-    private func moveScheduleLesson(_ record: TeachingLessonRecord, dayDelta: Int, hourDelta: Int) {
-        guard dayDelta != 0 || hourDelta != 0,
-              let oldStart = TeachingLessonStatisticsStore.date(from: record.startAt),
-              let oldEnd = TeachingLessonStatisticsStore.date(from: record.endAt),
-              let shiftedStartByDay = Calendar.current.date(byAdding: .day, value: dayDelta, to: oldStart),
-              let shiftedEndByDay = Calendar.current.date(byAdding: .day, value: dayDelta, to: oldEnd),
-              let newStart = Calendar.current.date(byAdding: .hour, value: hourDelta, to: shiftedStartByDay),
-              let newEnd = Calendar.current.date(byAdding: .hour, value: hourDelta, to: shiftedEndByDay) else {
-            return
-        }
-        var next = record
-        next.startAt = TeachingLessonStatisticsStore.makeISO8601String(from: newStart)
-        next.endAt = TeachingLessonStatisticsStore.makeISO8601String(from: newEnd)
-        do {
-            try saveLessonRecord(next)
-            statusMessage = "课程已移动。"
-        } catch {
-            statusMessage = "移动失败：\(error.localizedDescription)"
-        }
-    }
-
-    private func shiftScheduleLesson(_ record: TeachingLessonRecord, minutes: Int) {
-        guard let oldStart = TeachingLessonStatisticsStore.date(from: record.startAt),
-              let oldEnd = TeachingLessonStatisticsStore.date(from: record.endAt),
-              let newStart = Calendar.current.date(byAdding: .minute, value: minutes, to: oldStart),
-              let newEnd = Calendar.current.date(byAdding: .minute, value: minutes, to: oldEnd) else {
-            statusMessage = "课程时间无效，无法移动。"
-            return
-        }
-        var next = record
-        next.startAt = TeachingLessonStatisticsStore.makeISO8601String(from: newStart)
-        next.endAt = TeachingLessonStatisticsStore.makeISO8601String(from: newEnd)
-        do {
-            try saveLessonRecord(next)
-            statusMessage = minutes < 0 ? "课程已后退半小时。" : "课程已前进半小时。"
-        } catch {
-            statusMessage = "移动失败：\(error.localizedDescription)"
-        }
-    }
-
-    private func insertScheduleLesson(day: Date, hour: Int) {
-        pendingNewLessonStart = date(on: day, hour: hour, minute: 0) ?? day
-        editingLesson = nil
-        showLessonEditor = true
-    }
-
-    private func pasteScheduleLesson(on day: Date, hour: Int) {
-        guard let copiedLessonRecord else {
-            statusMessage = "没有可粘贴的课程。"
-            return
-        }
-        guard let sourceStart = TeachingLessonStatisticsStore.date(from: copiedLessonRecord.startAt),
-              let sourceEnd = TeachingLessonStatisticsStore.date(from: copiedLessonRecord.endAt) else {
-            statusMessage = "粘贴失败：原课程时间无效。"
-            return
-        }
-        let components = Calendar.current.dateComponents([.hour, .minute], from: sourceStart)
-        guard let start = date(on: day, hour: components.hour ?? hour, minute: components.minute ?? 0) else { return }
-        let duration = sourceEnd.timeIntervalSince(sourceStart)
-        let end = start.addingTimeInterval(duration)
-        var next = copiedLessonRecord
-        next.id = UUID()
-        next.startAt = TeachingLessonStatisticsStore.makeISO8601String(from: start)
-        next.endAt = TeachingLessonStatisticsStore.makeISO8601String(from: end)
-        do {
-            try saveLessonRecord(next)
-            statusMessage = "课程已粘贴。"
-        } catch {
-            statusMessage = "粘贴失败：\(error.localizedDescription)"
-        }
-    }
-
     private func copyScheduleText(
         scope: TeachingLessonScheduleBuilder.TextScope,
         filter: TeachingLessonScheduleBuilder.Filter,
@@ -943,13 +729,39 @@ struct TeachingLessonStatisticsSubpageView: View {
             month: displayedMonth,
             records: records,
         )
+        writeToPasteboard(text)
+        statusMessage = "已复制。"
+    }
+
+    private func copyStudentMonthlyFee() {
+        let records = TeachingLessonScheduleBuilder.records(from: lessonRecords, in: scheduleVisibleInterval)
+        guard !records.isEmpty else {
+            statusMessage = "该月暂无成课记录，未复制。"
+            return
+        }
+        let text = TeachingLessonScheduleBuilder.studentMonthlyFeeText(month: displayedMonth, records: records)
+        writeToPasteboard(text)
+        statusMessage = "已复制\(monthTitle(for: displayedMonth))学生费用统计。"
+    }
+
+    private func copyInstitutionMonthlyFee() {
+        let records = TeachingLessonScheduleBuilder.records(from: lessonRecords, in: scheduleVisibleInterval)
+        guard !records.isEmpty else {
+            statusMessage = "该月暂无成课记录，未复制。"
+            return
+        }
+        let text = TeachingLessonScheduleBuilder.institutionMonthlyFeeText(month: displayedMonth, records: records)
+        writeToPasteboard(text)
+        statusMessage = "已复制\(monthTitle(for: displayedMonth))机构费用统计。"
+    }
+
+    private func writeToPasteboard(_ text: String) {
         #if os(macOS)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
         #else
         UIPasteboard.general.string = text
         #endif
-        statusMessage = "已复制。"
     }
 
     private func priceText(_ price: Double?) -> String {
@@ -1356,38 +1168,6 @@ struct TeachingLessonStatisticsSubpageView: View {
         let calendar = Calendar.current
         let components = calendar.dateComponents([.year, .month], from: date)
         return calendar.date(from: components) ?? date
-    }
-
-    private func date(on day: Date, hour: Int, minute: Int) -> Date? {
-        var components = Calendar.current.dateComponents([.year, .month, .day], from: day)
-        components.hour = hour
-        components.minute = minute
-        components.second = 0
-        return Calendar.current.date(from: components)
-    }
-
-    private func pushLessonUndoSnapshot() {
-        lessonUndoStack.append(lessonRecords)
-        if lessonUndoStack.count > 100 {
-            lessonUndoStack.removeFirst()
-        }
-        lessonRedoStack.removeAll()
-    }
-
-    private func undoLessonChange() {
-        guard let previous = lessonUndoStack.popLast() else { return }
-        lessonRedoStack.append(lessonRecords)
-        lessonRecords = previous
-        try? TeachingLessonStatisticsStore.saveLessonRecords(lessonRecords)
-        statusMessage = "已撤回。"
-    }
-
-    private func redoLessonChange() {
-        guard let next = lessonRedoStack.popLast() else { return }
-        lessonUndoStack.append(lessonRecords)
-        lessonRecords = next
-        try? TeachingLessonStatisticsStore.saveLessonRecords(lessonRecords)
-        statusMessage = "已恢复。"
     }
 
     private func canMoveToNextMonth(from date: Date) -> Bool {
