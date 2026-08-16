@@ -62,6 +62,7 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
     private var inputMethodRowLayoutsBefore: [NodeMarkdownTextKit2RowLayout] = []
     private var inputMethodGeneration: UInt64 = 0
     private var caretClickViewportGeneration: UInt64 = 0
+    private var didDragSelectionWithMouse = false
     var nodeMarkdownEditingRowIndex: Int?
     var nodeMarkdownRowLayouts: [NodeMarkdownTextKit2RowLayout] = [] {
         didSet {
@@ -133,6 +134,7 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        didDragSelectionWithMouse = false
         let viewportOrigin = enclosingScrollView?.contentView.bounds.origin
         let displayRect = visibleRect.isEmpty ? bounds : visibleRect
         if !displayRect.isEmpty {
@@ -150,9 +152,18 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
         onHandlePrimaryClick?()
         // Content缓冲区已经不含隐藏前缀，点击位置应完全交给NSTextView/TextKit2。
         super.mouseDown(with: event)
+        // 拖动形成选区时mouseDown在抬起时才返回，此刻已存在完整选区；只有未拖动的
+        // 单击才允许把残留选区收成插入点，拖动选区必须原样保留。
+        let mouseEndedInWindow = window?.convertPoint(fromScreen: NSEvent.mouseLocation) ?? event.locationInWindow
+        let didDrag = didDragSelectionWithMouse
+            || hypot(
+                mouseEndedInWindow.x - event.locationInWindow.x,
+                mouseEndedInWindow.y - event.locationInWindow.y
+            ) > 3
         if event.clickCount == 1,
            !event.modifierFlags.contains(.shift),
-           selectedRange().length > 0 {
+           selectedRange().length > 0,
+           !didDrag {
             let location = min(
                 characterIndexForInsertion(at: clickPoint),
                 (nodeSourceTextSnapshot as NSString).length
@@ -162,9 +173,14 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
         // 单击进入编辑可能切换源码/渲染样式，TextKit会据此自动调整滚动位置。
         // 点击位置原本就在当前视野内，因此这不是需要“追焦点”的场景；恢复
         // 点击前视野。拖拽形成选区时保留系统原生自动滚动。
-        if event.clickCount == 1, let viewportOrigin {
+        if event.clickCount == 1, !didDrag, let viewportOrigin {
             restoreViewportAfterCaretClick(to: viewportOrigin)
         }
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        didDragSelectionWithMouse = true
+        super.mouseDragged(with: event)
     }
 
     private func restoreViewportAfterCaretClick(to origin: NSPoint) {
