@@ -139,6 +139,7 @@ private enum ATeachingExternalMarkdownOpenRouter {
         ATeachingMacLaunchMainWindowGate.suppressForExternalMarkdownOpen()
         ExternalMarkdownWindowPresenter.openInTabs(filePaths: filePaths)
         NotificationCenter.default.post(name: didReceiveMarkdownFilesNotification, object: nil)
+        ATeachingMacMainWindowPresenter.scheduleStrayMainWindowCleanup()
     }
 
     static func isMarkdownFile(_ url: URL) -> Bool {
@@ -222,10 +223,8 @@ private final class ATeachingMacApplicationDelegate: NSObject, NSApplicationDele
 private enum ATeachingMacLaunchMainWindowGate {
     private static var pendingAutomaticOpen: DispatchWorkItem?
     private static var didSuppressForExternalMarkdownOpen = false
-    private static var launchDate = Date()
 
     static func scheduleAutomaticOpenIfNeeded() {
-        launchDate = Date()
         pendingAutomaticOpen?.cancel()
         let workItem = DispatchWorkItem {
             guard !didSuppressForExternalMarkdownOpen,
@@ -238,13 +237,12 @@ private enum ATeachingMacLaunchMainWindowGate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.8, execute: workItem)
     }
 
+    /// 外部Markdown打开已接管启动流程：取消自动开主窗口，并清理刚被SwiftUI为本次打开事件创建的主窗口。
     static func suppressForExternalMarkdownOpen() {
         didSuppressForExternalMarkdownOpen = true
         pendingAutomaticOpen?.cancel()
         pendingAutomaticOpen = nil
-        if Date().timeIntervalSince(launchDate) < 6 {
-            ATeachingMacMainWindowPresenter.closeMainWindowsOpenedForExternalMarkdown()
-        }
+        ATeachingMacMainWindowPresenter.closeMainWindowsOpenedForExternalMarkdown()
     }
 }
 
@@ -263,6 +261,10 @@ private enum ATeachingMacMainWindowPresenter {
 
     @discardableResult
     static func focusMainWindow() -> Bool {
+        if let fallbackWindow {
+            show(fallbackWindow)
+            return true
+        }
         guard let window = NSApplication.shared.windows.first(where: { window in
             window.identifier?.rawValue == ATeachingWindowID.main ||
             window.title == AppDisplayTitle.defaultMainWindowTitle ||
@@ -304,13 +306,27 @@ private enum ATeachingMacMainWindowPresenter {
         show(window)
     }
 
+    /// 外部Markdown打开时清理多余主窗口：刚自动弹出的主窗口和SwiftUI为打开事件新建的主窗口都关闭，
+    /// 只有用户已在使用的fallback主窗口保留。主窗口最多只有一个。
     static func closeMainWindowsOpenedForExternalMarkdown() {
         closeAutomaticLaunchWindowIfFresh()
+        closeStrayMainWindows()
+    }
+
+    /// 关闭除fallback主窗口之外的所有主窗口。SwiftUI会为访达打开事件异步新建主窗口，
+    /// 因此在事件后延时多轮兜底清理。
+    static func closeStrayMainWindows() {
         for window in NSApplication.shared.windows {
             guard isMainWindow(window) else { continue }
+            if window === fallbackWindow { continue }
             window.close()
-            if fallbackWindow === window {
-                fallbackWindow = nil
+        }
+    }
+
+    static func scheduleStrayMainWindowCleanup() {
+        for delay in [0.7, 1.5, 3.0] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                closeStrayMainWindows()
             }
         }
     }

@@ -4,6 +4,10 @@
 
 ---
 
+# 2-62 主窗口唯一性与外部MD打开
+
+SwiftUI对访达的打开文件事件会自动创建授课主窗口：冷启动打开MD时随启动出现，运行中打开MD时会与已有主窗口并存。`ATeachingMacMainWindowPresenter`把fallback主窗口当作唯一合法主窗口：外部MD打开时关闭刚自动弹出的主窗口和所有非fallback的主窗口，并在事件后0.7/1.5/3.0秒三轮兜底关闭SwiftUI异步新建的窗口；`focusMainWindow`优先复用fallback实例。恢复主窗口、Dock菜单和自动打开都只产生这一个窗口。
+
 # 2-59 成课只读统计与月费用复制
 
 成课与排课的职责重新划分：成课只包含排课中已经完成的课程，是只读统计视图；添加、修改、删除统一在排课页完成。进入统计页或切换统计子页时，先执行`promotePastPlanningRecordsToLessonHistory`把当前时刻之前的排课转入课单JSON，再重新加载统计；占位空课不转入。
@@ -1301,11 +1305,12 @@ V1.2607121530
 11. H3包同步方向的时间戳比较：`source.mtime > notebook.mtime` 用严格大于；刷新时子行修改必须传播到根H3的mtimeCache，否则方向反判。
 12. 公式渲染的 metrics来源必须从SwiftMath typesetter获取真实ascent/descent/axis，禁止从位图宽高猜测；公式字号跟随正文，无硬下限。
 13. `applicationShouldHandleReopen` 必须检查 `hasVisibleWindows`，已有可见窗口时不弹主窗口。
-14. 排课页面不再锁已完成课程；左键点击弹出操作菜单而非直接编辑；长按在 Mac 和 iPhone 上统一为拖动。
-15. 空行的背景条和编号高度必须与有内容时一致：`firstLineRect` 对空行补上 `minimumLineHeight`，不能只用字体自然行高。
-16. 公式垂直定位的 `axisHeight` 不能猜：行内公式用 `baseFont.xHeight/2`（对齐x字高），独立公式用字体中线。
-17. 投屏功能传输文档 JSON + 层级数据而非视频流；接收端只读，仅提供批注且每学生独有色。
-18. 上课期间母本有更新机制暂停：上课中教师不会修改母本，差异全部按随堂→母本处理。
+14. 主窗口以`fallbackWindow`实例为唯一合法主窗口；外部MD打开事件会触发SwiftUI异步新建主窗口，必须延时兜底清理所有非fallback主窗口，禁止新增主窗口来源。
+15. 排课页面不再锁已完成课程；左键点击弹出操作菜单而非直接编辑；长按在 Mac 和 iPhone 上统一为拖动。
+16. 空行的背景条和编号高度必须与有内容时一致：`firstLineRect` 对空行补上 `minimumLineHeight`，不能只用字体自然行高。
+17. 公式垂直定位的 `axisHeight` 不能猜：行内公式用 `baseFont.xHeight/2`（对齐x字高），独立公式用字体中线。
+18. 投屏功能传输文档 JSON + 层级数据而非视频流；接收端只读，仅提供批注且每学生独有色。
+19. 上课期间母本有更新机制暂停：上课中教师不会修改母本，差异全部按随堂→母本处理。
 
 这些位置都有历史 bug，维护时要先找到数据源、状态变化点和刷新入口，再整体改。
 
