@@ -968,64 +968,62 @@ struct NodeMarkdownEditorView: View {
         // 已经在保存的任务由版本检查负责追赶最新修改，
         // 不再并发启动第二个写入任务。
         guard saveState != .saving else { return }
-        commitPendingDraftBeforeSyncIfNeeded()
-        // Command+S在没有新修改时是纯空操作，不进入saving，
-        // 也不启动后续脏包同步。失败状态仍允许用户重试。
-        if saveState == .clean, documentRevision == persistedDocumentRevision {
-            return
-        }
-        guard canPersistCurrentDocument() else { return }
-        restoreH3SourceLinksFromDiskIfNeeded()
-        restoreReferencedImageAssets()
         saveState = .saving
-        let targetURL = fileURL
-        let documentSnapshot = document
-        let revisionSnapshot = documentRevision
-        let writeKey = TeachingCourseWriteCoordinator.key(forNotebookURL: targetURL)
-        var metaSnapshot = fileMeta
-        if metaSnapshot.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            metaSnapshot.title = targetURL.deletingPathExtension().lastPathComponent
-        }
-        if metaSnapshot.type.lowercased() == "nodesmarkdown" {
-            metaSnapshot.type = "nodemarkdown"
-        }
-        if metaSnapshot.type.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            metaSnapshot.type = "nodemarkdown"
-        }
-
-        Task(priority: .utility) {
-            await TeachingCourseWriteCoordinator.shared.acquire(key: writeKey)
-            guard revisionSnapshot == documentRevision else {
-                await TeachingCourseWriteCoordinator.shared.release(key: writeKey)
-                // 旧任务排队时又产生了新编辑。旧快照不能写入，
-                // 但也不能把saving永久留下；先明确回到dirty，
-                // 再由同一串行入口保存最新版本。
-                saveState = .dirty
-                saveToDisk()
+        Task {
+            await commitPendingDraftForSaveAsync()
+            // 提交草稿若真有新内容会通过markDocumentDirty推进revision并置dirty；
+            // 无新修改时revision与上次落盘一致，直接回到clean。
+            if documentRevision == persistedDocumentRevision {
+                saveState = .clean
                 return
             }
-            do {
-                var persistenceDocument = documentSnapshot
-                if let diskDocument = try? NodeMarkdownFileManager.read(fileURL: targetURL).0 {
-                    _ = persistenceDocument.touchChangedH3Packages(comparedTo: diskDocument)
-                    persistenceDocument.propagateChildMtimeToH3Roots()
-                }
-                try NodeMarkdownFileManager.write(document: persistenceDocument, meta: metaSnapshot, to: targetURL)
-                await TeachingCourseWriteCoordinator.shared.release(key: writeKey)
-                guard revisionSnapshot == documentRevision else {
-                    saveState = .dirty
-                    scheduleRealtimeCourseUpdatePush()
-                    return
-                }
+            guard canPersistCurrentDocument() else {
+                saveState = .dirty
+                return
+            }
+            saveState = .saving
+            let targetURL = fileURL
+            let documentSnapshot = document
+            let revisionSnapshot = documentRevision
+            var metaSnapshot = fileMeta
+            if metaSnapshot.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                metaSnapshot.title = targetURL.deletingPathExtension().lastPathComponent
+            }
+            if metaSnapshot.type.lowercased() == "nodesmarkdown" {
+                metaSnapshot.type = "nodemarkdown"
+            }
+            if metaSnapshot.type.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                metaSnapshot.type = "nodemarkdown"
+            }
+
+            let result = await NodeMarkdownFileManager.persistToDiskAndPrepare(
+                document: documentSnapshot,
+                meta: metaSnapshot,
+                to: targetURL
+            )
+            guard revisionSnapshot == documentRevision else {
+                // 旧任务排队时又产生了新编辑。旧快照不能覆盖新版本，
+                // 明确回到dirty，再由同一串行入口保存最新版本。
+                saveState = .dirty
+                scheduleRealtimeCourseUpdatePush()
+                return
+            }
+            switch result {
+            case .success(let persist):
                 persistedDocumentRevision = revisionSnapshot
-                document = persistenceDocument
+                document = persist.document
                 saveState = .clean
                 statusMessage = ""
                 fileMeta = metaSnapshot
+                if persist.restoredH3SourceLinkCount > 0 {
+                    textKitDraftRowMetadata = textKitRowMetadata
+                }
+                if !persist.touchedH3IDs.isEmpty {
+                    _ = packageChangeTracker.recordTouchedH3Packages(h3NodeIDs: persist.touchedH3IDs, document: persist.document)
+                }
                 postNotebookPersistedChangeIfNeeded()
                 if isClassSessionEditor { syncDirtyPackagesAfterClassSave() }
-            } catch {
-                await TeachingCourseWriteCoordinator.shared.release(key: writeKey)
+            case .failure(let error):
                 saveState = .failed
                 statusMessage = error.localizedDescription
             }
@@ -1033,7 +1031,7 @@ struct NodeMarkdownEditorView: View {
     }
 
     private func persistCurrentDocumentToDiskForSync(cleanForFinalization: Bool = false) async throws {
-        commitPendingDraftBeforeSyncIfNeeded()
+        await commitPendingDraftForSaveAsync()
         guard canPersistCurrentDocument() else {
             let message = pendingCutGuardMessage.isEmpty
                 ? "当前Node身份检查未通过，禁止保存"
@@ -1043,7 +1041,6 @@ struct NodeMarkdownEditorView: View {
         if cleanForFinalization {
             cleanEmptyNodesBeforePersist()
         }
-        restoreH3SourceLinksFromDiskIfNeeded()
         var metaSnapshot = fileMeta
         if metaSnapshot.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             metaSnapshot.title = fileURL.deletingPathExtension().lastPathComponent
@@ -1054,37 +1051,39 @@ struct NodeMarkdownEditorView: View {
         if metaSnapshot.type.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             metaSnapshot.type = "nodemarkdown"
         }
-        restoreReferencedImageAssets()
         let revisionSnapshot = documentRevision
         let documentSnapshot = document
-        let writeKey = TeachingCourseWriteCoordinator.key(forNotebookURL: fileURL)
-        await TeachingCourseWriteCoordinator.shared.acquire(key: writeKey)
+
+        let result = await NodeMarkdownFileManager.persistToDiskAndPrepare(
+            document: documentSnapshot,
+            meta: metaSnapshot,
+            to: fileURL
+        )
         guard revisionSnapshot == documentRevision else {
-            await TeachingCourseWriteCoordinator.shared.release(key: writeKey)
+            // 旧快照已过期：用最新文档重试一次。
             try await persistCurrentDocumentToDiskForSync(cleanForFinalization: cleanForFinalization)
             return
         }
-        do {
-            var persistenceDocument = documentSnapshot
-                if let diskDocument = try? NodeMarkdownFileManager.read(fileURL: fileURL).0 {
-                    _ = persistenceDocument.touchChangedH3Packages(comparedTo: diskDocument)
-                    persistenceDocument.propagateChildMtimeToH3Roots()
-                }
-                try NodeMarkdownFileManager.write(document: persistenceDocument, meta: metaSnapshot, to: fileURL)
-            await TeachingCourseWriteCoordinator.shared.release(key: writeKey)
+        switch result {
+        case .success(let persist):
             if documentRevision == revisionSnapshot {
-                document = persistenceDocument
+                document = persist.document
             }
-        } catch {
-            await TeachingCourseWriteCoordinator.shared.release(key: writeKey)
+            persistedDocumentRevision = revisionSnapshot
+            if documentRevision == revisionSnapshot {
+                saveState = .clean
+            }
+            fileMeta = metaSnapshot
+            if persist.restoredH3SourceLinkCount > 0 {
+                textKitDraftRowMetadata = textKitRowMetadata
+            }
+            if !persist.touchedH3IDs.isEmpty {
+                _ = packageChangeTracker.recordTouchedH3Packages(h3NodeIDs: persist.touchedH3IDs, document: persist.document)
+            }
+            postNotebookPersistedChangeIfNeeded()
+        case .failure(let error):
             throw error
         }
-        persistedDocumentRevision = revisionSnapshot
-        if documentRevision == revisionSnapshot {
-            saveState = .clean
-        }
-        fileMeta = metaSnapshot
-        postNotebookPersistedChangeIfNeeded()
     }
 
     private func cleanEmptyNodesBeforePersist() {
@@ -1118,14 +1117,6 @@ struct NodeMarkdownEditorView: View {
         scheduleSnapshotRebuild()
         // 若被清掉的正是焦点空行，保留第一响应者。旧管线的绝对选择位置会
         // 在外部文本替换时收紧到上一行末尾；新管线按保留下来的上一Node恢复。
-    }
-
-    private func restoreH3SourceLinksFromDiskIfNeeded() {
-        guard FileManager.default.fileExists(atPath: fileURL.path),
-              let diskPayload = try? NodeMarkdownFileManager.read(fileURL: fileURL) else { return }
-        let restoredCount = document.restoreMissingH3SourceLinks(from: diskPayload.0)
-        guard restoredCount > 0 else { return }
-        textKitDraftRowMetadata = textKitRowMetadata
     }
 
     private func syncDirtyPackagesAfterClassSave() {
@@ -1235,21 +1226,57 @@ struct NodeMarkdownEditorView: View {
         let serialized = NodeMarkdownPlainTextCodec.serialize(document: document)
         guard textKitDraft != serialized else { return }
         let previousDocument = document
-        var parsed: NodeMarkdownDocument
+        let parsed = parsePendingDraft(previousDocument: previousDocument)
+        applyPendingDraftCommit(previousDocument: previousDocument, parsed: parsed)
+    }
+
+    /// 保存路径专用：把待提交草稿的全文解析放到后台，主线程只负责应用结果。
+    private func commitPendingDraftForSaveAsync() async {
+        legacyDraftCommitController.commitPendingEditing()
+        pendingTextKitParseTask?.cancel()
+        let serialized = NodeMarkdownPlainTextCodec.serialize(document: document)
+        guard textKitDraft != serialized else { return }
+        let previousDocument = document
+        let draft = textKitDraft
+        let rowMetadata = textKitDraftRowMetadata
+        let legacySnapshot = latestLegacyDocumentSnapshot
+        let usesTextKit2 = NodeMarkdownFeatureFlags.textKit2EditorEnabled
+        let parsed = await Task.detached(priority: .utility) {
+            if !usesTextKit2,
+               let snapshot = legacySnapshot,
+               snapshot.plainText == draft {
+                return NodeMarkdownPlainTextCodec.parse(
+                    snapshot: snapshot,
+                    previousNodes: previousDocument.nodes
+                )
+            }
+            return NodeMarkdownPlainTextCodec.parse(
+                text: draft,
+                previousNodes: previousDocument.nodes,
+                rowMetadata: rowMetadata
+            )
+        }.value
+        applyPendingDraftCommit(previousDocument: previousDocument, parsed: parsed)
+    }
+
+    private func parsePendingDraft(previousDocument: NodeMarkdownDocument) -> NodeMarkdownDocument {
         if !NodeMarkdownFeatureFlags.textKit2EditorEnabled,
            let snapshot = latestLegacyDocumentSnapshot,
            snapshot.plainText == textKitDraft {
-            parsed = NodeMarkdownPlainTextCodec.parse(
+            return NodeMarkdownPlainTextCodec.parse(
                 snapshot: snapshot,
                 previousNodes: previousDocument.nodes
             )
-        } else {
-            parsed = NodeMarkdownPlainTextCodec.parse(
-                text: textKitDraft,
-                previousNodes: previousDocument.nodes,
-                rowMetadata: textKitDraftRowMetadata
-            )
         }
+        return NodeMarkdownPlainTextCodec.parse(
+            text: textKitDraft,
+            previousNodes: previousDocument.nodes,
+            rowMetadata: textKitDraftRowMetadata
+        )
+    }
+
+    private func applyPendingDraftCommit(previousDocument: NodeMarkdownDocument, parsed: NodeMarkdownDocument) {
+        var parsed = parsed
         _ = parsed.restoreMissingH3SourceLinks(from: previousDocument)
         let touchedH3IDs = parsed.touchChangedH3Packages(comparedTo: previousDocument)
         parsed.propagateChildMtimeToH3Roots()
@@ -1555,19 +1582,20 @@ struct NodeMarkdownEditorView: View {
             let rebuildDelay: UInt64 = isLargeFileMode ? 220_000_000 : 60_000_000
             try? await Task.sleep(nanoseconds: rebuildDelay)
             guard !Task.isCancelled else { return }
-            let rows = NodeMarkdownHTMLBuilder.buildRows(document: documentSnapshot, style: styleSnapshot)
-            await MainActor.run {
-                guard !Task.isCancelled else { return }
-                rowsSnapshot = rows
-                if isClassSessionEditor && ScreenCastContentHub.shared.isRequested(.teaching) {
-                    scheduleNodeScreenCastPublish(
-                        rows,
-                        title: fileMeta.title.isEmpty ? fileURL.deletingPathExtension().lastPathComponent : fileMeta.title,
-                        baseURL: fileURL.deletingLastPathComponent()
-                    )
-                }
-                rebuildSearchResults()
+            // HTML整篇构建是纯计算，放到后台线程，避免保存后主线程卡顿。
+            let rows = await Task.detached(priority: .utility) {
+                NodeMarkdownHTMLBuilder.buildRows(document: documentSnapshot, style: styleSnapshot)
+            }.value
+            guard !Task.isCancelled else { return }
+            rowsSnapshot = rows
+            if isClassSessionEditor && ScreenCastContentHub.shared.isRequested(.teaching) {
+                scheduleNodeScreenCastPublish(
+                    rows,
+                    title: fileMeta.title.isEmpty ? fileURL.deletingPathExtension().lastPathComponent : fileMeta.title,
+                    baseURL: fileURL.deletingLastPathComponent()
+                )
             }
+            rebuildSearchResults()
         }
     }
 
@@ -3264,13 +3292,6 @@ struct NodeMarkdownEditorView: View {
         _ = NodeMarkdownImageResourceManager.deleteRemovedManagedImages(
             previousDocument: previousDocument,
             currentDocument: currentDocument,
-            notebookFileURL: fileURL
-        )
-    }
-
-    private func restoreReferencedImageAssets() {
-        _ = NodeMarkdownImageResourceManager.restoreReferencedStashedImages(
-            currentDocument: document,
             notebookFileURL: fileURL
         )
     }

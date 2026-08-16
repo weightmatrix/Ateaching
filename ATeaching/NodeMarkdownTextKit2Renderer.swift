@@ -191,6 +191,7 @@ extension NodeMarkdownTextKit2TextView {
             guard fragmentStart < rowEnd else { return false }
             let fragmentFrame = fragment.layoutFragmentFrame
             for lineFragment in fragment.textLineFragments {
+                guard !self.nodeMarkdownLineFragmentIsFullyInvisible(lineFragment) else { continue }
                 let bounds = lineFragment.typographicBounds
                 let lineRect = NSRect(
                     x: self.textContainerOrigin.x + fragmentFrame.minX + bounds.minX,

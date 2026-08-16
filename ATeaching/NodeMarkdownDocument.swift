@@ -451,6 +451,12 @@ enum NodeMarkdownPrefixCodec {
 }
 
 // MARK: - NodeMarkdown文件协议管理器 - v1 - 统一CSV六列正文与META读写兼容旧类型
+struct NodeMarkdownPersistResult {
+    var document: NodeMarkdownDocument
+    var touchedH3IDs: Set<String>
+    var restoredH3SourceLinkCount: Int
+}
+
 struct NodeMarkdownFileManager {
     static let header = ["UUID", "Prefix", "Content", "SourceID", "SourceFile", "Cach"]
 
@@ -544,8 +550,72 @@ struct NodeMarkdownFileManager {
 
     static func write(document: NodeMarkdownDocument, meta: NodeMarkdownFileMeta, to fileURL: URL) throws {
         try NodeMarkdownIdentityPolicy.validateForPersistence(document)
+        try serializeAndWrite(document: document, meta: meta, to: fileURL)
+    }
+
+    /// 已通过身份校验后的纯序列化+落盘，避免重复校验。
+    private static func serializeAndWrite(document: NodeMarkdownDocument, meta: NodeMarkdownFileMeta, to fileURL: URL) throws {
         let text = serialize(document: document, meta: meta)
         try text.write(to: fileURL, atomically: true, encoding: .utf8)
+    }
+
+    /// 一次遍历完成「补齐H3来源 → 触摸脏H3 → 传播子节点时间戳 → 校验 → 序列化 → 原子写」。
+    /// 纯计算与文件I/O，可在任意线程调用。
+    static func prepareAndWrite(
+        document: NodeMarkdownDocument,
+        meta: NodeMarkdownFileMeta,
+        to fileURL: URL,
+        comparedToDisk diskDocument: NodeMarkdownDocument?,
+        restoreH3SourceLinksFromDisk: Bool
+    ) throws -> NodeMarkdownPersistResult {
+        var persistenceDocument = document
+        var touchedH3IDs: Set<String> = []
+        var restoredCount = 0
+
+        if let diskDocument {
+            if restoreH3SourceLinksFromDisk {
+                restoredCount = persistenceDocument.restoreMissingH3SourceLinks(from: diskDocument)
+            }
+            touchedH3IDs = persistenceDocument.touchChangedH3Packages(comparedTo: diskDocument)
+        }
+        persistenceDocument.propagateChildMtimeToH3Roots()
+        try NodeMarkdownIdentityPolicy.validateForPersistence(persistenceDocument)
+        try serializeAndWrite(document: persistenceDocument, meta: meta, to: fileURL)
+        return NodeMarkdownPersistResult(
+            document: persistenceDocument,
+            touchedH3IDs: touchedH3IDs,
+            restoredH3SourceLinkCount: restoredCount
+        )
+    }
+
+    /// 保存专用：串行队列内读盘一次并落盘，全部文件I/O与文档遍历都在后台执行。
+    static func persistToDiskAndPrepare(
+        document: NodeMarkdownDocument,
+        meta: NodeMarkdownFileMeta,
+        to fileURL: URL
+    ) async -> Result<NodeMarkdownPersistResult, Error> {
+        let writeKey = TeachingCourseWriteCoordinator.key(forNotebookURL: fileURL)
+        await TeachingCourseWriteCoordinator.shared.acquire(key: writeKey)
+        let result: Result<NodeMarkdownPersistResult, Error>
+        do {
+            _ = NodeMarkdownImageResourceManager.restoreReferencedStashedImages(
+                currentDocument: document,
+                notebookFileURL: fileURL
+            )
+            let diskDocument = (try? read(fileURL: fileURL).0)
+            let persist = try prepareAndWrite(
+                document: document,
+                meta: meta,
+                to: fileURL,
+                comparedToDisk: diskDocument,
+                restoreH3SourceLinksFromDisk: true
+            )
+            result = .success(persist)
+        } catch {
+            result = .failure(error)
+        }
+        await TeachingCourseWriteCoordinator.shared.release(key: writeKey)
+        return result
     }
 
     static func serialize(document: NodeMarkdownDocument, meta: NodeMarkdownFileMeta) -> String {

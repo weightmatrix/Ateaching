@@ -109,6 +109,31 @@ final class NodeMarkdownExactLayoutEngine {
 }
 
 extension NodeMarkdownTextKit2TextView {
+    /// 完全不可见的行片段：整行没有附件且全部字符都是透明色或亚像素字号
+    /// （折叠公式/图片源码被挤到独立行时会出现）。它不画任何内容，不能计入Node高度。
+    func nodeMarkdownLineFragmentIsFullyInvisible(_ line: NSTextLineFragment) -> Bool {
+        let characterRange = line.characterRange
+        guard characterRange.location != NSNotFound,
+              characterRange.length > 0,
+              characterRange.exact(toLength: nodeTextStorage.length) != nil else { return false }
+        var hasAttachment = false
+        var hasVisibleGlyph = false
+        nodeTextStorage.enumerateAttributes(in: characterRange, options: []) { attributes, _, _ in
+            if attributes[.attachment] != nil {
+                hasAttachment = true
+            } else {
+                let font = attributes[.font] as? NSFont
+                let color = attributes[.foregroundColor] as? NSColor
+                let isTiny = (font?.pointSize ?? 0) <= 0.5
+                let isClear = color == NSColor.clear
+                if !isTiny && !isClear {
+                    hasVisibleGlyph = true
+                }
+            }
+        }
+        return !hasAttachment && !hasVisibleGlyph
+    }
+
     func exactNodeMarkdownVisualBounds() -> CGRect? {
         if nodeTextStorage.length == 0,
            nodeMarkdownRowLayouts.count == 1,
@@ -128,6 +153,7 @@ extension NodeMarkdownTextKit2TextView {
             // the actual typographic lines, whose bounds already include attachment
             // ascent and descent. Counting the fragment frame adds source-only rows.
             for line in fragment.textLineFragments {
+                guard !self.nodeMarkdownLineFragmentIsFullyInvisible(line) else { continue }
                 let lineRect = line.typographicBounds.offsetBy(
                     dx: self.textContainerOrigin.x + fragment.layoutFragmentFrame.minX,
                     dy: self.textContainerOrigin.y + fragment.layoutFragmentFrame.minY

@@ -4,6 +4,12 @@
 
 ---
 
+# NodeMarkdown保存后台化与公式不可见行
+
+`NodeMarkdownEditorView`因`View`协议整体是`@MainActor`，其内部`Task{}`闭包继承主线程；任何需要真正后台化的重活必须抽成`nonisolated`/普通struct的`static`函数，再由`Task.detached`或`await`非隔离异步函数让它在全局执行器上跑。`NodeMarkdownFileManager.persistToDiskAndPrepare`是保存唯一入口：串行写队列内一次读盘、一次遍历、一次写盘；`saveToDisk`与`persistCurrentDocumentToDiskForSync`只负责主线程快照与应用结果。保存前全文解析走`commitPendingDraftForSaveAsync`后台解析；HTML快照构建放到`Task.detached`。
+
+折叠公式/图片源码字符以0.001pt透明字体留在正文，一旦被挤到独立行，段落`minimumLineHeight`仍让它占满一行，形成不可见空行。`exactNodeMarkdownVisualBounds`与背景条测量必须跳过“无附件且全部透明/亚像素字号”的行片段（按`line.characterRange`读存储属性判断），不能依赖`line.attributedString`（它返回整个片段字符串）。
+
 # 2-63 NodeMarkdown鼠标选区保护
 
 `NodeMarkdownTextKit2TextView.mouseDown`在TextKit完成鼠标跟踪后不得无条件把选区收成插入点：拖动时`mouseDown`直到抬起才返回，此刻的完整选区必须原样保留。收窄操作和单击视野恢复都必须以“未拖动”为前提，拖动判定用`mouseDragged`标志加鼠标起止位置距离双保险。凡涉及鼠标选区的事务，先分清单击、Shift单击、双击和拖动四类，再决定是否改选区。
@@ -1316,6 +1322,7 @@ V1.2607121530
 18. 公式垂直定位的 `axisHeight` 不能猜：行内公式用 `baseFont.xHeight/2`（对齐x字高），独立公式用字体中线。
 19. 投屏功能传输文档 JSON + 层级数据而非视频流；接收端只读，仅提供批注且每学生独有色。
 20. 上课期间母本有更新机制暂停：上课中教师不会修改母本，差异全部按随堂→母本处理。
+21. `NodeMarkdownEditorView`的`Task{}`继承主线程，任何文件I/O、全文解析、HTML构建的“后台化”必须抽成普通`struct`/`nonisolated`的`static`函数再`await`/`Task.detached`，禁止在主线程闭包里直接调用`NodeMarkdownFileManager.read/write`、`NodeMarkdownPlainTextCodec.parse`或`NodeMarkdownHTMLBuilder.buildRows`。
 
 这些位置都有历史 bug，维护时要先找到数据源、状态变化点和刷新入口，再整体改。
 

@@ -1,3 +1,13 @@
+# NodeMarkdown保存卡顿优化与公式空行修复
+
+- ⌘S卡顿根因：`NodeMarkdownEditorView`是`@MainActor`，其内部`Task{}`继承主线程，导致整文件读×2、全文解析、多次H3遍历、CSV序列化写盘和HTML快照构建全部堆在主线程同一帧。
+- 新增`NodeMarkdownFileManager.prepareAndWrite`：一次遍历完成「补齐H3来源→触摸脏H3→传播子节点时间戳→校验→序列化→原子写」，`persistToDiskAndPrepare`在串行写队列内后台执行文件I/O与遍历；`saveToDisk`与`persistCurrentDocumentToDiskForSync`改为快照后异步落盘，完成回主线程应用结果。
+- 保存前待提交草稿的全文解析改用`commitPendingDraftForSaveAsync`，`Task.detached`后台解析后回主线程应用；`scheduleSnapshotRebuild`的HTML整篇构建同样放到后台线程。
+- 公式空行修复：折叠公式/图片源码被挤到独立行时该行全透明，因段落`minimumLineHeight`仍占满一行高度，造成Node下方空行；`exactNodeMarkdownVisualBounds`与背景条测量跳过“无附件且全部透明/亚像素字号”的行片段。
+- 版本更新为`V1.2608162121`。
+
+验证：Mac Debug与iPhone Simulator Debug构建通过；`git diff --check`通过。
+
 # 2-63 NodeMarkdown新管线恢复拖动选区
 
 - `mouseDown`末尾的“单击把残留选区收成插入点”逻辑误伤拖动：拖动时`mouseDown`直到抬起才返回，此刻已有完整选区，随即被收成插入点，导致完全无法选中文字。
