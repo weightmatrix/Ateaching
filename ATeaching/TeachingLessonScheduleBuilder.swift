@@ -147,10 +147,12 @@ enum TeachingLessonScheduleBuilder {
 
     // MARK: 月费用统计复制文本
 
-    /// 复制·学生·月费用：第一行`<年月>学生费用统计`，第二行标题行，之后按学生逐行汇总。
+    /// 复制·学生·月费用：第一行`<年月>学生费用统计`，第二行总课时总费用，之后标题行和按学生逐行汇总。
     static func studentMonthlyFeeText(month: Date, records: [TeachingLessonRecord]) -> String {
         let interval = monthInterval(for: month)
         let aggregates = monthlyFeeAggregates(in: interval, records: records, groupByStudent: true)
+        let totalHours = aggregates.reduce(0) { $0 + $1.hours }
+        let totalFee = aggregates.reduce(0) { $0 + $1.fee }
         let lines = alignedPipeTable(
             header: ["学生", "机构", "课时", "费用"],
             rows: aggregates.map { aggregate in
@@ -162,13 +164,18 @@ enum TeachingLessonScheduleBuilder {
                 ]
             }
         )
-        return ([monthTitle(for: month) + "学生费用统计"] + lines).joined(separator: "\n")
+        return ([
+            monthTitle(for: month) + "学生费用统计",
+            "总课时：\(formatHours(totalHours))小时，总费用：\(formatMoney(totalFee))元"
+        ] + lines).joined(separator: "\n")
     }
 
-    /// 复制·机构·月费用：第一行`<年月>机构费用统计`，第二行标题行，之后按机构逐行汇总。
+    /// 复制·机构·月费用：第一行`<年月>机构费用统计`，第二行总课时总费用，之后标题行和按机构逐行汇总。
     static func institutionMonthlyFeeText(month: Date, records: [TeachingLessonRecord]) -> String {
         let interval = monthInterval(for: month)
         let aggregates = monthlyFeeAggregates(in: interval, records: records, groupByStudent: false)
+        let totalHours = aggregates.reduce(0) { $0 + $1.hours }
+        let totalFee = aggregates.reduce(0) { $0 + $1.fee }
         let lines = alignedPipeTable(
             header: ["机构", "课时", "费用"],
             rows: aggregates.map { aggregate in
@@ -179,7 +186,10 @@ enum TeachingLessonScheduleBuilder {
                 ]
             }
         )
-        return ([monthTitle(for: month) + "机构费用统计"] + lines).joined(separator: "\n")
+        return ([
+            monthTitle(for: month) + "机构费用统计",
+            "总课时：\(formatHours(totalHours))小时，总费用：\(formatMoney(totalFee))元"
+        ] + lines).joined(separator: "\n")
     }
 
     private struct MonthlyFeeAggregate {
