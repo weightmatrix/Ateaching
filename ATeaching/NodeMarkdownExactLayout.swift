@@ -109,16 +109,51 @@ final class NodeMarkdownExactLayoutEngine {
 }
 
 extension NodeMarkdownTextKit2TextView {
-    /// 完全不可见的行片段：整行没有附件且全部字符都是透明色或亚像素字号
-    /// （折叠公式/图片源码被挤到独立行时会出现）。它不画任何内容，不能计入Node高度。
-    func nodeMarkdownLineFragmentIsFullyInvisible(_ line: NSTextLineFragment) -> Bool {
-        let characterRange = line.characterRange
-        guard characterRange.location != NSNotFound,
-              characterRange.length > 0,
-              characterRange.exact(toLength: nodeTextStorage.length) != nil else { return false }
+    /// 可靠地求出每个行片段对应的源字符串范围。`NSTextLineFragment.characterRange`
+    /// 在多行段落（含被隐藏源码行）中会返回错误范围，不能作为依据；这里用
+    /// `textLineFragment(for:isUpstreamAffinity:)` 逐字符扫描得到真实行边界。
+    func nodeMarkdownLineCharacterRanges(
+        in fragment: NSTextLayoutFragment
+    ) -> [(line: NSTextLineFragment, range: NSRange)] {
+        let documentStart = nodeTextContentStorage.documentRange.location
+        let startOffset = nodeTextContentStorage.offset(from: documentStart, to: fragment.rangeInElement.location)
+        let endOffset = nodeTextContentStorage.offset(from: documentStart, to: fragment.rangeInElement.endLocation)
+        guard startOffset != NSNotFound,
+              endOffset != NSNotFound,
+              startOffset < endOffset else { return [] }
+
+        var result: [(NSTextLineFragment, NSRange)] = []
+        var currentLine: NSTextLineFragment?
+        var currentStart = startOffset
+        for offset in startOffset..<endOffset {
+            guard let location = nodeTextContentStorage.location(documentStart, offsetBy: offset) else { break }
+            guard let line = fragment.textLineFragment(for: location, isUpstreamAffinity: false) else { continue }
+            if let existing = currentLine {
+                if line !== existing {
+                    result.append((existing, NSRange(location: currentStart, length: offset - currentStart)))
+                    currentLine = line
+                    currentStart = offset
+                }
+            } else {
+                currentLine = line
+                currentStart = offset
+            }
+        }
+        if let existing = currentLine {
+            result.append((existing, NSRange(location: currentStart, length: endOffset - currentStart)))
+        }
+        return result
+    }
+
+    /// 该源字符串范围是否完全没有可见内容：没有附件、所有非换行字符都是透明色或亚像素字号。
+    /// 换行只是行终止符，不计入可见内容。
+    func nodeMarkdownCharacterRangeIsFullyInvisible(_ range: NSRange) -> Bool {
+        guard range.length > 0,
+              range.exact(toLength: nodeTextStorage.length) != nil else { return false }
+        let nsText = nodeTextStorage.string as NSString
         var hasAttachment = false
         var hasVisibleGlyph = false
-        nodeTextStorage.enumerateAttributes(in: characterRange, options: []) { attributes, _, _ in
+        nodeTextStorage.enumerateAttributes(in: range, options: []) { attributes, subrange, _ in
             if attributes[.attachment] != nil {
                 hasAttachment = true
             } else {
@@ -126,7 +161,9 @@ extension NodeMarkdownTextKit2TextView {
                 let color = attributes[.foregroundColor] as? NSColor
                 let isTiny = (font?.pointSize ?? 0) <= 0.5
                 let isClear = color == NSColor.clear
-                if !isTiny && !isClear {
+                guard !isTiny && !isClear else { return }
+                let subText = nsText.substring(with: subrange)
+                if subText.contains(where: { $0 != "\n" }) {
                     hasVisibleGlyph = true
                 }
             }
@@ -152,8 +189,8 @@ extension NodeMarkdownTextKit2TextView {
             // formula/image source characters. Static Node height is determined by
             // the actual typographic lines, whose bounds already include attachment
             // ascent and descent. Counting the fragment frame adds source-only rows.
-            for line in fragment.textLineFragments {
-                guard !self.nodeMarkdownLineFragmentIsFullyInvisible(line) else { continue }
+            for (line, range) in self.nodeMarkdownLineCharacterRanges(in: fragment) {
+                guard !self.nodeMarkdownCharacterRangeIsFullyInvisible(range) else { continue }
                 let lineRect = line.typographicBounds.offsetBy(
                     dx: self.textContainerOrigin.x + fragment.layoutFragmentFrame.minX,
                     dy: self.textContainerOrigin.y + fragment.layoutFragmentFrame.minY

@@ -4,6 +4,10 @@
 
 ---
 
+# 2-66 行可见性按源范围判定
+
+`NSTextLineFragment.characterRange`在多行段落中不可靠（含被折叠/隐藏源码行时返回错误范围），任何“某行是否可见”的判断必须用`fragment.textLineFragment(for:isUpstreamAffinity:)`逐字符扫描得到真实行范围，再按源字符串判断：无附件且所有非换行字符都是透明色或亚像素字号即不可见。`exactNodeMarkdownVisualBounds`只收缩末尾不可见行；中段隐藏行保留为空行，禁止上移下方内容。
+
 # NodeMarkdown保存后台化与公式不可见行
 
 `NodeMarkdownEditorView`因`View`协议整体是`@MainActor`，其内部`Task{}`闭包继承主线程；任何需要真正后台化的重活必须抽成`nonisolated`/普通struct的`static`函数，再由`Task.detached`或`await`非隔离异步函数让它在全局执行器上跑。`NodeMarkdownFileManager.persistToDiskAndPrepare`是保存唯一入口：串行写队列内一次读盘、一次遍历、一次写盘；`saveToDisk`与`persistCurrentDocumentToDiskForSync`只负责主线程快照与应用结果。保存前全文解析走`commitPendingDraftForSaveAsync`后台解析；HTML快照构建放到`Task.detached`。
@@ -1323,6 +1327,7 @@ V1.2607121530
 19. 投屏功能传输文档 JSON + 层级数据而非视频流；接收端只读，仅提供批注且每学生独有色。
 20. 上课期间母本有更新机制暂停：上课中教师不会修改母本，差异全部按随堂→母本处理。
 21. `NodeMarkdownEditorView`的`Task{}`继承主线程，任何文件I/O、全文解析、HTML构建的“后台化”必须抽成普通`struct`/`nonisolated`的`static`函数再`await`/`Task.detached`，禁止在主线程闭包里直接调用`NodeMarkdownFileManager.read/write`、`NodeMarkdownPlainTextCodec.parse`或`NodeMarkdownHTMLBuilder.buildRows`。
+22. `NSTextLineFragment.characterRange`在多行段落中返回错误范围，行可见性必须用`fragment.textLineFragment(for:isUpstreamAffinity:)`扫描真实行范围，不能依赖`characterRange`。
 
 这些位置都有历史 bug，维护时要先找到数据源、状态变化点和刷新入口，再整体改。
 

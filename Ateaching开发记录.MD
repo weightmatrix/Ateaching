@@ -1,3 +1,13 @@
+# 2-66 NodeMarkdown渲染后源码空行收口
+
+- 一个Node在源码态是5行、渲染态只有4行时（例如某一行是加载失败的图片token，整行被折叠隐藏），失焦回到渲染态后Node仍按5行预留空间，末行成为空行。
+- `NSTextLineFragment.characterRange`在多行段落（尤其含被隐藏源码行）中返回错误范围，不能作为“行是否可见”的依据；改为用`textLineFragment(for:isUpstreamAffinity:)`逐字符扫描得到真实行范围。
+- 行可见性判定改为按源字符串范围：无附件、所有非换行字符都是透明色或亚像素字号即为不可见行；换行只是行终止符，不计入可见内容。
+- `exactNodeMarkdownVisualBounds`与背景条测量跳过末尾不可见行，Node高度收缩到最后一个可见行；中段隐藏行保留为空行（TextKit无法上移下方内容，保留不裁切）。
+- 版本更新为`V1.2608162149`。
+
+验证：Mac Debug与iPhone Simulator Debug构建通过；`git diff --check`通过；探针实测“末行破图”从5行高降到4行高、中段隐藏行保持5行高。
+
 # NodeMarkdown保存卡顿优化与公式空行修复
 
 - ⌘S卡顿根因：`NodeMarkdownEditorView`是`@MainActor`，其内部`Task{}`继承主线程，导致整文件读×2、全文解析、多次H3遍历、CSV序列化写盘和HTML快照构建全部堆在主线程同一帧。
