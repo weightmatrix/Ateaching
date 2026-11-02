@@ -3,7 +3,7 @@ import Foundation
 import WebKit
 import PDFKit
 
-enum NodeMarkdownScaledPDFExporter {
+nonisolated enum NodeMarkdownScaledPDFExporter {
     static let defaultScale: Double = 0.4
 
     private static let pageLoadTimeout: TimeInterval = 120
@@ -117,7 +117,7 @@ enum NodeMarkdownScaledPDFExporter {
         scale: Double
     ) throws -> Data {
         let debugOptions = ExportDebugOptions.load()
-        let clampedScale = min(1, max(0.1, scale))
+        let clampedScale = min(2.0, max(0.1, scale))
         let configuration = WKWebViewConfiguration()
         configuration.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
         configuration.setValue(true, forKey: "allowUniversalAccessFromFileURLs")
@@ -525,7 +525,7 @@ enum NodeMarkdownScaledPDFExporter {
 
     private static func injectPageStyle(for settings: TeachingPDFExportSettings, scale: Double, into html: String) -> String {
         let paper = paperSize(for: settings)
-        let clampedScale = min(1, max(0.1, scale))
+        let clampedScale = min(2.0, max(0.1, scale))
         let style = """
         <style id="pdf-export-style">
         :root {

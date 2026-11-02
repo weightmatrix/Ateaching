@@ -11,9 +11,9 @@ import WebKit
 #endif
 
 extension Notification.Name {
-    static let teachingNotebookDidPersistChange = Notification.Name("TeachingNotebookDidPersistChange")
-    static let teachingRequestCloseNotebook = Notification.Name("TeachingRequestCloseNotebook")
-    static let nodeMarkdownCutPackageConsumed = Notification.Name("NodeMarkdownCutPackageConsumed")
+    nonisolated static let teachingNotebookDidPersistChange = Notification.Name("TeachingNotebookDidPersistChange")
+    nonisolated static let teachingRequestCloseNotebook = Notification.Name("TeachingRequestCloseNotebook")
+    nonisolated static let nodeMarkdownCutPackageConsumed = Notification.Name("NodeMarkdownCutPackageConsumed")
 }
 
 /// 只在当前应用进程内共享，供两个同时打开的教案窗口完成剪切粘贴。
@@ -41,6 +41,10 @@ private final class NodeMarkdownPackageCutClipboard {
 
 // MARK: - NodeMarkdown编辑器页面 - v1 - 独立Web渲染骨架并预留后续原生编辑覆盖层
 struct NodeMarkdownEditorView: View {
+    private struct ReflectionPresentation: Identifiable {
+        let id = UUID()
+        let fileURL: URL
+    }
     let fileURL: URL
     var isReadOnlyRendered = false
     @Environment(\.colorScheme) private var systemColorScheme
@@ -57,6 +61,7 @@ struct NodeMarkdownEditorView: View {
     @State private var saveState: MarkdownSaveState = .clean
     @State private var documentRevision: UInt64 = 0
     @State private var persistedDocumentRevision: UInt64 = 0
+    @State private var isSaveTaskRunning = false
     @State private var showSettingsSheet = false
     @State private var showTOCPopover = false
     @State private var showExportActionDialog = false
@@ -70,6 +75,8 @@ struct NodeMarkdownEditorView: View {
     @State private var activeSearchRowIndex: Int?
     @State private var textKit2NavigationRequestToken = 0
     @State private var pendingExportFormat: NodeMarkdownExportFormat = .pdf
+    @State private var showScaledPDFSheet = false
+    @AppStorage("nodeMarkdownScaledPDFMultiplier") private var scaledPDFMultiplier = 1.0
     @State private var pendingRebuildTask: Task<Void, Never>?
     @State private var pendingScreenCastPublishTask: Task<Void, Never>?
     @State private var pendingTextKitParseTask: Task<Void, Never>?
@@ -103,7 +110,7 @@ struct NodeMarkdownEditorView: View {
     @State private var classUpdatePreview = TeachingCourseUpdatePreview(dirtyPackageCount: 0, newPackageCount: 0, chapterTargets: [])
     @State private var selectedUpdateChapterPath = ""
     @State private var selectedUpdateAnchorID = ""
-    @State private var showReflectionSheet = false
+    @State private var reflectionPresentation: ReflectionPresentation?
     @State private var reflectionFiles: [URL] = []
     @State private var reflectionIndex = 0
     @State private var reflectionShowStudentInfo = false
@@ -114,6 +121,7 @@ struct NodeMarkdownEditorView: View {
     @State private var isClosingClassSessionWithSync = false
     @State private var didRestoreImageUndoStashForSession = false
     @State private var externalTextSyncToken = 0
+    @State private var inPlaceEditRequest: NodeMarkdownInPlaceEditRequest?
     @State private var classSessionRefreshToken = 0
     @State private var isNotebookWriteOperationInProgress = false
     @State private var legacyDraftCommitController = NodeMarkdownLegacyDraftCommitController()
@@ -149,7 +157,10 @@ struct NodeMarkdownEditorView: View {
                 .allowsHitTesting(annotationController.isActive)
             ScreenCastStrokeOverlay(strokes: screenCastAnnotationHub.strokes)
         }
-        .navigationTitle("Node-\(fileURL.lastPathComponent)")
+        .navigationTitle(nodeWindowTitle)
+        #if os(macOS)
+        .background(WindowTitleSetter(title: nodeWindowTitle).frame(width: 0, height: 0))
+        #endif
         .toolbar {
             #if os(iOS)
             ToolbarItem(placement: .cancellationAction) {
@@ -175,6 +186,7 @@ struct NodeMarkdownEditorView: View {
             }
         }
         .task {
+            FrequentDocumentUsage.record(fileURL)
             tocExpandMode = NodeMarkdownTOCExpandMode(rawValue: NodeMarkdownSettingsStore.loadTOCExpandModeRawValue()) ?? .l3
             loadFromDiskIfNeeded()
             refreshPendingClassUpdateCount()
@@ -308,6 +320,11 @@ struct NodeMarkdownEditorView: View {
                 )
             )
             .nodeMarkdownAdaptiveSheetSize(width: 620, height: 700)
+        }
+        .sheet(isPresented: $showScaledPDFSheet) {
+            NodeMarkdownScaledPDFExportSheet(multiplier: $scaledPDFMultiplier) { multiplier in
+                exportScaledPDF(multiplier: multiplier)
+            }
         }
         .sheet(isPresented: $showDrawingBoardSheet) {
             #if os(macOS)
@@ -472,8 +489,8 @@ struct NodeMarkdownEditorView: View {
                 }
             }
         }
-        .sheet(isPresented: $showReflectionSheet) {
-            reflectionSheetContent
+        .sheet(item: $reflectionPresentation) { presentation in
+            reflectionSheetContent(openingURL: presentation.fileURL)
         }
         .sheet(isPresented: $showSyncFailureSheet) {
             NavigationStack {
@@ -677,12 +694,14 @@ struct NodeMarkdownEditorView: View {
 
     @ViewBuilder
     private var editorSurface: some View {
-        if isReadOnlyRendered {
-            readOnlyRenderSurface
-        } else if NodeMarkdownFeatureFlags.textKit2EditorEnabled {
-            textKit2EditorSurface
-        } else {
-            textKitEditorSurface
+        Group {
+            if isReadOnlyRendered {
+                readOnlyRenderSurface
+            } else if NodeMarkdownFeatureFlags.textKit2EditorEnabled {
+                textKit2EditorSurface
+            } else {
+                textKitEditorSurface
+            }
         }
     }
 
@@ -713,6 +732,7 @@ struct NodeMarkdownEditorView: View {
             externalTextSyncToken: externalTextSyncToken,
             quickInputSettings: settingsCenter.quickInputSettings,
             draftCommitController: legacyDraftCommitController,
+            inPlaceEditRequest: inPlaceEditRequest,
             onTextChange: { newText in
                 queueTextKitParse(with: newText)
             },
@@ -867,53 +887,39 @@ struct NodeMarkdownEditorView: View {
         }
     }
 
-    private var reflectionSheetContent: some View {
+    private func reflectionSheetContent(openingURL: URL) -> some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                reflectionToolbar
-                    .padding(12)
-                reflectionEditorContent
-            }
-            .navigationTitle("课反")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("关闭") { showReflectionSheet = false }
-                }
-            }
+            reflectionEditorContent(openingURL: openingURL)
+        }
+        .onAppear {
         }
         .singleListAdaptivePresentation(minWidth: 900, minHeight: 620)
     }
 
-    private var reflectionToolbar: some View {
-        HStack(spacing: 8) {
-            Button { stepReflection(delta: -1) } label: { Image(systemName: "chevron.left") }
-                .appGlassButtonStyle()
-                .disabled(reflectionFiles.isEmpty || reflectionShowStudentInfo)
-            Button { stepReflection(delta: 1) } label: { Image(systemName: "chevron.right") }
-                .appGlassButtonStyle()
-                .disabled(reflectionFiles.isEmpty || reflectionShowStudentInfo)
-            Button { reflectionShowStudentInfo.toggle() } label: {
-                Label(reflectionShowStudentInfo ? "课" : "主", systemImage: reflectionShowStudentInfo ? "doc.text" : "person.text.rectangle")
-            }
-                .appGlassButtonStyle()
-                .disabled(studentInfoReflectionURL == nil)
-            Spacer()
-            Button { reflectionExportImageToken += 1 } label: {
-                Label("导出", systemImage: "square.and.arrow.up.on.square")
-            }
-            .appGlassButtonStyle()
-            .disabled(currentReflectionFileURL == nil)
-        }
-    }
-
     @ViewBuilder
-    private var reflectionEditorContent: some View {
-        if let currentURL = currentReflectionFileURL {
+    private func reflectionEditorContent(openingURL: URL) -> some View {
+        if let currentURL = currentReflectionFileURL ?? Optional(openingURL) {
             SingleListDocumentEditorView(
                 fileURL: currentURL,
                 externalExportImageToken: reflectionExportImageToken,
-                showsReflectionSiblingNavigation: false
+                showsReflectionSiblingNavigation: true,
+                onCurrentFileChange: { url in
+                    if let index = reflectionFiles.firstIndex(where: {
+                        $0.standardizedFileURL == url.standardizedFileURL
+                    }) {
+                        reflectionIndex = index
+                    }
+                },
+                navigationTitleOverride: "课反",
+                onRequestToggleStudentInfo: { reflectionShowStudentInfo.toggle() },
+                studentInfoToggleTitle: reflectionShowStudentInfo ? "课反" : "学生信息",
+                studentInfoToggleDisabled: studentInfoReflectionURL == nil,
+                onClose: {
+                    reflectionPresentation = nil
+                }
             )
+                .onAppear {
+                }
                 .id(currentURL.path)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             #if os(macOS)
@@ -965,68 +971,65 @@ struct NodeMarkdownEditorView: View {
     }
 
     private func saveToDisk() {
-        // 已经在保存的任务由版本检查负责追赶最新修改，
-        // 不再并发启动第二个写入任务。
-        guard saveState != .saving else { return }
+        guard !isSaveTaskRunning else { return }
+        isSaveTaskRunning = true
         saveState = .saving
         Task {
+            defer { isSaveTaskRunning = false }
             await commitPendingDraftForSaveAsync()
-            // 提交草稿若真有新内容会通过markDocumentDirty推进revision并置dirty；
-            // 无新修改时revision与上次落盘一致，直接回到clean。
-            if documentRevision == persistedDocumentRevision {
-                saveState = .clean
-                return
-            }
-            guard canPersistCurrentDocument() else {
-                saveState = .dirty
-                return
-            }
-            saveState = .saving
-            let targetURL = fileURL
-            let documentSnapshot = document
-            let revisionSnapshot = documentRevision
-            var metaSnapshot = fileMeta
-            if metaSnapshot.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                metaSnapshot.title = targetURL.deletingPathExtension().lastPathComponent
-            }
-            if metaSnapshot.type.lowercased() == "nodesmarkdown" {
-                metaSnapshot.type = "nodemarkdown"
-            }
-            if metaSnapshot.type.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                metaSnapshot.type = "nodemarkdown"
-            }
+            while documentRevision != persistedDocumentRevision {
+                guard canPersistCurrentDocument() else {
+                    saveState = .dirty
+                    return
+                }
+                saveState = .saving
+                let targetURL = fileURL
+                let documentSnapshot = document
+                let revisionSnapshot = documentRevision
+                var metaSnapshot = fileMeta
+                if metaSnapshot.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    metaSnapshot.title = targetURL.deletingPathExtension().lastPathComponent
+                }
+                if metaSnapshot.type.lowercased() == "nodesmarkdown" {
+                    metaSnapshot.type = "nodemarkdown"
+                }
+                if metaSnapshot.type.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    metaSnapshot.type = "nodemarkdown"
+                }
 
-            let result = await NodeMarkdownFileManager.persistToDiskAndPrepare(
-                document: documentSnapshot,
-                meta: metaSnapshot,
-                to: targetURL
-            )
-            guard revisionSnapshot == documentRevision else {
-                // 旧任务排队时又产生了新编辑。旧快照不能覆盖新版本，
-                // 明确回到dirty，再由同一串行入口保存最新版本。
-                saveState = .dirty
-                scheduleRealtimeCourseUpdatePush()
-                return
-            }
-            switch result {
-            case .success(let persist):
-                persistedDocumentRevision = revisionSnapshot
-                document = persist.document
-                saveState = .clean
-                statusMessage = ""
-                fileMeta = metaSnapshot
-                if persist.restoredH3SourceLinkCount > 0 {
-                    textKitDraftRowMetadata = textKitRowMetadata
+                let result = await NodeMarkdownFileManager.persistToDiskAndPrepare(
+                    document: documentSnapshot,
+                    meta: metaSnapshot,
+                    to: targetURL
+                )
+                switch result {
+                case .success(let persist):
+                    persistedDocumentRevision = revisionSnapshot
+                    guard revisionSnapshot == documentRevision else {
+                        saveState = .dirty
+                        continue
+                    }
+                    document = persist.document
+                    saveState = .clean
+                    statusMessage = ""
+                    fileMeta = metaSnapshot
+                    if persist.restoredH3SourceLinkCount > 0 {
+                        textKitDraftRowMetadata = textKitRowMetadata
+                    }
+                    if !persist.touchedH3IDs.isEmpty {
+                        _ = packageChangeTracker.recordTouchedH3Packages(h3NodeIDs: persist.touchedH3IDs, document: persist.document)
+                    }
+                    postNotebookPersistedChangeIfNeeded()
+                    if isClassSessionEditor {
+                        syncDirtyPackagesAfterClassSave()
+                    }
+                case .failure(let error):
+                    saveState = .failed
+                    statusMessage = error.localizedDescription
+                    return
                 }
-                if !persist.touchedH3IDs.isEmpty {
-                    _ = packageChangeTracker.recordTouchedH3Packages(h3NodeIDs: persist.touchedH3IDs, document: persist.document)
-                }
-                postNotebookPersistedChangeIfNeeded()
-                if isClassSessionEditor { syncDirtyPackagesAfterClassSave() }
-            case .failure(let error):
-                saveState = .failed
-                statusMessage = error.localizedDescription
             }
+            saveState = .clean
         }
     }
 
@@ -1128,23 +1131,54 @@ struct NodeMarkdownEditorView: View {
                 // 因此这里再执行cleanDocument只会改变编辑器行布局并使视野跳动。
                 // 下课和关闭仍走cleanForFinalization=true，负责最终整篇整理。
                 try await persistCurrentDocumentToDiskForSync(cleanForFinalization: false)
-                let summary = try await TeachingCoursePackageSyncExecutor.syncDirtyPackages(
-                    student: student,
-                    placementTarget: nil,
-                    allowedNewPackageIDs: []
-                )
-                await MainActor.run {
-                    let syncedDirtyIDs = Set(
-                        summary.packageResults
-                            .filter {
-                                $0.success
-                                    && !$0.isNewPackage
-                                    && $0.reason != "mother-source update pending; active notebook preserved"
-                            }
-                            .map(\.sourceID)
-                            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                let summary = try await Task.detached(priority: .userInitiated) {
+                    try await TeachingCoursePackageSyncExecutor.syncDirtyPackages(
+                        student: student,
+                        placementTarget: nil,
+                        allowedNewPackageIDs: []
                     )
-                    packageChangeTracker.removeDirtyPackages(sourceIDs: syncedDirtyIDs, document: document)
+                }.value
+                let syncedDirtyIDs = Set(
+                    summary.packageResults
+                        .filter {
+                            $0.success
+                                && !$0.isNewPackage
+                                && $0.reason != "mother-source update pending; active notebook preserved"
+                        }
+                        .map(\.sourceID)
+                        .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                )
+                let revisionBeforeSync = documentRevision
+                let documentSnapshot = document
+                let baselineUpdates = await Task.detached(priority: .utility) {
+                    var updates: [String: String] = [:]
+                    let nodes = documentSnapshot.nodes
+                    for sourceID in syncedDirtyIDs {
+                        let trimmedSourceID = sourceID.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !trimmedSourceID.isEmpty else { continue }
+                        guard let node = nodes.first(where: {
+                            $0.level == 3
+                                && ($0.id.uuidString.caseInsensitiveCompare(trimmedSourceID) == .orderedSame
+                                    || $0.sourceID.caseInsensitiveCompare(trimmedSourceID) == .orderedSame)
+                        }) else { continue }
+                        guard let range = TeachingCoursePackageContentSignature.packageRange(
+                            in: nodes,
+                            rootID: node.id
+                        ) else { continue }
+                        updates[node.id.uuidString] = TeachingCoursePackageContentSignature.digest(
+                            Array(nodes[range.start..<range.end])
+                        )
+                    }
+                    return updates
+                }.value
+                await MainActor.run {
+                    if documentRevision == revisionBeforeSync {
+                        packageChangeTracker.applySuccessfulSyncBaselines(
+                            baselineUpdates,
+                            removeSourceIDs: syncedDirtyIDs,
+                            removeNodeIDs: Set(baselineUpdates.keys)
+                        )
+                    }
                     refreshLocalPackageListsAndLight()
                     refreshPendingClassUpdateCount()
                     if dirtyPackageItems.isEmpty {
@@ -1235,7 +1269,9 @@ struct NodeMarkdownEditorView: View {
         legacyDraftCommitController.commitPendingEditing()
         pendingTextKitParseTask?.cancel()
         let serialized = NodeMarkdownPlainTextCodec.serialize(document: document)
-        guard textKitDraft != serialized else { return }
+        guard textKitDraft != serialized else {
+            return
+        }
         let previousDocument = document
         let draft = textKitDraft
         let rowMetadata = textKitDraftRowMetadata
@@ -1615,7 +1651,7 @@ struct NodeMarkdownEditorView: View {
             return
         }
         commitPendingDraftBeforeSyncIfNeeded()
-        guard saveState == .dirty else { return }
+        guard documentRevision != persistedDocumentRevision else { return }
         saveToDisk()
     }
 
@@ -1745,6 +1781,14 @@ struct NodeMarkdownEditorView: View {
         let currentPath = fileURL.standardizedFileURL.path
         guard session.notebookPath == currentPath else { return nil }
         return session
+    }
+
+    private var nodeWindowTitle: String {
+        if let session = activeClassSession {
+            return "🧑‍🏫·上课中·\(session.studentName)"
+        }
+        let name = fileURL.deletingPathExtension().lastPathComponent
+        return isLessonPlanEditor ? "📚·教案·\(name)" : "🧩·NodeMarkdown·\(name)"
     }
 
     private func closeReadOnlyClassSessionIfNeeded() {
@@ -1912,13 +1956,21 @@ struct NodeMarkdownEditorView: View {
     }
 
     private func applyCoursePickedRows(_ rows: [ChecklistTemplateRow], completionChecklistPath: String?) {
+        let diagnosticID = String(UUID().uuidString.prefix(8))
+        TeachingCourseDiagnostic116.record(
+            "op=\(diagnosticID) 编辑器收到清单 "
+                + TeachingCourseDiagnostic116.rowSummary(rows)
+                + " checklist=\(completionChecklistPath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "nil")"
+        )
         guard !rows.isEmpty else {
             pendingCourseInsertAnchor = nil
             statusMessage = "未选择可插入的H3包。"
+            TeachingCourseDiagnostic116.record("op=\(diagnosticID) 编辑器终止 reason=rows为空")
             return
         }
         guard let student = resolveStudentForNotebook() else {
             statusMessage = "无法识别当前学生，插入失败。"
+            TeachingCourseDiagnostic116.record("op=\(diagnosticID) 编辑器终止 reason=无法识别学生")
             return
         }
         commitPendingDraftBeforeSyncIfNeeded()
@@ -1930,15 +1982,28 @@ struct NodeMarkdownEditorView: View {
         pendingCourseInsertAnchor = nil
         beginExclusiveNotebookOperation()
         statusMessage = "正在插入教案内容..."
+        TeachingCourseDiagnostic116.record(
+            "op=\(diagnosticID) 准备异步插入 student=\(student.name) anchor=\(String(describing: insertionAnchor)) memoryNodes=\(document.nodes.count) revision=\(documentRevision)/\(persistedDocumentRevision)"
+        )
         Task(priority: .userInitiated) {
+            let operationStart = TeachingCourseDiagnostic116.now()
             do {
+                let persistStart = TeachingCourseDiagnostic116.now()
                 try await persistCurrentDocumentToDiskForSync()
+                TeachingCourseDiagnostic116.record(
+                    "op=\(diagnosticID) 插入前保存完成 duration=\(String(format: "%.2f", TeachingCourseDiagnostic116.elapsedMilliseconds(since: persistStart)))ms"
+                )
+                let workflowStart = TeachingCourseDiagnostic116.now()
                 let summary = try await TeachingCourseWorkflowService.insertLessonPackagesIntoNotebook(
                     student: student,
                     pickedRows: rows,
                     completionChecklistFileURL: completionChecklistPath.flatMap { URL(fileURLWithPath: $0) },
                     insertionAnchorOverride: insertionAnchor,
-                    usesStoredActiveRow: false
+                    usesStoredActiveRow: false,
+                    diagnosticID: diagnosticID
+                )
+                TeachingCourseDiagnostic116.record(
+                    "op=\(diagnosticID) workflow返回 duration=\(String(format: "%.2f", TeachingCourseDiagnostic116.elapsedMilliseconds(since: workflowStart)))ms insertedPackages=\(summary.insertedPackageCount) skipped=\(summary.skippedPackageCount) insertedNodes=\(summary.insertedNodes.count) firstRow=\(summary.firstInsertedRowIndex.map(String.init) ?? "nil")"
                 )
                 await MainActor.run {
                     let undoHint = summary.canUndo ? "（可撤销）" : ""
@@ -1946,19 +2011,103 @@ struct NodeMarkdownEditorView: View {
                     NodeMarkdownDiagnostic33.record(
                         "随堂插入 anchor=\(String(describing: insertionAnchor)) inserted=\(summary.insertedPackageCount) skipped=\(summary.skippedPackageCount) firstRow=\(summary.firstInsertedRowIndex.map(String.init) ?? "nil") preserveNode=\(insertionActiveNodeID?.uuidString ?? "nil")"
                     )
-                    refreshNotebookFromDiskAfterExternalWrite(
+                    applyNotebookInsertInPlace(
+                        summary: summary,
                         preserveActiveNodeID: insertionActiveNodeID,
-                        failureMessagePrefix: "插入完成，但刷新失败"
+                        diagnosticID: diagnosticID
                     )
                     endExclusiveNotebookOperation()
+                    TeachingCourseDiagnostic116.record(
+                        "op=\(diagnosticID) UI回放完成 totalDuration=\(String(format: "%.2f", TeachingCourseDiagnostic116.elapsedMilliseconds(since: operationStart)))ms memoryNodes=\(document.nodes.count)"
+                    )
                 }
             } catch {
+                TeachingCourseDiagnostic116.record(
+                    "op=\(diagnosticID) 插入异常 type=\(String(reflecting: type(of: error))) message=\(error.localizedDescription) totalDuration=\(String(format: "%.2f", TeachingCourseDiagnostic116.elapsedMilliseconds(since: operationStart)))ms"
+                )
                 await MainActor.run {
                     endExclusiveNotebookOperation()
                     statusMessage = "插入失败：\(error.localizedDescription)"
                 }
             }
         }
+    }
+
+    /// 随堂插入H3包的就地应用：磁盘已由服务写入，父页面直接在本内存 document 上
+    /// 重放同一插入，并让 ProseMirror 就地同步，不再整篇重载。
+    private func applyNotebookInsertInPlace(
+        summary: TeachingCourseInsertSummary,
+        preserveActiveNodeID: UUID?,
+        diagnosticID: String
+    ) {
+        let applyStart = TeachingCourseDiagnostic116.now()
+        let previousDocument = document
+        var newDocument = document
+        TeachingCourseDiagnostic116.record(
+            "op=\(diagnosticID) UI回放开始 previousNodes=\(previousDocument.nodes.count) insertedNodes=\(summary.insertedNodes.count) firstRow=\(summary.firstInsertedRowIndex.map(String.init) ?? "nil")"
+        )
+        if !summary.insertedNodes.isEmpty {
+            let insertAt = min(
+                summary.firstInsertedRowIndex ?? newDocument.nodes.count,
+                newDocument.nodes.count
+            )
+            newDocument.nodes.insert(contentsOf: summary.insertedNodes, at: insertAt)
+        }
+        _ = newDocument.ensureTrailingBlankLine(defaultLevel: 1)
+
+        document = newDocument
+        synchronizeDocumentIndex(
+            previousDocument: previousDocument,
+            currentDocument: newDocument,
+            activeRowIndex: nil,
+            force: true
+        )
+        rowsSnapshot = NodeMarkdownHTMLBuilder.buildRows(
+            document: newDocument,
+            style: settingsCenter.documentStyle
+        )
+        documentRevision = 0
+        persistedDocumentRevision = 0
+        saveState = .clean
+        activeEditorRowIndex = preserveActiveNodeID.flatMap { documentIndex.row(for: $0) }
+        if activeEditorRowIndex == nil {
+            textKit2FocusLocation = nil
+        }
+        TeachingCourseDiagnostic116.record(
+            "op=\(diagnosticID) UI回放内存更新结束 duration=\(String(format: "%.2f", TeachingCourseDiagnostic116.elapsedMilliseconds(since: applyStart)))ms newNodes=\(newDocument.nodes.count) inPlaceRequest准备"
+        )
+        textKitDraft = NodeMarkdownPlainTextCodec.serialize(document: newDocument)
+        textKitDraftRowMetadata = makeTextKitRowMetadata(for: newDocument)
+        inPlaceEditRequest = NodeMarkdownInPlaceEditRequest(
+            command: .synchronize(
+                nodes: newDocument.nodes.map {
+                    NodeMarkdownTextKit2Node(
+                        id: $0.id,
+                        level: $0.level,
+                        content: NodeMarkdownLegacyAttachmentSourceRepair.repair($0.text),
+                        sourceID: $0.sourceID,
+                        sourceFile: $0.sourceFile
+                    )
+                }
+            ),
+            diagnosticID: diagnosticID
+        )
+        TeachingCourseDiagnostic116.record(
+            "op=\(diagnosticID) inPlaceRequest已发布 totalDuration=\(String(format: "%.2f", TeachingCourseDiagnostic116.elapsedMilliseconds(since: applyStart)))ms draftUTF16=\((textKitDraft as NSString).length) metadata=\(textKitDraftRowMetadata.count)"
+        )
+        rebuildSearchResults()
+        _ = packageChangeTracker.reconcileAfterExternalReload(
+            previousDocument: previousDocument,
+            currentDocument: document
+        )
+        if isClassSessionEditor {
+            packageChangeTracker.beginTrackingRow(
+                rowIndex: activeEditorRowIndex,
+                document: document,
+                structuralIndex: documentIndex
+            )
+        }
+        refreshLocalPackageListsAndLight()
     }
 
     private func refreshNotebookFromDiskAfterExternalWrite(
@@ -2241,6 +2390,7 @@ struct NodeMarkdownEditorView: View {
 
     private func openReflectionInNode() {
         do {
+            reflectionShowStudentInfo = false
             let studentFolder = fileURL.deletingLastPathComponent()
             reflectionFiles = try FileManager.default.contentsOfDirectory(
                 at: studentFolder,
@@ -2252,9 +2402,15 @@ struct NodeMarkdownEditorView: View {
                     && $0.lastPathComponent.hasPrefix("上课信息_")
             }
             .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
-            reflectionIndex = max(0, reflectionFiles.count - 1)
-            reflectionShowStudentInfo = false
-            showReflectionSheet = true
+            let todaySuffix = "_\(Self.reflectionDateToken()).CSV"
+            reflectionIndex = reflectionFiles.firstIndex {
+                $0.lastPathComponent.hasSuffix(todaySuffix)
+            } ?? max(0, reflectionFiles.count - 1)
+            guard reflectionFiles.indices.contains(reflectionIndex) else {
+                statusMessage = "未找到当天课反文件。"
+                return
+            }
+            reflectionPresentation = ReflectionPresentation(fileURL: reflectionFiles[reflectionIndex])
         } catch {
             statusMessage = "读取上课信息失败：\(error.localizedDescription)"
         }
@@ -2278,18 +2434,21 @@ struct NodeMarkdownEditorView: View {
         })
     }
 
+    private static func reflectionDateToken(for date: Date = Date()) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = .current
+        formatter.dateFormat = "yyMMdd"
+        return formatter.string(from: date)
+    }
+
     private var currentReflectionFileURL: URL? {
         if reflectionShowStudentInfo {
             return studentInfoReflectionURL
         }
-        guard reflectionFiles.indices.contains(reflectionIndex) else { return studentInfoReflectionURL }
+        guard reflectionFiles.indices.contains(reflectionIndex) else { return nil }
         return reflectionFiles[reflectionIndex]
-    }
-
-    private func stepReflection(delta: Int) {
-        guard !reflectionFiles.isEmpty else { return }
-        let count = reflectionFiles.count
-        reflectionIndex = (reflectionIndex + delta + count) % count
     }
 
     private var searchButton: some View {
@@ -2401,6 +2560,8 @@ struct NodeMarkdownEditorView: View {
             Button("导出PDF黑白分文件") { beginExport(format: .monochromeSplitPDF) }
             Button("导出为HTML") { beginExport(format: .html) }
             Button("导出为MD") { beginExport(format: .markdown) }
+            Button("导出为Word") { beginExport(format: .word) }
+            Button("导出PDF（可调字体大小）") { showScaledPDFSheet = true }
         } label: {
             Image(systemName: "square.and.arrow.up")
         }
@@ -2947,17 +3108,31 @@ struct NodeMarkdownEditorView: View {
 
         let previousDocument = document
         let movingNodes = Array(document.nodes[sourceRange])
+        let targetLevel = document.nodes[targetRow].level
         document.nodes.removeSubrange(sourceRange)
 
         let reducedIndex = NodeMarkdownDocumentIndex(nodes: document.nodes)
-        guard let reducedTargetRow = reducedIndex.row(for: targetID),
-              let reducedTargetRange = reducedIndex.subtreeRange(startingAt: reducedTargetRow) else {
+        guard let reducedTargetRow = reducedIndex.row(for: targetID) else {
             document = previousDocument
             documentIndex.rebuild(from: document.nodes)
             statusMessage = "移动失败：找不到目标节点。"
             return false
         }
-        document.nodes.insert(contentsOf: movingNodes, at: reducedTargetRange.upperBound)
+        let insertIndex: Int
+        if targetLevel < 3 {
+            // H1/H2 是章节标题而非叶子包：放到标题紧后面，作为其直接子内容，
+            // 而不是插到整个章节的末尾。
+            insertIndex = reducedTargetRow + 1
+        } else {
+            guard let reducedTargetRange = reducedIndex.subtreeRange(startingAt: reducedTargetRow) else {
+                document = previousDocument
+                documentIndex.rebuild(from: document.nodes)
+                statusMessage = "移动失败：找不到目标节点。"
+                return false
+            }
+            insertIndex = reducedTargetRange.upperBound
+        }
+        document.nodes.insert(contentsOf: movingNodes, at: insertIndex)
         guard document != previousDocument else { return false }
 
         documentIndex.rebuild(from: document.nodes)
@@ -3043,24 +3218,32 @@ struct NodeMarkdownEditorView: View {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         #endif
 
-        guard let sourceURL = resolveSourceFileURL(node.sourceFile) else {
-            statusMessage = "母本删除失败：源文件路径无效"
-            return
+        Task {
+            do {
+                let summary = try await TeachingCourseWorkflowService.deleteH3PackageEverywhere(
+                    sourceFile: sourceFile,
+                    sourceID: sourceID,
+                    excludingNotebookURL: fileURL
+                )
+                removeLocalH3PackageAfterMasterDeletion(rowIndex: rowIndex, summary: summary)
+            } catch {
+                statusMessage = "母本删除失败：\(error.localizedDescription)"
+            }
         }
-        let sourceBackup = (try? Data(contentsOf: sourceURL))
-        let sourceDeleted = deleteH3PackageInSourceFile(sourceID: sourceID, sourceURL: sourceURL)
-        if !sourceDeleted {
-            statusMessage = "母本删除失败：未找到对应源文件或节点"
-            return
-        }
+    }
 
+    private func removeLocalH3PackageAfterMasterDeletion(
+        rowIndex: Int,
+        summary: TeachingH3PackageDeletionSummary
+    ) {
+        guard document.nodes.indices.contains(rowIndex) else {
+            statusMessage = "母本已删除，但当前文档索引已变化"
+            return
+        }
         let previousDocument = document
         let localRemoved = document.removeH3Package(startingAt: rowIndex)
         guard localRemoved > 0 else {
-            if let sourceBackup {
-                try? sourceBackup.write(to: sourceURL, options: .atomic)
-            }
-            statusMessage = "本地删除失败，母本已回滚"
+            statusMessage = "母本已删除，但当前文档删除失败"
             return
         }
         documentIndex.rebuild(from: document.nodes)
@@ -3071,7 +3254,7 @@ struct NodeMarkdownEditorView: View {
         scheduleSnapshotRebuild()
         rebuildSearchResults()
         refreshLocalPackageListsAndLight()
-        statusMessage = "已删除母本与当前文档H3包"
+        statusMessage = "已删除母本、\(summary.updatedNotebookCount)份随堂笔记及当前文档的对应H3包"
     }
 
     private func clearEditorFocusAfterPackageDeletion() {
@@ -3228,6 +3411,7 @@ struct NodeMarkdownEditorView: View {
             drawingBoardTargetRowIndex = nil
             try? FileManager.default.removeItem(at: drawingURL)
         }
+        commitPendingDraftBeforeSyncIfNeeded()
         guard let rowIndex = drawingBoardTargetRowIndex, document.nodes.indices.contains(rowIndex) else {
             statusMessage = "未定位到画图插入行"
             return
@@ -3253,15 +3437,12 @@ struct NodeMarkdownEditorView: View {
             imageInsert.htmlSnippet,
             to: document.nodes[rowIndex].text
         )
-        document.updateText(
-            at: rowIndex,
-            to: updatedText,
-            structuralIndex: documentIndex
+        // 画图与图片粘贴一样是本行编辑：交给 ProseMirror 就地替换该 Node，
+        // 由它发布快照回写父页面 document，避免整篇重载把视野甩回文首。
+        let nodeID = document.nodes[rowIndex].id
+        inPlaceEditRequest = NodeMarkdownInPlaceEditRequest(
+            command: .replaceNodeText(nodeID: nodeID, content: updatedText)
         )
-        refreshTextKitDraftFromDocument(forceExternalSync: true)
-        markDocumentDirty()
-        scheduleSnapshotRebuild()
-        rebuildSearchResults()
         statusMessage = "已插入画图"
         #else
         statusMessage = "iOS 暂不支持画图板"
@@ -3449,6 +3630,11 @@ struct NodeMarkdownEditorView: View {
                 document: document,
                 style: settingsCenter.documentStyle
             )
+        case .word:
+            return try WordExportRenderer.renderNodeMarkdown(
+                document: document,
+                style: settingsCenter.documentStyle
+            )
         case .pdf, .h1PDF, .monochromePDF, .monochromeH1PDF:
             #if os(macOS)
             return try awaitPDFData(
@@ -3466,6 +3652,35 @@ struct NodeMarkdownEditorView: View {
                 code: -1,
                 userInfo: [NSLocalizedDescriptionKey: "分文件PDF必须通过批量导出入口生成。"]
             )
+        }
+    }
+
+    @MainActor
+    private func exportScaledPDF(multiplier: Double) {
+        do {
+            let scale = min(2.0, max(0.1, NodeMarkdownScaledPDFExporter.defaultScale * multiplier))
+            let descriptor = TeachingDocumentExportDescriptor(
+                displayName: "PDF（可调字体大小）",
+                fileExtension: "pdf",
+                contentType: .pdf
+            )
+            try TeachingDocumentExportService.saveToFile(
+                sourceFileURL: fileURL,
+                descriptor: descriptor
+            ) {
+                #if os(macOS)
+                return try NodeMarkdownScaledPDFExporter.renderData(
+                    sourceFileURL: fileURL,
+                    document: document,
+                    style: settingsCenter.documentStyle,
+                    scale: scale
+                )
+                #else
+                throw CocoaError(.featureUnsupported)
+                #endif
+            }
+        } catch {
+            statusMessage = error.localizedDescription
         }
     }
 
@@ -3965,12 +4180,14 @@ private enum NodeMarkdownExportFormat: String {
     case monochromeSplitPDF = "PDF黑白分文件"
     case html = "HTML"
     case markdown = "MD"
+    case word = "Word"
 
     var fileExtension: String {
         switch self {
         case .pdf, .h1PDF, .splitPDF, .monochromePDF, .monochromeH1PDF, .monochromeSplitPDF: return "pdf"
         case .html: return "html"
         case .markdown: return "md"
+        case .word: return "doc"
         }
     }
 
@@ -3979,6 +4196,7 @@ private enum NodeMarkdownExportFormat: String {
         case .pdf, .h1PDF, .splitPDF, .monochromePDF, .monochromeH1PDF, .monochromeSplitPDF: return .pdf
         case .html: return .html
         case .markdown: return .plainText
+        case .word: return UTType(filenameExtension: "doc") ?? .data
         }
     }
 
@@ -4005,6 +4223,7 @@ private enum NodeMarkdownExportFormat: String {
         case .monochromeH1PDF: return "_分H1"
         case .monochromeSplitPDF: return "_分文件"
         case .html, .markdown: return ""
+        case .word: return ""
         }
     }
 
@@ -4015,6 +4234,33 @@ private enum NodeMarkdownExportFormat: String {
         default:
             return ""
         }
+    }
+}
+
+private struct NodeMarkdownScaledPDFExportSheet: View {
+    @Binding var multiplier: Double
+    let onExport: (Double) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("PDF 字体/图片缩放")
+                .font(.headline)
+            Slider(value: $multiplier, in: 0.25...5.0, step: 0.05)
+            Text("\(Int((multiplier * 100).rounded()))%")
+                .font(.system(.title2, design: .monospaced))
+                .monospacedDigit()
+            HStack(spacing: 12) {
+                Button("取消", role: .cancel) { dismiss() }
+                Button("导出") {
+                    onExport(multiplier)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(width: 360)
     }
 }
 
@@ -4362,7 +4608,7 @@ private func nodeMarkdownSearchHighlightedSnippet(
     return attributed
 }
 
-private enum NodeMarkdownWebAssets {
+nonisolated private enum NodeMarkdownWebAssets {
     static var baseURL: URL? {
         Bundle.main.resourceURL
     }
@@ -4392,8 +4638,8 @@ private enum NodeMarkdownWebAssets {
 }
 
 // MARK: - NodeMarkdown HTML构建器 - v1 - 构建轻量静态HTML避免全量复杂脚本
-enum NodeMarkdownHTMLBuilder {
-    static func buildRows(
+nonisolated enum NodeMarkdownHTMLBuilder {
+    nonisolated static func buildRows(
         document: NodeMarkdownDocument,
         style: NodeMarkdownDocumentStyle,
         exportScheme: NodeMarkdownPreferredScheme? = nil
@@ -5013,8 +5259,7 @@ enum NodeMarkdownHTMLBuilder {
         let level = max(1, min(12, node.level))
         let cachedStyle = styleCache.style(for: level)
         let leftIndent = Int(
-            (CGFloat(max(0, level - 1)) * NodeMarkdownRenderContract.default.layout.levelIndentStep)
-                .rounded()
+            NodeMarkdownRenderContract.default.layout.indentOffset(for: level).rounded()
         )
         let iconSymbol = htmlEscape(styleCache.iconSymbolGlyph(for: level))
         let escapedText = htmlEscape(node.text)
@@ -5101,7 +5346,7 @@ enum NodeMarkdownHTMLBuilder {
 }
 
 // MARK: - NodeMarkdown渲染样式缓存 - v1 - 预计算12层字体颜色权重避免重复转换
-private struct NodeMarkdownRenderStyleCache {
+nonisolated private struct NodeMarkdownRenderStyleCache {
     struct CachedStyle {
         var colorHex: String
         var fontFamily: String

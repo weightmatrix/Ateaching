@@ -441,6 +441,22 @@ final class TeachingCoursePackageChangeTracker {
         removeDirtyPackages(sourceIDs: idsToRemove)
     }
 
+    func applySuccessfulSyncBaselines(
+        _ baselineUpdates: [String: String],
+        removeSourceIDs: Set<String>,
+        removeNodeIDs: Set<String>
+    ) {
+        for (nodeID, digest) in baselineUpdates {
+            baselineDigestByH3ID[nodeID] = digest
+        }
+        var idsToRemove = removeSourceIDs
+        idsToRemove.formUnion(removeNodeIDs)
+        dirtyPackageIDs.subtract(idsToRemove)
+        for nodeID in removeNodeIDs {
+            removeNewPackage(h3NodeID: nodeID)
+        }
+    }
+
     func acceptSuccessfulSyncResults(
         _ results: [TeachingCourseSyncPackageResult],
         document: NodeMarkdownDocument

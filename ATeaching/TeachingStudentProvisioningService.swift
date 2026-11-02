@@ -1,7 +1,7 @@
 import Foundation
 
 // MARK: - 学生建档服务 - v1 - 创建学生目录并生成随堂笔记学生信息上课信息骨架文件
-enum TeachingStudentProvisioningService {
+nonisolated enum TeachingStudentProvisioningService {
     struct EffectiveSettings {
         var studentInfoTemplateID: String?
         var studentNameKeyID: String?

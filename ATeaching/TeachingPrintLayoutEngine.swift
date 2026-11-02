@@ -8,7 +8,7 @@ import AppKit
 import UIKit
 #endif
 
-struct TeachingPrintLayoutParagraph {
+nonisolated struct TeachingPrintLayoutParagraph {
     enum Kind: Sendable, Hashable {
         case body
         case heading1
@@ -25,7 +25,7 @@ struct TeachingPrintLayoutParagraph {
     var stripeEnabled: Bool
 }
 
-struct TeachingPrintLayoutLine: Sendable, Hashable {
+nonisolated struct TeachingPrintLayoutLine: Sendable, Hashable {
     var paragraphIndex: Int
     var textRange: NSRange
     var text: String
@@ -35,18 +35,18 @@ struct TeachingPrintLayoutLine: Sendable, Hashable {
     var stripeStyle: TeachingPrintBackgroundStripeStyle?
 }
 
-struct TeachingPrintLayoutPage: Sendable, Hashable {
+nonisolated struct TeachingPrintLayoutPage: Sendable, Hashable {
     var index: Int
     var contentRect: CGRect
     var lines: [TeachingPrintLayoutLine]
 }
 
-struct TeachingPrintLayoutResult: Sendable, Hashable {
+nonisolated struct TeachingPrintLayoutResult: Sendable, Hashable {
     var pageSpec: TeachingPrintPageSpec
     var pages: [TeachingPrintLayoutPage]
 }
 
-enum TeachingPrintLayoutEngine {
+nonisolated enum TeachingPrintLayoutEngine {
     static func layout(
         paragraphs: [TeachingPrintLayoutParagraph],
         styleSheet: TeachingPrintStyleSheet = .default

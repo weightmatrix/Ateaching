@@ -2,7 +2,7 @@ import Foundation
 import SwiftUI
 
 // MARK: - 档案条目模型 - v1 - 描述档案列表中的文件与文件夹
-struct ArchiveEntry: Identifiable, Hashable {
+nonisolated struct ArchiveEntry: Identifiable, Hashable {
     let url: URL
     let isDirectory: Bool
     let metaType: String?
@@ -87,7 +87,7 @@ struct ArchiveEntry: Identifiable, Hashable {
         return .generic
     }
 
-    private enum FileVisualKind {
+    nonisolated private enum FileVisualKind {
         case template
         case table
         case checklist
@@ -115,7 +115,7 @@ struct ArchiveEntry: Identifiable, Hashable {
 }
 
 // MARK: - 模板分类枚举 - v1 - 定义单列模板和清单模板目录与类型标记
-enum TemplateCategory: String, CaseIterable, Identifiable, Hashable {
+nonisolated enum TemplateCategory: String, CaseIterable, Identifiable, Hashable {
     case singleList
     case checklist
 
@@ -150,7 +150,7 @@ enum TemplateCategory: String, CaseIterable, Identifiable, Hashable {
 }
 
 // MARK: - 单列文字样式 - v2 - 行名和内容各自拥有完整字体设置
-struct SingleListTextStyle: Codable, Hashable {
+nonisolated struct SingleListTextStyle: Codable, Hashable {
     var fontName: String
     var fontSize: Double
     var colorHex: String
@@ -169,7 +169,7 @@ struct SingleListTextStyle: Codable, Hashable {
 }
 
 // MARK: - 单列行配置模型 - v2 - 兼容旧版单套字体JSON
-struct SingleListRowConfig: Codable, Hashable {
+nonisolated struct SingleListRowConfig: Codable, Hashable {
     var keyNameStyle: SingleListTextStyle
     var contentStyle: SingleListTextStyle
 
@@ -267,7 +267,7 @@ struct TemplateMeta: Hashable {
 }
 
 // MARK: - 档案存储服务 - v6 - 统一管理档案目录与模板CSV文件读写
-enum ArchiveStorage {
+nonisolated enum ArchiveStorage {
     nonisolated static let iCloudContainerIdentifier = "iCloud.Han.ATeaching"
     nonisolated static let archiveFolderName = "档案"
     nonisolated static let settingsFolderName = "设置"
@@ -375,7 +375,7 @@ enum ArchiveStorage {
         return documentsRootURL
     }
 
-    static func ensureArchiveRoot(fileManager: FileManager = .default) throws -> URL {
+    nonisolated static func ensureArchiveRoot(fileManager: FileManager = .default) throws -> URL {
         let documentsRootURL = try ensureWorkspace(fileManager: fileManager)
         return documentsRootURL.appendingPathComponent(archiveFolderName, isDirectory: true)
     }
@@ -429,12 +429,10 @@ enum ArchiveStorage {
         fileManager: FileManager = .default
     ) throws {
         let validatedName = try validateName(fileName)
-        let finalName: String
-        if validatedName.contains(".") {
-            finalName = validatedName
-        } else {
-            finalName = "\(validatedName).\(type.defaultExtension)"
-        }
+        let expectedSuffix = ".\(type.defaultExtension)"
+        let finalName = validatedName.lowercased().hasSuffix(expectedSuffix)
+            ? validatedName
+            : "\(validatedName)\(expectedSuffix)"
 
         let fileURL = directoryURL.appendingPathComponent(finalName, isDirectory: false)
         if fileManager.fileExists(atPath: fileURL.path) {

@@ -8,7 +8,7 @@ import AppKit
 import UIKit
 #endif
 
-enum TeachingPrintRenderEngine {
+nonisolated enum TeachingPrintRenderEngine {
     static func renderPDFData(
         paragraphs: [TeachingPrintLayoutParagraph],
         layout: TeachingPrintLayoutResult,

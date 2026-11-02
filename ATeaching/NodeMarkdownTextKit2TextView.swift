@@ -47,6 +47,7 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
     var onInputMethodCommit: ((InputMethodCommit) -> Void)?
     var onInputMethodTransactionFailure: ((String) -> Void)?
     var onTransientLayoutChange: (() -> Void)?
+    var diagnostic117OperationID: String?
     var quickInputSettings = MarkdownQuickInputSettings()
     var isApplyingQuickInputReplacement = false
     var isEnforcingInputMethodAttributes = false
@@ -128,7 +129,6 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
 
     override func draw(_ dirtyRect: NSRect) {
         _ = drawNodeMarkdownBackgroundBars(in: dirtyRect)
-        _ = drawNodeMarkdownInlineHighlights(in: dirtyRect)
         super.draw(dirtyRect)
         _ = drawNodeMarkdownMarkers(in: dirtyRect)
     }
@@ -427,8 +427,63 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
     }
 
     override func deleteBackward(_ sender: Any?) {
-        if onHandleDeleteBackward?() == true { return }
+        let operationID = beginDiagnostic117BackspaceIfNeeded()
+        let handled = onHandleDeleteBackward?() == true
+        if let operationID {
+            NodeMarkdownDiagnostic117.record(
+                operationID: operationID,
+                "Backspace命令回调 handled=\(handled) immediateSelection=\(NSStringFromRange(selectedRange())) immediateSource=\(NodeMarkdownDiagnostic117.textSummary(documentString()))"
+            )
+        }
+        if handled {
+            recordDiagnostic117Deferred(operationID: operationID)
+            return
+        }
         super.deleteBackward(sender)
+        if let operationID {
+            NodeMarkdownDiagnostic117.record(
+                operationID: operationID,
+                "系统Backspace返回 selection=\(NSStringFromRange(selectedRange())) source=\(NodeMarkdownDiagnostic117.textSummary(documentString()))"
+            )
+        }
+        recordDiagnostic117Deferred(operationID: operationID)
+    }
+
+    func beginDiagnostic117BackspaceIfNeeded() -> String? {
+        guard NodeMarkdownDiagnostic117.isEnabled else { return nil }
+        let selection = selectedRange()
+        guard selection.length > 0 else { return nil }
+        if let diagnostic117OperationID { return diagnostic117OperationID }
+        let source = documentString() as NSString
+        let selectedText = selection.exact(toLength: source.length).map { source.substring(with: $0) } ?? "<range越界>"
+        let operationID = NodeMarkdownDiagnostic117.newOperationID()
+        diagnostic117OperationID = operationID
+        NodeMarkdownDiagnostic117.record(
+            operationID: operationID,
+            "TextView收到Backspace selection=\(NSStringFromRange(selection)) ranges=[\(NodeMarkdownDiagnostic117.rangesSummary(selectedRanges))] sourceUTF16=\(source.length) selected=\(NodeMarkdownDiagnostic117.textSummary(selectedText))"
+        )
+        return operationID
+    }
+
+    func recordDiagnostic117Deferred(operationID: String?) {
+        guard let operationID else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            NodeMarkdownDiagnostic117.record(
+                operationID: operationID,
+                "下一轮状态 selection=\(NSStringFromRange(self.selectedRange())) source=\(NodeMarkdownDiagnostic117.textSummary(self.documentString()))"
+            )
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+            guard let self else { return }
+            NodeMarkdownDiagnostic117.record(
+                operationID: operationID,
+                "120ms状态 selection=\(NSStringFromRange(self.selectedRange())) source=\(NodeMarkdownDiagnostic117.textSummary(self.documentString()))"
+            )
+            if self.diagnostic117OperationID == operationID {
+                self.diagnostic117OperationID = nil
+            }
+        }
     }
 
     override func deleteForward(_ sender: Any?) {

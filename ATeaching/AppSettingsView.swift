@@ -19,12 +19,15 @@ struct AppSettingsView: View {
                     Label("PDF设置", systemImage: "doc.richtext")
                 }
                 NavigationLink {
-                    AppBackgroundSettingsView()
+                    AppDisplaySettingsView()
                 } label: {
-                    Label("背景设置", systemImage: "paintpalette")
+                    Label("显示设置", systemImage: "circle.lefthalf.filled")
+                }
+                NavigationLink { ProjectUsageSettingsView() } label: {
+                    Label("项目设置", systemImage: "square.grid.2x2")
                 }
             } header: {
-                Text("设置")
+                Text("使用设置")
                     .font(.title2.bold())
                     .foregroundStyle(.primary)
                     .textCase(nil)
@@ -80,7 +83,7 @@ struct AppSettingsView: View {
     }
 
     private var primarySettingsSection: some View {
-        macSettingsSection(title: "设置") {
+        macSettingsSection(title: "使用设置") {
             macSettingsLink(
                 title: "PDF设置",
                 subtitle: "纸张、边距和NodeMarkdown缩放",
@@ -90,11 +93,15 @@ struct AppSettingsView: View {
             }
             Divider()
             macSettingsLink(
-                title: "背景设置",
-                subtitle: "管理主界面与表格使用的背景",
-                systemImage: "paintpalette"
+                title: "显示设置",
+                subtitle: "选择设计风格并管理全局背景",
+                systemImage: "circle.lefthalf.filled"
             ) {
-                AppBackgroundSettingsView()
+                AppDisplaySettingsView()
+            }
+            Divider()
+            macSettingsLink(title: "项目设置", subtitle: "常用栏与项目数量", systemImage: "square.grid.2x2") {
+                ProjectUsageSettingsView()
             }
         }
     }

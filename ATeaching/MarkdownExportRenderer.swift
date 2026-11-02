@@ -30,13 +30,37 @@ enum MarkdownExportRenderer {
             #else
             throw CocoaError(.featureUnsupported)
             #endif
+        case .word:
+            return try WordExportRenderer.renderMarkdown(source: source, style: style)
         }
+    }
+
+    @MainActor
+    static func renderScaledPDFData(
+        source: String,
+        style: MarkdownDocumentStyle,
+        preferredScheme: ColorScheme?,
+        baseURL: URL?,
+        scale: Double
+    ) throws -> Data {
+        #if os(macOS)
+        return try renderPDFData(
+            source: source,
+            style: style,
+            preferredScheme: preferredScheme,
+            baseURL: baseURL,
+            scale: scale
+        )
+        #else
+        throw CocoaError(.featureUnsupported)
+        #endif
     }
 
     static func renderedHTML(
         source: String,
         style: MarkdownDocumentStyle,
-        preferredScheme: ColorScheme?
+        preferredScheme: ColorScheme?,
+        scale: Double = 0.6
     ) -> String {
         let blocks = markdownWebRenderBlocks(source: source, previousBlocks: [])
         let patchScript = markdownWebBuildPatchScript(previousBlocks: [], nextBlocks: blocks)
@@ -47,15 +71,18 @@ enum MarkdownExportRenderer {
         });
         </script>
         """
-        let html = injectExportStyle(into: markdownWebBootstrapHTML(style: style, preferredScheme: preferredScheme), style: style)
+        let html = injectExportStyle(
+            into: markdownWebBootstrapHTML(style: style, preferredScheme: preferredScheme),
+            style: style,
+            scale: scale
+        )
         if let range = html.range(of: "</body>") {
             return html.replacingCharacters(in: range, with: renderScript + "\n</body>")
         }
         return html + renderScript
     }
 
-    private static func injectExportStyle(into html: String, style: MarkdownDocumentStyle) -> String {
-        let scale = 0.6
+    private static func injectExportStyle(into html: String, style: MarkdownDocumentStyle, scale: Double) -> String {
         let css = """
         <style id="markdown-export-layout-style">
         body {
@@ -114,9 +141,16 @@ enum MarkdownExportRenderer {
         source: String,
         style: MarkdownDocumentStyle,
         preferredScheme: ColorScheme?,
-        baseURL: URL?
+        baseURL: URL?,
+        scale: Double = 0.6
     ) throws -> Data {
-        let webView = try loadedWebView(source: source, style: style, preferredScheme: preferredScheme, baseURL: baseURL)
+        let webView = try loadedWebView(
+            source: source,
+            style: style,
+            preferredScheme: preferredScheme,
+            baseURL: baseURL,
+            scale: scale
+        )
         let contentSize = webView.markdownEvaluateJavaScriptSync(
             """
             (function() {
@@ -142,9 +176,10 @@ enum MarkdownExportRenderer {
         source: String,
         style: MarkdownDocumentStyle,
         preferredScheme: ColorScheme?,
-        baseURL: URL?
+        baseURL: URL?,
+        scale: Double = 0.6
     ) throws -> WKWebView {
-        let html = renderedHTML(source: source, style: style, preferredScheme: preferredScheme)
+        let html = renderedHTML(source: source, style: style, preferredScheme: preferredScheme, scale: scale)
         let configuration = WKWebViewConfiguration()
         configuration.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
         configuration.setValue(true, forKey: "allowUniversalAccessFromFileURLs")

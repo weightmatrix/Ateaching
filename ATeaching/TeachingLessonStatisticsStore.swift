@@ -3,7 +3,7 @@ import Foundation
 // MARK: - 课时统计数据层 - v1 - Debug开关背后的纯JSON底座
 
 /// 机构设置表中的一条机构记录；删除或改名机构不会回写已经存在的课单快照。
-struct TeachingInstitutionRecord: Codable, Identifiable, Equatable, Hashable {
+nonisolated struct TeachingInstitutionRecord: Codable, Identifiable, Equatable, Hashable {
     var id: UUID
     var name: String
     var colorHex: String
@@ -37,7 +37,7 @@ struct TeachingInstitutionRecord: Codable, Identifiable, Equatable, Hashable {
 }
 
 /// 成课JSON中的一节课快照；学生、机构、价格和颜色按排课转入历史时的状态保存。
-struct TeachingLessonRecord: Codable, Identifiable, Equatable, Hashable {
+nonisolated struct TeachingLessonRecord: Codable, Identifiable, Equatable, Hashable {
     var id: UUID
     var startAt: String
     var endAt: String
@@ -82,7 +82,7 @@ struct TeachingLessonRecord: Codable, Identifiable, Equatable, Hashable {
 }
 
 /// 课时统计的数据层；集中负责机构JSON、成课JSON、冲突检查和改名同步。
-enum TeachingLessonStatisticsStore {
+nonisolated enum TeachingLessonStatisticsStore {
     enum LessonStatisticsError: LocalizedError {
         case emptyInstitutionName
         case duplicateInstitutionName(String)

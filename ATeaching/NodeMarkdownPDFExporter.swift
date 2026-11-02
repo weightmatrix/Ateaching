@@ -5,13 +5,13 @@ import PDFKit
 #endif
 
 /// 分H1模式允许文档从任意层级开始；此后每个H1都连同自身从新页开始。
-enum NodeMarkdownPDFPaginationMode {
+nonisolated enum NodeMarkdownPDFPaginationMode {
     case natural
     case h1StartsNewPage
 }
 
-enum NodeMarkdownPDFExporter {
-    static func export(
+nonisolated enum NodeMarkdownPDFExporter {
+    nonisolated static func export(
         sourceFileURL: URL,
         destinationURL: URL
     ) throws {
@@ -36,7 +36,7 @@ enum NodeMarkdownPDFExporter {
         }
     }
 
-    static func renderData(
+    @MainActor static func renderData(
         sourceFileURL: URL,
         document: NodeMarkdownDocument,
         style: NodeMarkdownDocumentStyle,
@@ -168,21 +168,33 @@ enum NodeMarkdownPDFExporter {
         #endif
     }
 
-    private static func exportWithTextKitIfAvailable(
+    nonisolated private static func exportWithTextKitIfAvailable(
         sourceFileURL: URL,
         destinationURL: URL
     ) throws {
         #if os(macOS)
-        try NodeMarkdownTextKitPDFExporter.export(
-            sourceFileURL: sourceFileURL,
-            destinationURL: destinationURL
-        )
+        if Thread.isMainThread {
+            return try MainActor.assumeIsolated {
+                try NodeMarkdownTextKitPDFExporter.export(
+                    sourceFileURL: sourceFileURL,
+                    destinationURL: destinationURL
+                )
+            }
+        }
+        try DispatchQueue.main.sync {
+            try MainActor.assumeIsolated {
+                try NodeMarkdownTextKitPDFExporter.export(
+                    sourceFileURL: sourceFileURL,
+                    destinationURL: destinationURL
+                )
+            }
+        }
         #else
         throw textKitPDFUnavailableError()
         #endif
     }
 
-    private static func renderDataWithTextKitIfAvailable(
+    @MainActor private static func renderDataWithTextKitIfAvailable(
         sourceFileURL: URL,
         document: NodeMarkdownDocument,
         style: NodeMarkdownDocumentStyle,

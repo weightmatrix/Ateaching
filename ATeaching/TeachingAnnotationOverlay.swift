@@ -141,7 +141,7 @@ final class TeachingAnnotationCanvasView: NSView {
     private var strokes: [TeachingAnnotationStroke] = []
     private var activeStrokeIndex: Int?
     private weak var scrollView: NSScrollView?
-    private var isObservingScroll = false
+    private weak var observedClipView: NSClipView?
 
     static let strokeColor = Color.red
     static let strokeLineWidth: CGFloat = 3
@@ -162,47 +162,69 @@ final class TeachingAnnotationCanvasView: NSView {
     }
 
     deinit {
-        if isObservingScroll {
-            NotificationCenter.default.removeObserver(self)
-        }
+        NotificationCenter.default.removeObserver(self)
     }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         guard window != nil else { return }
         DispatchQueue.main.async { [weak self] in
-            self?.attachToEditorScrollViewIfNeeded()
+            self?.ensureScrollViewAttached()
         }
     }
 
-    private func attachToEditorScrollViewIfNeeded() {
-        guard scrollView == nil, let window else { return }
-        guard let contentView = window.contentView,
-              let foundScrollView = Self.findEditorScrollView(in: contentView) else { return }
-        scrollView = foundScrollView
+    override func layout() {
+        super.layout()
+        ensureScrollViewAttached()
+    }
+
+    private func ensureScrollViewAttached() {
+        guard let window else { return }
+        let foundScrollView: NSScrollView
+        if let scrollView {
+            foundScrollView = scrollView
+        } else {
+            guard let contentView = window.contentView,
+                  let candidate = Self.findEditorScrollView(in: contentView) else {
+                return
+            }
+            scrollView = candidate
+            foundScrollView = candidate
+        }
         let clipView = foundScrollView.contentView
-        if !isObservingScroll {
-            isObservingScroll = true
-            clipView.postsBoundsChangedNotifications = true
-            NotificationCenter.default.addObserver(
+        guard observedClipView !== clipView else { return }
+        if let observedClipView {
+            NotificationCenter.default.removeObserver(
                 self,
-                selector: #selector(handleClipViewDidScroll),
                 name: NSView.boundsDidChangeNotification,
-                object: clipView
+                object: observedClipView
             )
-            NotificationCenter.default.addObserver(
+            NotificationCenter.default.removeObserver(
                 self,
-                selector: #selector(handleClipViewFrameDidChange),
                 name: NSView.frameDidChangeNotification,
-                object: clipView
+                object: observedClipView
             )
         }
-        window.makeFirstResponder(nil)
+        observedClipView = clipView
+        clipView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleClipViewDidScroll),
+            name: NSView.boundsDidChangeNotification,
+            object: clipView
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleClipViewFrameDidChange),
+            name: NSView.frameDidChangeNotification,
+            object: clipView
+        )
         setNeedsDisplay(bounds)
     }
 
     private static func findEditorScrollView(in view: NSView) -> NSScrollView? {
-        if let scrollView = view as? NSScrollView, scrollView.documentView is NSTextView {
+        if let scrollView = view as? NSScrollView,
+           scrollView.documentView is NSTextView || scrollView.documentView is NSTableView {
             return scrollView
         }
         for subview in view.subviews {
@@ -224,6 +246,7 @@ final class TeachingAnnotationCanvasView: NSView {
     // MARK: 滚动事件转发 - 批注激活时仍可滚动页面
 
     override func scrollWheel(with event: NSEvent) {
+        ensureScrollViewAttached()
         if let scrollView {
             scrollView.scrollWheel(with: event)
         } else {
@@ -232,6 +255,7 @@ final class TeachingAnnotationCanvasView: NSView {
     }
 
     override func magnify(with event: NSEvent) {
+        ensureScrollViewAttached()
         if let scrollView {
             scrollView.magnify(with: event)
         } else {
@@ -264,11 +288,26 @@ final class TeachingAnnotationCanvasView: NSView {
                 startAngle: 0,
                 endAngle: 360
             )
+        } else if screenPoints.count == 2 {
+            path.move(to: screenPoints[0])
+            path.line(to: screenPoints[1])
         } else {
             path.move(to: screenPoints[0])
-            for point in screenPoints.dropFirst() {
-                path.line(to: point)
+            let lastIndex = screenPoints.count - 1
+            for index in 1..<lastIndex {
+                let point = screenPoints[index]
+                let nextPoint = screenPoints[index + 1]
+                let midpoint = CGPoint(
+                    x: (point.x + nextPoint.x) * 0.5,
+                    y: (point.y + nextPoint.y) * 0.5
+                )
+                path.curve(
+                    to: midpoint,
+                    controlPoint1: point,
+                    controlPoint2: point
+                )
             }
+            path.line(to: screenPoints[lastIndex])
         }
         path.stroke()
     }
@@ -285,6 +324,7 @@ final class TeachingAnnotationCanvasView: NSView {
     // MARK: 鼠标事件 - 拦截点击编辑；笔拖拽画线，橡皮按笔画擦除
 
     override func mouseDown(with event: NSEvent) {
+        ensureScrollViewAttached()
         let screenPoint = convert(event.locationInWindow, from: nil)
         switch tool {
         case .pen:
@@ -296,6 +336,7 @@ final class TeachingAnnotationCanvasView: NSView {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        ensureScrollViewAttached()
         let screenPoint = convert(event.locationInWindow, from: nil)
         switch tool {
         case .pen:
@@ -308,6 +349,7 @@ final class TeachingAnnotationCanvasView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        ensureScrollViewAttached()
         if activeStrokeIndex != nil {
             activeStrokeIndex = nil
             controller?.handleStrokesDidChange(strokes.count)

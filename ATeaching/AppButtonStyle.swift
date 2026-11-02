@@ -14,13 +14,17 @@ enum AppButtonTier {
 struct AppGlassButtonStyle: ButtonStyle {
     let tier: AppButtonTier
 
+    private var designStyle: AppBackgroundSettings.DesignStyle {
+        AppBackgroundSettingsStore.load().designStyle
+    }
+
     func makeBody(configuration: Configuration) -> some View {
         let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
         configuration.label
-            .font(.system(size: 13, weight: .semibold, design: .monospaced))
+            .font(.system(size: 13, weight: designStyle == .minimal ? .medium : .semibold))
             .fontWeight(.semibold)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            .padding(.horizontal, designStyle == .minimal ? 10 : 12)
+            .padding(.vertical, designStyle == .minimal ? 7 : 8)
             .frame(minHeight: 36)
             .foregroundStyle(foregroundColor)
             .background(buttonBackground(isPressed: configuration.isPressed))
@@ -43,7 +47,7 @@ struct AppGlassButtonStyle: ButtonStyle {
 
     @ViewBuilder
     private func buttonBackground(isPressed: Bool) -> some View {
-        let cornerRadius = 12.0
+        let cornerRadius = designStyle == .minimal ? 7.0 : (designStyle == .vibrant ? 16.0 : 12.0)
         if #available(iOS 26.0, macOS 26.0, tvOS 26.0, visionOS 26.0, *) {
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .fill(.clear)
@@ -73,7 +77,7 @@ struct AppGlassButtonStyle: ButtonStyle {
         case .regular:
             return Color.secondary.opacity(0.20)
         case .prominent:
-            return appHighlightBlue.opacity(0.86)
+            return (designStyle == .vibrant ? Color.purple : appHighlightBlue).opacity(0.86)
         case .danger:
             return Color.secondary.opacity(0.20)
         }

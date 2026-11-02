@@ -11,7 +11,12 @@ extension NodeMarkdownTextKit2Coordinator {
         let selection = textView.selectedRange()
         guard sourceText.length > 0 else { return false }
         if hasDeletionSelection(in: textView) {
-            return blocksCompleteProtectedH3Deletion(in: textView)
+            let blocked = blocksCompleteProtectedH3Deletion(in: textView)
+            NodeMarkdownDiagnostic117.record(
+                operationID: textView.diagnostic117OperationID,
+                "全文管线选择删除 selection=\(NSStringFromRange(selection)) blocked=\(blocked) decision=\(blocked ? "拦截" : "交给系统删除")"
+            )
+            return blocked
         }
 
         guard let currentLineIndex = currentRowIndex(in: textView),

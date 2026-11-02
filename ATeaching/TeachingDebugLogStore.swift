@@ -1,6 +1,7 @@
 import Foundation
 
-enum TeachingDebugLogStore {
+nonisolated enum TeachingDebugLogStore {
+    static let didAppendNotification = Notification.Name("TeachingDebugLogStore.didAppend")
     private static let debugFolderName = "Debug"
     private static let logFileName = "调试日志.log"
     private static let encoder: JSONEncoder = {
@@ -122,9 +123,14 @@ enum TeachingDebugLogStore {
         return NodeMarkdownEditorPipeline(rawValue: rawValue) ?? .textKit2
     }
 
-    static func append(_ message: String, category: String = "General", fileManager: FileManager = .default) {
+    static func append(
+        _ message: String,
+        category: String = "General",
+        force: Bool = false,
+        fileManager: FileManager = .default
+    ) {
         let settings = loadSettings(fileManager: fileManager)
-        guard settings.persistLogsEnabled else { return }
+        guard force || settings.persistLogsEnabled else { return }
         guard let url = try? logFileURL(fileManager: fileManager) else { return }
         let timestamp = ISO8601DateFormatter().string(from: Date())
         let line = "[\(timestamp)][\(category)] \(message)\n"
@@ -137,6 +143,7 @@ enum TeachingDebugLogStore {
             defer { try? handle.close() }
             try handle.seekToEnd()
             try handle.write(contentsOf: data)
+            NotificationCenter.default.post(name: didAppendNotification, object: nil)
         } catch {
             return
         }

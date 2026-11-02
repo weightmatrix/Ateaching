@@ -13,7 +13,7 @@ typealias TeachingPrintColor = UIColor
 typealias TeachingPrintFont = UIFont
 #endif
 
-struct TeachingPrintPageSpec: Sendable, Hashable {
+nonisolated struct TeachingPrintPageSpec: Sendable, Hashable {
     var width: CGFloat
     var height: CGFloat
     var marginTop: CGFloat
@@ -34,7 +34,7 @@ struct TeachingPrintPageSpec: Sendable, Hashable {
     var contentHeight: CGFloat { max(1, height - marginTop - marginBottom) }
 }
 
-struct TeachingPrintTypographyStyle {
+nonisolated struct TeachingPrintTypographyStyle {
     var font: TeachingPrintFont
     var textColor: TeachingPrintColor
     var isUnderline: Bool = false
@@ -43,14 +43,14 @@ struct TeachingPrintTypographyStyle {
     var paragraphSpacingAfter: CGFloat
 }
 
-struct TeachingPrintBackgroundStripeStyle: Hashable, Sendable {
+nonisolated struct TeachingPrintBackgroundStripeStyle: Hashable, Sendable {
     var fillColorHexRGBA: String
     var cornerRadius: CGFloat
     var horizontalInset: CGFloat
     var verticalInset: CGFloat
 }
 
-struct TeachingPrintStyleSheet {
+nonisolated struct TeachingPrintStyleSheet {
     var pageSpec: TeachingPrintPageSpec
     var pageBackgroundColor: TeachingPrintColor
     var body: TeachingPrintTypographyStyle
@@ -151,7 +151,7 @@ struct TeachingPrintStyleSheet {
     }
 }
 
-extension TeachingPrintStyleSheet {
+nonisolated extension TeachingPrintStyleSheet {
     static func make(
         documentStyle: NodeMarkdownDocumentStyle,
         pdfSettings: TeachingPDFExportSettings
@@ -279,7 +279,7 @@ extension TeachingPrintStyleSheet {
     }
 }
 
-private extension TeachingPrintColor {
+nonisolated private extension TeachingPrintColor {
     static var labelColorCompat: TeachingPrintColor {
         #if os(macOS)
         return .labelColor

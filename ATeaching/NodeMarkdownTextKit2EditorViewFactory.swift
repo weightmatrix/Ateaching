@@ -44,6 +44,8 @@ extension NodeMarkdownTextKit2Representable {
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
+        // 给文档尾部保留接近文字处理器的呼吸空间，避免最后一行紧贴窗口边缘。
+        scrollView.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: 48, right: 0)
         scrollView.documentView = textView
         // NSViewRepresentable刚创建时尚未获得SwiftUI分配的尺寸，contentSize此时可能接近0。
         // 不得用这个临时值覆盖TextView的有效初始frame，否则整篇正文会被排进1pt容器而不可见。

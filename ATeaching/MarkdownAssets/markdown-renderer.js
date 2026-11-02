@@ -153,6 +153,7 @@
                 return line;
             }
             if (inFence) return line;
+            if (line.indexOf('#') === 0) return line;
             var match = /^( *)(.*?\d+)\. +(.*)$/.exec(line);
             if (!match) return line;
             var indent = match[1].length;

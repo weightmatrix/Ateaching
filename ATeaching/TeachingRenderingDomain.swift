@@ -1,7 +1,7 @@
 // PIPELINE MARKER: NodeMarkdown legacy pipeline (TeachingPrint rendering domain).
 import Foundation
 
-enum TeachingRenderingBlockKind: String, Sendable {
+nonisolated enum TeachingRenderingBlockKind: String, Sendable {
     case heading1
     case heading2
     case heading3
@@ -12,7 +12,7 @@ enum TeachingRenderingBlockKind: String, Sendable {
     case comment
 }
 
-struct TeachingRenderingStyleToken: Sendable, Hashable {
+nonisolated struct TeachingRenderingStyleToken: Sendable, Hashable {
     var level: Int
     var fontName: String
     var fontSize: Double
@@ -23,7 +23,7 @@ struct TeachingRenderingStyleToken: Sendable, Hashable {
     var peerLineSpacing: Double
 }
 
-struct TeachingRenderingBlock: Sendable, Hashable {
+nonisolated struct TeachingRenderingBlock: Sendable, Hashable {
     var id: UUID
     var kind: TeachingRenderingBlockKind
     var level: Int
@@ -33,7 +33,7 @@ struct TeachingRenderingBlock: Sendable, Hashable {
     var styleToken: TeachingRenderingStyleToken
 }
 
-struct TeachingRenderingResourceRef: Sendable, Hashable {
+nonisolated struct TeachingRenderingResourceRef: Sendable, Hashable {
     enum Kind: String, Sendable {
         case image
         case formula
@@ -44,12 +44,12 @@ struct TeachingRenderingResourceRef: Sendable, Hashable {
     var rawValue: String
 }
 
-struct TeachingRenderingDocument: Sendable, Hashable {
+nonisolated struct TeachingRenderingDocument: Sendable, Hashable {
     var blocks: [TeachingRenderingBlock]
     var resources: [TeachingRenderingResourceRef]
 }
 
-enum TeachingRenderingDomainBuilder {
+nonisolated enum TeachingRenderingDomainBuilder {
     static func build(
         from document: NodeMarkdownDocument,
         style: NodeMarkdownDocumentStyle
@@ -108,4 +108,3 @@ enum TeachingRenderingDomainBuilder {
         return refs
     }
 }
-

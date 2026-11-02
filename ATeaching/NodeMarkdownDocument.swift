@@ -1,7 +1,7 @@
 import Foundation
 
 // MARK: - NodeMarkdown节点 - v2 - 定义12层节点文本来源与缓存时间的统一数据模型
-struct NodeMarkdownNode: Hashable, Identifiable, Codable {
+nonisolated struct NodeMarkdownNode: Hashable, Identifiable, Codable {
     var id: UUID
     var level: Int
     var text: String
@@ -48,7 +48,7 @@ struct NodeMarkdownNode: Hashable, Identifiable, Codable {
 }
 
 // MARK: - NodeMarkdown元信息 - v1 - 定义NodeMarkdown文件末尾META字段
-struct NodeMarkdownFileMeta: Hashable, Codable {
+nonisolated struct NodeMarkdownFileMeta: Hashable, Codable {
     var id: String
     var title: String
     var template: String
@@ -71,7 +71,7 @@ struct NodeMarkdownFileMeta: Hashable, Codable {
 }
 
 // MARK: - NodeMarkdown文档模型 - v2 - 管理节点数组并提供增量编辑层级与H3包修时联动
-struct NodeMarkdownDocument: Hashable, Codable {
+nonisolated struct NodeMarkdownDocument: Hashable, Codable {
     var nodes: [NodeMarkdownNode]
 
     init(nodes: [NodeMarkdownNode] = []) {
@@ -393,7 +393,7 @@ struct NodeMarkdownDocument: Hashable, Codable {
 }
 
 // MARK: - NodeMarkdown缓存编解码 - v1 - 统一“#修时...@”格式解析与生成
-enum NodeMarkdownCacheCodec {
+nonisolated enum NodeMarkdownCacheCodec {
     private static let formatter = ISO8601DateFormatter()
 
     static func encode(mtime: Date) -> String {
@@ -410,7 +410,7 @@ enum NodeMarkdownCacheCodec {
 }
 
 // MARK: - NodeMarkdown前缀映射 - v1 - 映射12层到Prefix并支持逆向解析
-enum NodeMarkdownPrefixCodec {
+nonisolated enum NodeMarkdownPrefixCodec {
     static func encode(level: Int) -> String {
         let safeLevel = max(1, min(12, level))
         switch safeLevel {
@@ -457,15 +457,15 @@ struct NodeMarkdownPersistResult {
     var restoredH3SourceLinkCount: Int
 }
 
-struct NodeMarkdownFileManager {
+nonisolated struct NodeMarkdownFileManager {
     static let header = ["UUID", "Prefix", "Content", "SourceID", "SourceFile", "Cach"]
 
-    static func read(fileURL: URL) throws -> (NodeMarkdownDocument, NodeMarkdownFileMeta) {
+    nonisolated static func read(fileURL: URL) throws -> (NodeMarkdownDocument, NodeMarkdownFileMeta) {
         let text = try String(contentsOf: fileURL, encoding: .utf8)
         return read(rawText: text, fileTitleFallback: fileURL.deletingPathExtension().lastPathComponent)
     }
 
-    static func read(rawText: String, fileTitleFallback: String = "") -> (NodeMarkdownDocument, NodeMarkdownFileMeta) {
+    nonisolated static func read(rawText: String, fileTitleFallback: String = "") -> (NodeMarkdownDocument, NodeMarkdownFileMeta) {
         let rows = parseCSVRows(rawText)
         if rows.isEmpty {
             return legacyFromPlainMarkdown(rawText, fileTitleFallback: fileTitleFallback)
@@ -548,20 +548,20 @@ struct NodeMarkdownFileManager {
         return (NodeMarkdownDocument(nodes: nodes), meta)
     }
 
-    static func write(document: NodeMarkdownDocument, meta: NodeMarkdownFileMeta, to fileURL: URL) throws {
+    nonisolated static func write(document: NodeMarkdownDocument, meta: NodeMarkdownFileMeta, to fileURL: URL) throws {
         try NodeMarkdownIdentityPolicy.validateForPersistence(document)
         try serializeAndWrite(document: document, meta: meta, to: fileURL)
     }
 
     /// 已通过身份校验后的纯序列化+落盘，避免重复校验。
-    private static func serializeAndWrite(document: NodeMarkdownDocument, meta: NodeMarkdownFileMeta, to fileURL: URL) throws {
+    private nonisolated static func serializeAndWrite(document: NodeMarkdownDocument, meta: NodeMarkdownFileMeta, to fileURL: URL) throws {
         let text = serialize(document: document, meta: meta)
         try text.write(to: fileURL, atomically: true, encoding: .utf8)
     }
 
     /// 一次遍历完成「补齐H3来源 → 触摸脏H3 → 传播子节点时间戳 → 校验 → 序列化 → 原子写」。
     /// 纯计算与文件I/O，可在任意线程调用。
-    static func prepareAndWrite(
+    nonisolated static func prepareAndWrite(
         document: NodeMarkdownDocument,
         meta: NodeMarkdownFileMeta,
         to fileURL: URL,
@@ -589,7 +589,7 @@ struct NodeMarkdownFileManager {
     }
 
     /// 保存专用：串行队列内读盘一次并落盘，全部文件I/O与文档遍历都在后台执行。
-    static func persistToDiskAndPrepare(
+    nonisolated static func persistToDiskAndPrepare(
         document: NodeMarkdownDocument,
         meta: NodeMarkdownFileMeta,
         to fileURL: URL
@@ -618,7 +618,7 @@ struct NodeMarkdownFileManager {
         return result
     }
 
-    static func serialize(document: NodeMarkdownDocument, meta: NodeMarkdownFileMeta) -> String {
+    nonisolated static func serialize(document: NodeMarkdownDocument, meta: NodeMarkdownFileMeta) -> String {
         var lines: [String] = []
         lines.reserveCapacity(document.nodes.count + 8)
         lines.append(renderCSVRow(header))
@@ -645,7 +645,7 @@ struct NodeMarkdownFileManager {
         return lines.joined(separator: "\n")
     }
 
-    private static func legacyFromPlainMarkdown(_ text: String, fileTitleFallback: String) -> (NodeMarkdownDocument, NodeMarkdownFileMeta) {
+    private nonisolated static func legacyFromPlainMarkdown(_ text: String, fileTitleFallback: String) -> (NodeMarkdownDocument, NodeMarkdownFileMeta) {
         let now = Date()
         let normalized = text.replacingOccurrences(of: "\r\n", with: "\n")
         let lines = normalized.split(separator: "\n", omittingEmptySubsequences: false)
@@ -670,7 +670,7 @@ struct NodeMarkdownFileManager {
         )
     }
 
-    private static func parseLegacyHeadingLine(_ line: String) -> (level: Int, text: String) {
+    private nonisolated static func parseLegacyHeadingLine(_ line: String) -> (level: Int, text: String) {
         guard !line.isEmpty else { return (1, "") }
         let chars = Array(line)
         var index = 0
@@ -687,7 +687,7 @@ struct NodeMarkdownFileManager {
         return (index, String(chars[textStart...]))
     }
 
-    private static func parseCSVRows(_ text: String) -> [[String]] {
+    private nonisolated static func parseCSVRows(_ text: String) -> [[String]] {
         var rows: [[String]] = []
         var currentRow: [String] = []
         var currentField = ""

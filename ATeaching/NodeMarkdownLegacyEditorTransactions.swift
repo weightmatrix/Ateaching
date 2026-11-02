@@ -28,7 +28,7 @@ final class NodeMarkdownLegacyDraftCommitController {
 
 /// 结构编辑不能分别上报正文和行元数据。每一行的正文、UUID、层级和来源信息
 /// 必须在同一个值中产生、传递和解析，否则异步解析可能把新正文配到旧身份上。
-struct NodeMarkdownLegacyDocumentSnapshot: Equatable {
+nonisolated struct NodeMarkdownLegacyDocumentSnapshot: Equatable {
     struct Row: Equatable {
         let nodeID: String
         let level: Int
@@ -199,7 +199,7 @@ enum NodeMarkdownLegacyMetadataProjection {
 }
 
 /// TextKit缓冲区不再保存`### `等层级前缀，所以每行必须单独携带Node身份与层级。
-struct NodeMarkdownTextKitRowMetadata: Equatable {
+nonisolated struct NodeMarkdownTextKitRowMetadata: Equatable {
     let nodeID: String
     let level: Int
     let sourceID: String

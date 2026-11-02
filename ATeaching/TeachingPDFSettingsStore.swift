@@ -1,6 +1,6 @@
 import Foundation
 
-enum TeachingPDFSettingsStore {
+nonisolated enum TeachingPDFSettingsStore {
     private static let fileName = "Setting-PDFout"
     private static let encoder: JSONEncoder = {
         let value = JSONEncoder()

@@ -91,3 +91,84 @@ struct TeachingStudentBackupSheet: View {
         }
     }
 }
+
+struct TeachingStudentRestoreSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let onConfirm: ([TeachingStudentBackupEntry]) -> Void
+
+    @State private var entries: [TeachingStudentBackupEntry] = []
+    @State private var selectedIDs: Set<String> = []
+    @State private var loadError = ""
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 12) {
+                HStack {
+                    Button("全选") { selectedIDs = Set(entries.map(\.id)) }
+                        .disabled(entries.isEmpty)
+                    Button("清空") { selectedIDs.removeAll() }
+                        .disabled(selectedIDs.isEmpty)
+                    Spacer()
+                    Text("已选 \(selectedIDs.count) / \(entries.count)")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                if entries.isEmpty {
+                    ContentUnavailableView(
+                        loadError.isEmpty ? "暂无学生备份" : loadError,
+                        systemImage: "arrow.uturn.backward.circle"
+                    )
+                } else {
+                    List(entries) { entry in
+                        HStack(spacing: 10) {
+                            Image(systemName: selectedIDs.contains(entry.id) ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(selectedIDs.contains(entry.id) ? .accent : .secondary)
+                            Image(systemName: entry.student.iconName)
+                                .foregroundStyle(entry.student.color.value)
+                            VStack(alignment: .leading) {
+                                Text(entry.student.name)
+                                Text(entry.folderURL.lastPathComponent)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture { toggle(entry.id) }
+                    }
+                    .listStyle(.plain)
+                }
+            }
+            .padding(16)
+            .navigationTitle("恢复学生")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("恢复") {
+                        onConfirm(entries.filter { selectedIDs.contains($0.id) })
+                        dismiss()
+                    }
+                    .disabled(selectedIDs.isEmpty)
+                }
+            }
+            .task { loadEntries() }
+        }
+        .frame(minWidth: 520, minHeight: 520)
+    }
+
+    private func loadEntries() {
+        do {
+            entries = try TeachingStudentBackupService.listBackups()
+            selectedIDs = Set(entries.map(\.id))
+        } catch {
+            loadError = "加载备份失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func toggle(_ id: String) {
+        if selectedIDs.contains(id) { selectedIDs.remove(id) } else { selectedIDs.insert(id) }
+    }
+}

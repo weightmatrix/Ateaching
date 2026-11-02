@@ -133,14 +133,28 @@ extension NodeMarkdownTextKit2TextView {
 
         applyInlinePattern(#"==([^=\n]+)=="#, source: source, contentRange: contentRange) { fullRange, innerRange in
             applyDelimiterStyle(fullRange: fullRange, innerRange: innerRange)
-            storage.addAttribute(inlineHighlightBackgroundColorKey, value: inlineHighlightColor(), range: innerRange)
+            let color = inlineHighlightColor()
+            storage.addAttributes(
+                [
+                    .backgroundColor: color,
+                    inlineHighlightBackgroundColorKey: color
+                ],
+                range: innerRange
+            )
         }
 
         applyInlinePattern(#"<mark>([\s\S]*?)</mark>"#, source: source, contentRange: contentRange) { fullRange, innerRange in
             guard NSIntersectionRange(fullRange, contentRange).length == fullRange.length,
                   !containsLineBreak(source, range: fullRange) else { return }
             applyDelimiterStyle(fullRange: fullRange, innerRange: innerRange)
-            storage.addAttribute(inlineHighlightBackgroundColorKey, value: inlineHighlightColor(), range: innerRange)
+            let color = inlineHighlightColor()
+            storage.addAttributes(
+                [
+                    .backgroundColor: color,
+                    inlineHighlightBackgroundColorKey: color
+                ],
+                range: innerRange
+            )
         }
 
         applyInlinePattern(#"<u>([\s\S]*?)</u>"#, source: source, contentRange: contentRange) { fullRange, innerRange in

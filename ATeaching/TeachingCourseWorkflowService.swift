@@ -1,5 +1,41 @@
 import Foundation
 
+nonisolated enum TeachingCourseDiagnostic116 {
+    static func now() -> UInt64 {
+        DispatchTime.now().uptimeNanoseconds
+    }
+
+    static func elapsedMilliseconds(since start: UInt64) -> Double {
+        Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
+    }
+
+    static func record(_ message: @autoclosure () -> String) {
+        let line = "[诊断·116] " + message()
+        print(line)
+        TeachingDebugLogStore.append(line, category: "诊断·116")
+    }
+
+    static func rowSummary(_ rows: [ChecklistTemplateRow]) -> String {
+        let level3 = rows.filter { $0.level == 3 }
+        let statusZero = rows.filter { $0.status == 0 }
+        let validSource = rows.filter {
+            !$0.sourceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && !$0.sourceFile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        let duplicateRowIDs = rows.count - Set(rows.map(\.id)).count
+        let sourceKeys = rows.map {
+            $0.sourceFile.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                + "#"
+                + $0.sourceID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }
+        let duplicateSourceKeys = sourceKeys.count - Set(sourceKeys).count
+        let samples = rows.prefix(4).map {
+            "L\($0.level)/S\($0.status)/\(URL(fileURLWithPath: $0.sourceFile).lastPathComponent)#\(String($0.sourceID.prefix(8)))"
+        }.joined(separator: ",")
+        return "rows=\(rows.count) level3=\(level3.count) status0=\(statusZero.count) validSource=\(validSource.count) duplicateRowID=\(duplicateRowIDs) duplicateSourceKey=\(duplicateSourceKeys) samples=[\(samples)]"
+    }
+}
+
 struct TeachingCoursePreparationSummary: Hashable {
     var lessonPlanCount: Int
     var templateFileCount: Int
@@ -36,9 +72,16 @@ struct TeachingCourseInsertSummary: Hashable {
     var firstInsertedRowIndex: Int?
     var canUndo: Bool
     var insertedH3Titles: [String] = []
+    var insertedNodes: [NodeMarkdownNode] = []
 }
 
-enum TeachingCourseConflictResolutionAction: String, Hashable, CaseIterable {
+nonisolated struct TeachingH3PackageDeletionSummary: Hashable {
+    var updatedNotebookCount: Int = 0
+    var removedNotebookPackageCount: Int = 0
+    var removedSourcePackageCount: Int = 0
+}
+
+nonisolated enum TeachingCourseConflictResolutionAction: String, Hashable, CaseIterable {
     case acceptSource
     case acceptNotebook
     case clearMarker
@@ -55,7 +98,7 @@ enum TeachingCourseConflictResolutionAction: String, Hashable, CaseIterable {
     }
 }
 
-struct TeachingCourseSyncConflictItem: Hashable, Identifiable {
+nonisolated struct TeachingCourseSyncConflictItem: Hashable, Identifiable {
     var timestamp: String
     var sourceFile: String
     var sourceID: String
@@ -206,7 +249,7 @@ private struct TeachingNotebookExportPayload: Sendable {
     let html: Data
 }
 
-private struct TeachingCourseFinishClassService {
+nonisolated private struct TeachingCourseFinishClassService {
     struct CleanupResult {
         var removedNodeCount: Int
         var dirtyH3NodeIDs: [String]
@@ -301,7 +344,7 @@ enum TeachingCourseInsertAnchor: Sendable, Equatable {
 }
 
 /// 随堂插入位置的纯数据规则，便于回归检查，不依赖窗口焦点或字符位置。
-enum TeachingCourseInsertPlacementPolicy {
+nonisolated enum TeachingCourseInsertPlacementPolicy {
     static func insertionIndex(
         document: NodeMarkdownDocument,
         activeRowIndex: Int?
@@ -328,7 +371,7 @@ enum TeachingCourseInsertPlacementPolicy {
     }
 }
 
-private struct TeachingCourseTransactionLogEntry: Codable {
+private nonisolated struct TeachingCourseTransactionLogEntry: Codable {
     var timestamp: String
     var transactionID: String
     var operation: String
@@ -344,7 +387,7 @@ private struct TeachingCourseFolderSnapshot: Codable {
     var directoryRelativePaths: [String]
 }
 
-private struct TeachingCourseSyncConflictRecord: Codable {
+nonisolated private struct TeachingCourseSyncConflictRecord: Codable {
     var timestamp: String
     var studentID: String
     var studentName: String
@@ -356,7 +399,7 @@ private struct TeachingCourseSyncConflictRecord: Codable {
     var note: String
 }
 
-enum TeachingCourseWorkflowService {
+nonisolated enum TeachingCourseWorkflowService {
     static func prepareForTeaching(student: TeachingStudentItem) async throws -> TeachingCoursePreparationSummary {
         try await runStudentFolderTransaction(student: student, operation: "prepareForTeaching") {
             try await prepareForSession(student: student, createClassInfo: true)
@@ -369,7 +412,7 @@ enum TeachingCourseWorkflowService {
         }
     }
 
-    static func syncNotebookDirtyPackages(
+    nonisolated static func syncNotebookDirtyPackages(
         student: TeachingStudentItem,
         placementTarget: TeachingCourseUpdatePlacementTarget? = nil,
         allowedNewPackageIDs: Set<String>? = nil
@@ -384,7 +427,21 @@ enum TeachingCourseWorkflowService {
     }
 
     static func previewNotebookUpdate(student: TeachingStudentItem) async throws -> TeachingCourseUpdatePreview {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let result = try performPreviewNotebookUpdate(student: student)
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    private static func performPreviewNotebookUpdate(student: TeachingStudentItem) throws -> TeachingCourseUpdatePreview {
         let notebookURL = try notebookURL(for: student)
+        startDownloadingUbiquitousItemIfNeeded(notebookURL)
         let notebookPayload = try NodeMarkdownFileManager.read(fileURL: notebookURL)
         let chapterTargets = try buildUpdateChapterTargets(student: student)
         let summary = try TeachingCoursePackageStateEngine.summarizePreviewState(
@@ -393,7 +450,8 @@ enum TeachingCourseWorkflowService {
                 try sourceURLFromRelative(sourceFile)
             },
             loadSourceDocument: { sourceURL in
-                try NodeMarkdownFileManager.read(fileURL: sourceURL).0
+                startDownloadingUbiquitousItemIfNeeded(sourceURL)
+                return try NodeMarkdownFileManager.read(fileURL: sourceURL).0
             }
         )
         return TeachingCourseUpdatePreview(
@@ -405,17 +463,143 @@ enum TeachingCourseWorkflowService {
         )
     }
 
+    static func deleteH3PackageEverywhere(
+        sourceFile: String,
+        sourceID: String,
+        excludingNotebookURL: URL? = nil
+    ) async throws -> TeachingH3PackageDeletionSummary {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let summary = try performDeleteH3PackageEverywhere(
+                        sourceFile: sourceFile,
+                        sourceID: sourceID,
+                        excludingNotebookURL: excludingNotebookURL
+                    )
+                    continuation.resume(returning: summary)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    private static func performDeleteH3PackageEverywhere(
+        sourceFile: String,
+        sourceID: String,
+        excludingNotebookURL: URL?
+    ) throws -> TeachingH3PackageDeletionSummary {
+        let trimmedSourceFile = sourceFile.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedSourceID = sourceID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedSourceFile.isEmpty, !trimmedSourceID.isEmpty else {
+            throw NSError(
+                domain: "TeachingCourseWorkflowService",
+                code: 4701,
+                userInfo: [NSLocalizedDescriptionKey: "母本身份无效，无法删除。"]
+            )
+        }
+
+        var summary = TeachingH3PackageDeletionSummary()
+
+        // 1. 删除所有随堂笔记中引用该母本H3的包。
+        let students = try TeachingStudentSettingsStore.loadStudents()
+        let excludingPath = excludingNotebookURL?.standardizedFileURL.path
+        for student in students {
+            let notebookURL = try notebookURL(for: student)
+            if let excludingPath, notebookURL.standardizedFileURL.path == excludingPath { continue }
+            guard FileManager.default.fileExists(atPath: notebookURL.path) else { continue }
+            startDownloadingUbiquitousItemIfNeeded(notebookURL)
+            guard let payload = try? NodeMarkdownFileManager.read(fileURL: notebookURL) else { continue }
+            var document = payload.0
+            let meta = payload.1
+            var removedCount = 0
+            while let index = document.nodes.firstIndex(where: { node in
+                node.level == 3
+                    && node.sourceID.trimmingCharacters(in: .whitespacesAndNewlines)
+                        .caseInsensitiveCompare(trimmedSourceID) == .orderedSame
+                    && node.sourceFile.trimmingCharacters(in: .whitespacesAndNewlines) == trimmedSourceFile
+            }) {
+                let removed = document.removeH3Package(startingAt: index)
+                guard removed > 0 else { break }
+                removedCount += 1
+            }
+            if removedCount > 0 {
+                try NodeMarkdownFileManager.write(document: document, meta: meta, to: notebookURL)
+                summary.updatedNotebookCount += 1
+                summary.removedNotebookPackageCount += removedCount
+            }
+        }
+
+        // 2. 删除母本中的对应H3包。
+        guard let sourceURL = try sourceURLFromRelative(trimmedSourceFile) else {
+            throw NSError(
+                domain: "TeachingCourseWorkflowService",
+                code: 4702,
+                userInfo: [NSLocalizedDescriptionKey: "母本路径无效。"]
+            )
+        }
+        startDownloadingUbiquitousItemIfNeeded(sourceURL)
+        guard let payload = try? NodeMarkdownFileManager.read(fileURL: sourceURL) else {
+            throw NSError(
+                domain: "TeachingCourseWorkflowService",
+                code: 4703,
+                userInfo: [NSLocalizedDescriptionKey: "无法读取母本文件。"]
+            )
+        }
+        var sourceDocument = payload.0
+        let sourceMeta = payload.1
+        guard let targetIndex = sourceDocument.nodes.firstIndex(where: {
+            $0.level == 3
+                && $0.id.uuidString.caseInsensitiveCompare(trimmedSourceID) == .orderedSame
+        }) else {
+            throw NSError(
+                domain: "TeachingCourseWorkflowService",
+                code: 4704,
+                userInfo: [NSLocalizedDescriptionKey: "母本中未找到对应H3包。"]
+            )
+        }
+        guard sourceDocument.removeH3Package(startingAt: targetIndex) > 0 else {
+            throw NSError(
+                domain: "TeachingCourseWorkflowService",
+                code: 4705,
+                userInfo: [NSLocalizedDescriptionKey: "母本H3包删除失败。"]
+            )
+        }
+        try NodeMarkdownFileManager.write(document: sourceDocument, meta: sourceMeta, to: sourceURL)
+        summary.removedSourcePackageCount = 1
+
+        return summary
+    }
+
     static func insertLessonPackagesIntoNotebook(
         student: TeachingStudentItem,
         pickedRows: [ChecklistTemplateRow],
         completionChecklistFileURL: URL? = nil,
         insertionAnchorOverride: TeachingCourseInsertAnchor? = nil,
-        usesStoredActiveRow: Bool = true
+        usesStoredActiveRow: Bool = true,
+        diagnosticID: String = "-"
     ) async throws -> TeachingCourseInsertSummary {
-        try await runStudentFolderTransaction(student: student, operation: "insertLessonPackagesIntoNotebook") {
+        let operationStart = TeachingCourseDiagnostic116.now()
+        TeachingCourseDiagnostic116.record(
+            "op=\(diagnosticID) workflow请求 student=\(student.name) anchor=\(String(describing: insertionAnchorOverride)) storedAnchor=\(usesStoredActiveRow) "
+                + TeachingCourseDiagnostic116.rowSummary(pickedRows)
+        )
+        let result = try await runStudentFolderTransaction(student: student, operation: "insertLessonPackagesIntoNotebook") {
+            let transactionStart = TeachingCourseDiagnostic116.now()
             let notebookURL = try notebookURL(for: student)
+            TeachingCourseDiagnostic116.record(
+                "op=\(diagnosticID) 已进入学生目录事务 notebook=\(notebookURL.lastPathComponent) wait=\(String(format: "%.2f", TeachingCourseDiagnostic116.elapsedMilliseconds(since: operationStart)))ms"
+            )
+            let undoStart = TeachingCourseDiagnostic116.now()
             try persistInsertUndoSnapshot(student: student, notebookURL: notebookURL)
+            TeachingCourseDiagnostic116.record(
+                "op=\(diagnosticID) 撤销快照完成 duration=\(String(format: "%.2f", TeachingCourseDiagnostic116.elapsedMilliseconds(since: undoStart)))ms"
+            )
+            let notebookReadStart = TeachingCourseDiagnostic116.now()
             var notebookPayload = try NodeMarkdownFileManager.read(fileURL: notebookURL)
+            TeachingCourseDiagnostic116.record(
+                "op=\(diagnosticID) 随堂读盘完成 duration=\(String(format: "%.2f", TeachingCourseDiagnostic116.elapsedMilliseconds(since: notebookReadStart)))ms nodes=\(notebookPayload.0.nodes.count)"
+            )
             let storedActiveRowIndex = usesStoredActiveRow
                 ? await TeachingCourseEditingAnchorStore.shared.activeRow(filePath: notebookURL.path)
                 : nil
@@ -436,7 +620,19 @@ enum TeachingCourseWorkflowService {
                     && !row.sourceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             }
             let orderedRows = candidateRows
+            let wrongLevelCount = pickedRows.filter { $0.level != 3 }.count
+            let completedCount = pickedRows.filter { $0.status != 0 }.count
+            let missingSourceFileCount = pickedRows.filter {
+                $0.sourceFile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }.count
+            let missingSourceIDCount = pickedRows.filter {
+                $0.sourceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }.count
+            TeachingCourseDiagnostic116.record(
+                "op=\(diagnosticID) 候选过滤 picked=\(pickedRows.count) candidate=\(orderedRows.count) wrongLevel=\(wrongLevelCount) completed=\(completedCount) missingFile=\(missingSourceFileCount) missingID=\(missingSourceIDCount) activeRow=\(activeRowIndex.map(String.init) ?? "nil")"
+            )
             guard !orderedRows.isEmpty else {
+                TeachingCourseDiagnostic116.record("op=\(diagnosticID) workflow终止 reason=候选为空")
                 return TeachingCourseInsertSummary(
                     insertedPackageCount: 0,
                     skippedPackageCount: pickedRows.count,
@@ -453,44 +649,102 @@ enum TeachingCourseWorkflowService {
             var handledRows: [ChecklistTemplateRow] = []
             var existingPackageKeys = completedLessonPackageKeys(in: notebookPayload.0)
             var existingPackageIDs = completedLessonPackageIDs(in: notebookPayload.0)
+            var existingIDCount = 0
+            var existingKeyCount = 0
+            var invalidSourcePathCount = 0
+            var missingSourceRangeCount = 0
+            var emptyPackageCount = 0
+            var migratedIdentityPackageCount = 0
+            var migratedIdentityNodeCount = 0
+            var migratedNotebookCount = 0
+            var reservedNodeIDs = Set(notebookPayload.0.nodes.map(\.id))
 
-            for row in orderedRows {
+            for (offset, row) in orderedRows.enumerated() {
                 if let sourceUUID = UUID(uuidString: row.sourceID.trimmingCharacters(in: .whitespacesAndNewlines)),
                    existingPackageIDs.contains(sourceUUID) {
+                    existingIDCount += 1
                     skippedCount += 1
                     handledRows.append(row)
                     continue
                 }
                 if let packageKey = lessonPackageKey(sourceFile: row.sourceFile, sourceID: row.sourceID),
                    existingPackageKeys.contains(packageKey) {
+                    existingKeyCount += 1
                     skippedCount += 1
                     handledRows.append(row)
                     continue
                 }
                 guard let sourceURL = try sourceURLFromRelative(row.sourceFile) else {
+                    invalidSourcePathCount += 1
                     skippedCount += 1
                     continue
                 }
-                let sourceDocument: NodeMarkdownDocument
+                var sourceDocument: NodeMarkdownDocument
                 if let cached = sourceCache[sourceURL.path] {
                     sourceDocument = cached
                 } else {
-                    let payload = try NodeMarkdownFileManager.read(fileURL: sourceURL)
+                    let sourceReadStart = TeachingCourseDiagnostic116.now()
+                    let payload: (NodeMarkdownDocument, NodeMarkdownFileMeta)
+                    do {
+                        payload = try NodeMarkdownFileManager.read(fileURL: sourceURL)
+                    } catch {
+                        TeachingCourseDiagnostic116.record(
+                            "op=\(diagnosticID) 母本读取异常 offset=\(offset) file=\(sourceURL.lastPathComponent) sourceID=\(String(row.sourceID.prefix(8))) type=\(String(reflecting: type(of: error))) message=\(error.localizedDescription)"
+                        )
+                        throw error
+                    }
+                    TeachingCourseDiagnostic116.record(
+                        "op=\(diagnosticID) 母本首次读取 file=\(sourceURL.lastPathComponent) nodes=\(payload.0.nodes.count) duration=\(String(format: "%.2f", TeachingCourseDiagnostic116.elapsedMilliseconds(since: sourceReadStart)))ms"
+                    )
                     sourceCache[sourceURL.path] = payload.0
                     sourceDocument = payload.0
                 }
                 guard let sourceRange = h3PackageRange(in: sourceDocument.nodes, sourceID: row.sourceID) else {
+                    missingSourceRangeCount += 1
                     skippedCount += 1
                     continue
                 }
                 var package = Array(sourceDocument.nodes[sourceRange.start..<sourceRange.end])
                 if package.isEmpty {
+                    emptyPackageCount += 1
                     skippedCount += 1
                     continue
+                }
+                let collisions = Set(package.map(\.id)).intersection(reservedNodeIDs)
+                if !collisions.isEmpty {
+                    guard let root = package.first, !collisions.contains(root.id) else {
+                        throw NSError(
+                            domain: "TeachingCourseWorkflowService",
+                            code: 8118,
+                            userInfo: [NSLocalizedDescriptionKey: "H3根UUID与随堂既有节点冲突，无法自动迁移：\(row.task)"]
+                        )
+                    }
+                    let migration = try TeachingLessonWashService.reassignLinkedPackageDescendantIDs(
+                        sourceFile: row.sourceFile,
+                        sourceID: row.sourceID
+                    )
+                    sourceDocument = migration.sourceDocument
+                    sourceCache[sourceURL.path] = sourceDocument
+                    package = migration.package
+                    migratedIdentityPackageCount += 1
+                    migratedIdentityNodeCount += migration.reassignedNodeCount
+                    migratedNotebookCount += migration.updatedNotebookCount
+                    let remainingCollisions = Set(package.map(\.id)).intersection(reservedNodeIDs)
+                    guard remainingCollisions.isEmpty else {
+                        throw NSError(
+                            domain: "TeachingCourseWorkflowService",
+                            code: 8119,
+                            userInfo: [NSLocalizedDescriptionKey: "H3包完成身份迁移后仍存在UUID冲突：\(row.task)"]
+                        )
+                    }
+                    TeachingCourseDiagnostic116.record(
+                        "op=\(diagnosticID) 包身份迁移 source=\(row.sourceFile)#\(String(row.sourceID.prefix(8))) reassigned=\(migration.reassignedNodeCount) notebooks=\(migration.updatedNotebookCount)"
+                    )
                 }
                 package[0].sourceID = row.sourceID
                 package[0].sourceFile = row.sourceFile
                 packagesToInsert.append(package)
+                reservedNodeIDs.formUnion(package.map(\.id))
                 insertedH3Titles.append(package[0].text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? row.task : package[0].text)
                 handledRows.append(row)
                 if let packageKey = lessonPackageKey(sourceFile: row.sourceFile, sourceID: row.sourceID) {
@@ -499,6 +753,10 @@ enum TeachingCourseWorkflowService {
                 existingPackageIDs.insert(package[0].id)
             }
 
+            TeachingCourseDiagnostic116.record(
+                "op=\(diagnosticID) 包解析汇总 accepted=\(packagesToInsert.count) acceptedNodes=\(packagesToInsert.reduce(0) { $0 + $1.count }) skipped=\(skippedCount) existingID=\(existingIDCount) existingKey=\(existingKeyCount) invalidPath=\(invalidSourcePathCount) missingRange=\(missingSourceRangeCount) emptyPackage=\(emptyPackageCount) migratedPackages=\(migratedIdentityPackageCount) migratedNodes=\(migratedIdentityNodeCount) migratedNotebooks=\(migratedNotebookCount) sourceFiles=\(sourceCache.count) handled=\(handledRows.count)"
+            )
+
             if packagesToInsert.isEmpty {
                 if let completionChecklistFileURL, !handledRows.isEmpty {
                     try markCompletionChecklistRowsDone(
@@ -506,6 +764,9 @@ enum TeachingCourseWorkflowService {
                         pickedRows: handledRows
                     )
                 }
+                TeachingCourseDiagnostic116.record(
+                    "op=\(diagnosticID) workflow终止 reason=无待插入包 skipped=\(skippedCount)"
+                )
                 return TeachingCourseInsertSummary(
                     insertedPackageCount: 0,
                     skippedPackageCount: skippedCount,
@@ -521,12 +782,20 @@ enum TeachingCourseWorkflowService {
                 activeRowIndex: activeRowIndex
             )
             let firstInsertedRowIndex = insertIndex
+            let beforeInsertNodeCount = notebookPayload.0.nodes.count
             for package in packagesToInsert {
                 notebookPayload.0.nodes.insert(contentsOf: package, at: insertIndex)
                 insertIndex += package.count
             }
             _ = notebookPayload.0.ensureTrailingBlankLine(defaultLevel: 1)
+            TeachingCourseDiagnostic116.record(
+                "op=\(diagnosticID) 内存插入完成 firstRow=\(firstInsertedRowIndex) beforeNodes=\(beforeInsertNodeCount) afterNodes=\(notebookPayload.0.nodes.count) packages=\(packagesToInsert.count)"
+            )
+            let writeStart = TeachingCourseDiagnostic116.now()
             try NodeMarkdownFileManager.write(document: notebookPayload.0, meta: notebookPayload.1, to: notebookURL)
+            TeachingCourseDiagnostic116.record(
+                "op=\(diagnosticID) 随堂写盘完成 duration=\(String(format: "%.2f", TeachingCourseDiagnostic116.elapsedMilliseconds(since: writeStart)))ms file=\(notebookURL.lastPathComponent)"
+            )
             try appendInsertedH3TitlesToTodayClassInfoIfExists(student: student, titles: insertedH3Titles)
             NotificationCenter.default.post(
                 name: .teachingNotebookDidPersistChange,
@@ -535,20 +804,33 @@ enum TeachingCourseWorkflowService {
             )
 
             if let completionChecklistFileURL {
+                let checklistStart = TeachingCourseDiagnostic116.now()
                 try markCompletionChecklistRowsDone(
                     checklistURL: completionChecklistFileURL,
                     pickedRows: handledRows
                 )
+                TeachingCourseDiagnostic116.record(
+                    "op=\(diagnosticID) 完成清单回写结束 duration=\(String(format: "%.2f", TeachingCourseDiagnostic116.elapsedMilliseconds(since: checklistStart)))ms handled=\(handledRows.count)"
+                )
             }
 
-            return TeachingCourseInsertSummary(
+            let summary = TeachingCourseInsertSummary(
                 insertedPackageCount: packagesToInsert.count,
                 skippedPackageCount: skippedCount,
                 firstInsertedRowIndex: firstInsertedRowIndex,
                 canUndo: true,
-                insertedH3Titles: insertedH3Titles
+                insertedH3Titles: insertedH3Titles,
+                insertedNodes: packagesToInsert.flatMap { $0 }
             )
+            TeachingCourseDiagnostic116.record(
+                "op=\(diagnosticID) 学生目录事务即将返回 duration=\(String(format: "%.2f", TeachingCourseDiagnostic116.elapsedMilliseconds(since: transactionStart)))ms inserted=\(summary.insertedPackageCount) skipped=\(summary.skippedPackageCount) insertedNodes=\(summary.insertedNodes.count)"
+            )
+            return summary
         }
+        TeachingCourseDiagnostic116.record(
+            "op=\(diagnosticID) workflow最终返回 totalDuration=\(String(format: "%.2f", TeachingCourseDiagnostic116.elapsedMilliseconds(since: operationStart)))ms inserted=\(result.insertedPackageCount) skipped=\(result.skippedPackageCount)"
+        )
+        return result
     }
 
     private static func markCompletionChecklistRowsDone(
@@ -1663,7 +1945,7 @@ enum TeachingCourseWorkflowService {
         }
     }
 
-    private static func performNotebookSync(
+    private nonisolated static func performNotebookSync(
         student: TeachingStudentItem,
         placementTarget: TeachingCourseUpdatePlacementTarget?,
         allowedNewPackageIDs: Set<String>? = nil
@@ -1690,7 +1972,7 @@ enum TeachingCourseWorkflowService {
         }
     }
 
-    private static func performNotebookSyncWithSourcesLocked(
+    private nonisolated static func performNotebookSyncWithSourcesLocked(
         student: TeachingStudentItem,
         placementTarget: TeachingCourseUpdatePlacementTarget?,
         allowedNewPackageIDs: Set<String>?
@@ -1745,7 +2027,6 @@ enum TeachingCourseWorkflowService {
             notebookURL: notebookURL,
             requireAllNewPackagesResolved: allowedNewPackageIDs == nil
         )
-        _ = try? NodeMarkdownImageResourceManager.removeUnreferencedManagedImagesInWorkspace()
         try saveSyncBaselineMap(execution.baselineMap, student: student)
         let workflowConflictRecords = execution.conflictRecords.map {
             TeachingCourseSyncConflictRecord(
@@ -1770,7 +2051,7 @@ enum TeachingCourseWorkflowService {
         )
     }
 
-    private static func reconcileSourceCacheWithPersistedNewPackages(
+    private nonisolated static func reconcileSourceCacheWithPersistedNewPackages(
         execution: inout TeachingCoursePackageSyncExecutionResult
     ) throws {
         let newPackageSourcePaths = Set(
@@ -1829,7 +2110,7 @@ enum TeachingCourseWorkflowService {
     }
 
     // 入库成功以磁盘事实为准：随堂H3、SourceID和母本H3必须是同一个出生UUID。
-    private static func verifyCollectedNewPackagesAfterPersistence(
+    private nonisolated static func verifyCollectedNewPackagesAfterPersistence(
         execution: inout TeachingCoursePackageSyncExecutionResult,
         notebookURL: URL,
         requireAllNewPackagesResolved: Bool
@@ -1908,7 +2189,7 @@ enum TeachingCourseWorkflowService {
         }
     }
 
-    private static func migrateCollectedPackageImages(
+    private nonisolated static func migrateCollectedPackageImages(
         previousNotebookDocument: NodeMarkdownDocument,
         execution: inout TeachingCoursePackageSyncExecutionResult,
         notebookURL: URL
@@ -1964,7 +2245,7 @@ enum TeachingCourseWorkflowService {
         }
     }
 
-    private static func preferredPreviousH3ForImageMigration(
+    private nonisolated static func preferredPreviousH3ForImageMigration(
         _ lhs: NodeMarkdownNode,
         _ rhs: NodeMarkdownNode
     ) -> NodeMarkdownNode {
@@ -1978,7 +2259,7 @@ enum TeachingCourseWorkflowService {
         return lhs
     }
 
-    private static func migrateCollectedPackageImagesInSource(
+    private nonisolated static func migrateCollectedPackageImagesInSource(
         sourceURL: URL,
         sourceFile: String,
         sourceID: String,
@@ -2012,36 +2293,36 @@ enum TeachingCourseWorkflowService {
         execution.sourceDocumentCache[cacheKey] = (sourceDocument, payload.1)
     }
 
-    private static func packageDigest(_ packageNodes: [NodeMarkdownNode]) -> String {
+    private nonisolated static func packageDigest(_ packageNodes: [NodeMarkdownNode]) -> String {
         TeachingCoursePackageContentSignature.digest(packageNodes)
     }
 
-    private static func syncBaselineKey(sourceFile: String, sourceID: String) -> String {
+    private nonisolated static func syncBaselineKey(sourceFile: String, sourceID: String) -> String {
         "\(sourceFile)#\(sourceID)"
     }
 
-    private static func loadSyncBaselineMap(student: TeachingStudentItem) throws -> [String: String] {
+    private nonisolated static func loadSyncBaselineMap(student: TeachingStudentItem) throws -> [String: String] {
         let url = try syncBaselineFileURL(student: student)
         guard FileManager.default.fileExists(atPath: url.path) else { return [:] }
         let data = try Data(contentsOf: url)
         return (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
     }
 
-    private static func saveSyncBaselineMap(_ baselineMap: [String: String], student: TeachingStudentItem) throws {
+    private nonisolated static func saveSyncBaselineMap(_ baselineMap: [String: String], student: TeachingStudentItem) throws {
         let url = try syncBaselineFileURL(student: student)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let data = try JSONEncoder().encode(baselineMap)
         try data.write(to: url, options: .atomic)
     }
 
-    private static func syncBaselineFileURL(student: TeachingStudentItem) throws -> URL {
+    private nonisolated static func syncBaselineFileURL(student: TeachingStudentItem) throws -> URL {
         try ArchiveStorage.ensureWorkspace()
             .appendingPathComponent(ArchiveStorage.systemFolderName, isDirectory: true)
             .appendingPathComponent("course-sync-baselines", isDirectory: true)
             .appendingPathComponent("\(student.id.uuidString).json", isDirectory: false)
     }
 
-    private static func appendSyncConflictRecords(
+    private nonisolated static func appendSyncConflictRecords(
         _ records: [TeachingCourseSyncConflictRecord],
         student: TeachingStudentItem
     ) throws {
@@ -2072,7 +2353,7 @@ enum TeachingCourseWorkflowService {
         }
     }
 
-    private static func syncConflictLogURL(student: TeachingStudentItem) throws -> URL {
+    private nonisolated static func syncConflictLogURL(student: TeachingStudentItem) throws -> URL {
         try ArchiveStorage.ensureWorkspace()
             .appendingPathComponent(ArchiveStorage.systemFolderName, isDirectory: true)
             .appendingPathComponent("course-sync-conflicts", isDirectory: true)
@@ -2455,7 +2736,7 @@ enum TeachingCourseWorkflowService {
         try lines.joined(separator: "\n").write(to: fileURL, atomically: true, encoding: .utf8)
     }
 
-    private static func lessonPlanRootURL() throws -> URL {
+    private nonisolated static func lessonPlanRootURL() throws -> URL {
         try ArchiveStorage.ensureWorkspace()
             .appendingPathComponent(ArchiveStorage.systemFolderName, isDirectory: true)
             .appendingPathComponent(ArchiveStorage.teachingPlanFolderName, isDirectory: true)
@@ -2474,17 +2755,17 @@ enum TeachingCourseWorkflowService {
         try lessonPlanRootURL().appendingPathComponent(folderID, isDirectory: true)
     }
 
-    private static func studentFolderURL(for student: TeachingStudentItem) throws -> URL {
+    private nonisolated static func studentFolderURL(for student: TeachingStudentItem) throws -> URL {
         try ArchiveStorage.ensureArchiveRoot()
             .appendingPathComponent("学生", isDirectory: true)
             .appendingPathComponent(student.name, isDirectory: true)
     }
 
-    private static func notebookURL(for student: TeachingStudentItem) throws -> URL {
+    private nonisolated static func notebookURL(for student: TeachingStudentItem) throws -> URL {
         try studentFolderURL(for: student).appendingPathComponent("随堂笔记_\(student.name).CSV", isDirectory: false)
     }
 
-    private static func sourceURLFromRelative(_ relative: String) throws -> URL? {
+    private nonisolated static func sourceURLFromRelative(_ relative: String) throws -> URL? {
         let trimmed = relative.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         if trimmed.hasPrefix("档案/") {
@@ -2520,7 +2801,7 @@ enum TeachingCourseWorkflowService {
         return formatter.string(from: date)
     }
 
-    private static func h3PackageRanges(in nodes: [NodeMarkdownNode]) -> [(start: Int, end: Int)] {
+    private nonisolated static func h3PackageRanges(in nodes: [NodeMarkdownNode]) -> [(start: Int, end: Int)] {
         var ranges: [(start: Int, end: Int)] = []
         var index = 0
         while index < nodes.count {
@@ -2542,7 +2823,7 @@ enum TeachingCourseWorkflowService {
         return ranges
     }
 
-    private static func h3PackageRange(in nodes: [NodeMarkdownNode], sourceID: String) -> (start: Int, end: Int)? {
+    private nonisolated static func h3PackageRange(in nodes: [NodeMarkdownNode], sourceID: String) -> (start: Int, end: Int)? {
         guard !sourceID.isEmpty else { return nil }
         guard let startIndex = nodes.firstIndex(where: {
             $0.level == 3 && $0.id.uuidString.caseInsensitiveCompare(sourceID) == .orderedSame
@@ -2582,7 +2863,7 @@ enum TeachingCourseWorkflowService {
         }
     }
 
-    private static func appendToCollector(packageNodes: [NodeMarkdownNode]) throws -> (sourceFile: String, sourceID: String) {
+    private nonisolated static func appendToCollector(packageNodes: [NodeMarkdownNode]) throws -> (sourceFile: String, sourceID: String) {
         let collectorFolder = try lessonPlanRootURL().appendingPathComponent("上课收集", isDirectory: true)
         try FileManager.default.createDirectory(at: collectorFolder, withIntermediateDirectories: true)
         let collectorURL = collectorFolder.appendingPathComponent("上课收集.CSV", isDirectory: false)
@@ -2630,7 +2911,7 @@ enum TeachingCourseWorkflowService {
         return ("上课收集/上课收集.CSV", sourceID)
     }
 
-    private static func appendPackageToTargetOrCollector(
+    private nonisolated static func appendPackageToTargetOrCollector(
         packageNodes: [NodeMarkdownNode],
         placementTarget: TeachingCourseUpdatePlacementTarget?
     ) throws -> (sourceFile: String, sourceID: String) {
@@ -2659,7 +2940,7 @@ enum TeachingCourseWorkflowService {
     }
 
     // 上次若只写成了母本而未能回写随堂，重试先凭出生UUID找回原入库位置。
-    private static func existingSourceFile(containingPackageID packageID: UUID) throws -> String? {
+    private nonisolated static func existingSourceFile(containingPackageID packageID: UUID) throws -> String? {
         let rootURL = try lessonPlanRootURL().standardizedFileURL
         let csvFiles = try collectRegularFilesRecursively(root: rootURL)
             .filter { $0.pathExtension.caseInsensitiveCompare("csv") == .orderedSame }
@@ -2688,7 +2969,7 @@ enum TeachingCourseWorkflowService {
         return matches.first
     }
 
-    private static func appendToLessonFile(
+    private nonisolated static func appendToLessonFile(
         packageNodes: [NodeMarkdownNode],
         sourceFile: String,
         anchorSourceID: String?
@@ -2738,7 +3019,7 @@ enum TeachingCourseWorkflowService {
     }
 
     // 新包的H3 UUID从创建起就是母本UUID；入库只补来源信息，永不换身份证。
-    private static func normalizedNewPackageForInsertion(
+    private nonisolated static func normalizedNewPackageForInsertion(
         _ packageNodes: [NodeMarkdownNode]
     ) -> [NodeMarkdownNode] {
         var package = NodeMarkdownPackageCleaner.cleanPackage(packageNodes)
@@ -2759,6 +3040,12 @@ enum TeachingCourseWorkflowService {
         return package
     }
 
+    private static func startDownloadingUbiquitousItemIfNeeded(_ url: URL) {
+        let manager = FileManager.default
+        guard manager.isUbiquitousItem(at: url) else { return }
+        _ = try? manager.startDownloadingUbiquitousItem(at: url)
+    }
+
     private static func buildUpdateChapterTargets(student: TeachingStudentItem) throws -> [TeachingCourseUpdateChapterTarget] {
         let effective = try resolveEffectiveSettings(student: student)
         let folderIDs = try selectedLessonPlanFolders(effectiveSettings: effective)
@@ -2774,6 +3061,7 @@ enum TeachingCourseWorkflowService {
             .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
 
             for chapterURL in chapterURLs {
+                startDownloadingUbiquitousItemIfNeeded(chapterURL)
                 let payload = try NodeMarkdownFileManager.read(fileURL: chapterURL)
                 let anchors = payload.0.nodes.compactMap { node -> TeachingCourseUpdateAnchorTarget? in
                     guard node.level == 1 || node.level == 2 || node.level == 3 else { return nil }
@@ -2959,7 +3247,7 @@ enum TeachingCourseWorkflowService {
         }
     }
 
-    private static func runStudentFolderTransaction<T>(
+    private nonisolated static func runStudentFolderTransaction<T>(
         student: TeachingStudentItem,
         operation: String,
         work: () async throws -> T
@@ -3000,7 +3288,7 @@ enum TeachingCourseWorkflowService {
         }
     }
 
-    private static func sourceWriteKeys(
+    private nonisolated static func sourceWriteKeys(
         document: NodeMarkdownDocument,
         placementTarget: TeachingCourseUpdatePlacementTarget?
     ) throws -> [String] {
@@ -3336,7 +3624,7 @@ enum TeachingCourseWorkflowService {
         return (fixed, skipped)
     }
 
-    private static func appendTransactionLog(
+    private nonisolated static func appendTransactionLog(
         transactionID: String,
         operation: String,
         student: TeachingStudentItem,

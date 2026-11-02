@@ -65,8 +65,17 @@ final class NodeMarkdownExactLayoutEngine {
         layout: NodeMarkdownTextKit2RowLayout,
         width: CGFloat,
         documentStyle: NodeMarkdownDocumentStyle,
-        baseDirectoryURL: URL?
+        baseDirectoryURL: URL?,
+        diagnostic114: NodeMarkdownDiagnostic114? = nil
     ) -> NodeMarkdownExactGeometry? {
+        let totalStart = NodeMarkdownDiagnostic114.now()
+        defer {
+            diagnostic114?.recordDuration(
+                "布局引擎总计",
+                since: totalStart,
+                details: "row=\(documentRow)"
+            )
+        }
         guard width.isFinite, width > 0 else { return nil }
         let verticalInset = NodeMarkdownTextKit2TextView.blockVerticalInset(for: layout)
         probe.textContainerInset = NSSize(width: 16, height: verticalInset)
@@ -77,8 +86,11 @@ final class NodeMarkdownExactLayoutEngine {
             height: .greatestFiniteMagnitude
         )
         let contentLayout = layout.replacingSpacingBefore(0)
+        let sourceInstallStart = NodeMarkdownDiagnostic114.now()
         probe.replaceDocumentText(node.content, documentStyle: documentStyle)
         probe.nodeMarkdownRowLayouts = [contentLayout]
+        diagnostic114?.recordDuration("布局源码安装", since: sourceInstallStart, details: "row=\(documentRow)")
+        let styleStart = NodeMarkdownDiagnostic114.now()
         probe.applyNodeMarkdownStyles(
             rowLayouts: [contentLayout],
             documentStyle: documentStyle,
@@ -88,19 +100,24 @@ final class NodeMarkdownExactLayoutEngine {
             activeMatchLocationInRow: nil,
             editingRowIndex: nil
         )
+        diagnostic114?.recordDuration("布局样式应用", since: styleStart, details: "row=\(documentRow)")
         let typingAttributes = probe.typingAttributes(for: contentLayout, documentStyle: documentStyle)
         probe.nodeMarkdownTypingAttributes = typingAttributes
         probe.typingAttributes = typingAttributes
-        probe.font = typingAttributes[.font] as? NSFont
 
+        let visualBoundsStart = NodeMarkdownDiagnostic114.now()
         guard let bounds = probe.exactNodeMarkdownVisualBounds() else { return nil }
+        diagnostic114?.recordDuration("视觉边界扫描", since: visualBoundsStart, details: "row=\(documentRow)")
         let contentHeight = ceil(max(0, bounds.maxY) + probe.textContainerInset.height)
         guard contentHeight.isFinite, contentHeight > 0 else { return nil }
+        let fragmentCountStart = NodeMarkdownDiagnostic114.now()
+        let fragmentCount = probe.exactNodeMarkdownLayoutFragmentCount()
+        diagnostic114?.recordDuration("布局片段计数", since: fragmentCountStart, details: "row=\(documentRow)")
         let geometry = NodeMarkdownExactGeometry.block(
             key: key,
             contentHeight: contentHeight,
             spacingBefore: layout.spacingBefore,
-            fragmentCount: probe.exactNodeMarkdownLayoutFragmentCount(),
+            fragmentCount: fragmentCount,
             contentVisualBounds: bounds
         )
         _ = documentRow

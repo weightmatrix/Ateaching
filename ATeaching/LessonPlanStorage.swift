@@ -1,7 +1,7 @@
 import Foundation
 
 // MARK: - 教案存储服务 - v1 - 管理系统教案目录与章教案文件创建
-enum LessonPlanStorage {
+nonisolated enum LessonPlanStorage {
     enum LessonPlanError: LocalizedError {
         case invalidName
         case invalidDirectoryLevel

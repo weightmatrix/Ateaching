@@ -2,14 +2,14 @@
 import Foundation
 import CoreGraphics
 
-struct TeachingImageLayoutInfo: Sendable, Hashable {
+nonisolated struct TeachingImageLayoutInfo: Sendable, Hashable {
     var sourceBlockID: UUID
     var rawSource: String
     var resolvedURL: URL?
     var estimatedSize: CGSize
 }
 
-enum TeachingImageRenderService {
+nonisolated enum TeachingImageRenderService {
     private static var sizeCache: [String: CGSize] = [:]
     private static let cacheQueue = DispatchQueue(label: "com.ateaching.image-cache", qos: .utility)
 

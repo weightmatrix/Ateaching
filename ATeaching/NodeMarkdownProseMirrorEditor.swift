@@ -19,6 +19,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
     let externalTextSyncToken: Int
     let quickInputSettings: MarkdownQuickInputSettings
     let draftCommitController: NodeMarkdownLegacyDraftCommitController?
+    var inPlaceEditRequest: NodeMarkdownInPlaceEditRequest? = nil
     var onTextChange: ((String) -> Void)?
     var onTextChangeWithRowMetadata: ((String, [NodeMarkdownTextKitRowMetadata]) -> Void)?
     var onRequestInsertImageAtRow: ((Int) -> String?)?
@@ -39,24 +40,30 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(owner: self) }
 
-    func makeNSView(context: Context) -> NSScrollView {
+    func makeNSView(context: Context) -> NodeMarkdownProseMirrorContainerView {
         context.coordinator.makeView()
     }
 
-    func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        context.coordinator.update(owner: self, scrollView: scrollView)
+    func updateNSView(_ containerView: NodeMarkdownProseMirrorContainerView, context: Context) {
+        context.coordinator.update(owner: self, scrollView: containerView.scrollView)
     }
 
-    static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
+    static func dismantleNSView(_ containerView: NodeMarkdownProseMirrorContainerView, coordinator: Coordinator) {
         coordinator.commitActiveNode(reason: "关闭编辑器")
         coordinator.cancelPendingPublish()
         coordinator.cancelRuntimeTasks()
+        coordinator.flushDiagnostic114(reason: "关闭编辑器")
     }
 
     @MainActor
     final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate {
         private var owner: NodeMarkdownProseMirrorRepresentable
         private let state: NodeMarkdownTextKit2DocumentState
+        // Node views are recycled and deleted. History belongs to the editor,
+        // so moving focus or removing a Node must not change the undo stack.
+        private let editorUndoManager = UndoManager()
+        private var lastNativeEditWasDeletion = false
+        private var lastNativeEditNodeID: UUID?
         private weak var tableView: NSTableView?
         private var textViewsByNodeID: [UUID: WeakTextView] = [:]
         private var nodeIDByTextView: [ObjectIdentifier: UUID] = [:]
@@ -77,6 +84,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
         private var lastExternalToken: Int
         private var lastNavigationToken: Int
         private var lastVisualState: VisualState
+        private var appliedInPlaceEditRequestID: UUID?
         private var documentStyleRevision = 1
         private var publishWorkItem: DispatchWorkItem?
         private var isApplyingModel = false
@@ -87,21 +95,39 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
         private var structuralViewportOrigin: NSPoint?
         private var pendingNavigationRow: Int?
         private var transientMeasurementGeneration: UInt64 = 0
+        private var caretVisibilityWorkItem: DispatchWorkItem?
         private var pendingViewportAnchor: ViewportAnchor?
         private let rowIdentifier = NSUserInterfaceItemIdentifier("NodeMarkdownProseMirrorRow")
-        private let sessionID = UUID()
+        private let bottomPageMarginIdentifier = NSUserInterfaceItemIdentifier("NodeMarkdownBottomPageMargin")
+        private let bottomPageMarginHeight: CGFloat = 15
+        private let sessionID: UUID
+        private let diagnostic114: NodeMarkdownDiagnostic114
 
         init(owner: NodeMarkdownProseMirrorRepresentable) {
+            let initializationStart = NodeMarkdownDiagnostic114.now()
+            let sessionID = UUID()
             self.owner = owner
+            self.sessionID = sessionID
             state = NodeMarkdownTextKit2DocumentState(text: owner.text, rowMetadata: owner.rowMetadata)
+            diagnostic114 = NodeMarkdownDiagnostic114(
+                sessionID: sessionID,
+                documentRows: owner.rowMetadata.count,
+                documentUTF16: (owner.text as NSString).length
+            )
             lastExternalToken = owner.externalTextSyncToken
             lastNavigationToken = owner.navigationRequestToken
             lastVisualState = VisualState(owner: owner)
             super.init()
             installDraftController(owner.draftCommitController)
+            diagnostic114.recordDuration(
+                "DocumentState初始化",
+                since: initializationStart,
+                slowThresholdMilliseconds: 8
+            )
         }
 
-        func makeView() -> NSScrollView {
+        func makeView() -> NodeMarkdownProseMirrorContainerView {
+            let diagnosticStart = NodeMarkdownDiagnostic114.now()
             let table = NodeMarkdownProseMirrorTableView()
             table.headerView = nil
             table.backgroundColor = .clear
@@ -128,6 +154,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             scroll.hasHorizontalScroller = false
             scroll.autohidesScrollers = true
             scroll.scrollerStyle = .overlay
+            scroll.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
             scroll.documentView = table
             scroll.contentView.postsBoundsChangedNotifications = true
             viewportObserver = NotificationCenter.default.addObserver(
@@ -139,23 +166,49 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             }
             tableView = table
             DispatchQueue.main.async { [weak self] in self?.scheduleExactLayout() }
-            return scroll
+            diagnostic114.recordDuration("makeView", since: diagnosticStart, slowThresholdMilliseconds: 8)
+            diagnostic114.flushIfNeeded(reason: "编辑器建立", readyRows: readyRowCount, force: true)
+            return NodeMarkdownProseMirrorContainerView(
+                scrollView: scroll,
+                bottomFrameHeight: 35
+            )
         }
 
         func update(owner: NodeMarkdownProseMirrorRepresentable, scrollView: NSScrollView) {
+            let diagnosticStart = NodeMarkdownDiagnostic114.now()
+            defer {
+                diagnostic114.updateDocument(
+                    rows: state.snapshot.nodes.count,
+                    utf16: (owner.text as NSString).length
+                )
+                diagnostic114.recordDuration("SwiftUI update", since: diagnosticStart)
+                diagnostic114.recordCount("SwiftUI update次数")
+                diagnostic114.flushIfNeeded(reason: "SwiftUI更新", readyRows: readyRowCount)
+            }
             let previousStyle = self.owner.documentStyle.renderIdentity
             let visualState = VisualState(owner: owner)
             self.owner = owner
             installDraftController(owner.draftCommitController)
+            if let request = owner.inPlaceEditRequest,
+               request.id != appliedInPlaceEditRequestID {
+                appliedInPlaceEditRequestID = request.id
+                TeachingCourseDiagnostic116.record(
+                    "op=\(request.diagnosticID ?? "-") TextKit2收到inPlaceRequest request=\(String(request.id.uuidString.prefix(8))) currentNodes=\(state.snapshot.nodes.count) ready=\(readyRowCount)"
+                )
+                applyInPlaceEditCommand(request.command, diagnosticID: request.diagnosticID)
+            }
             if owner.externalTextSyncToken != lastExternalToken {
+                diagnostic114.recordCount("外部同步次数")
                 lastExternalToken = owner.externalTextSyncToken
                 if !matchesCurrentDocument(text: owner.text, rowMetadata: owner.rowMetadata) {
+                    diagnostic114.recordCount("外部全文重装次数")
                     captureViewportAnchor()
                     commitActiveNode(reason: "外部文档更新")
                     guard state.replace(text: owner.text, rowMetadata: owner.rowMetadata) else {
                         lastVisualState = visualState
                         return
                     }
+                    editorUndoManager.removeAllActions()
                     invalidateExactLayout()
                     renderCache.removeAll()
                     activeNodeID = nil
@@ -164,6 +217,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                     scheduleExactLayout()
                 }
             } else if owner.documentStyle.renderIdentity != previousStyle {
+                diagnostic114.recordCount("样式全文重排次数")
                 captureViewportAnchor()
                 documentStyleRevision &+= 1
                 invalidateExactLayout()
@@ -171,6 +225,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 tableView?.reloadData()
                 scheduleExactLayout()
             } else if visualState != lastVisualState {
+                diagnostic114.recordCount("可见状态刷新次数")
                 refreshVisibleNodesForStateOnly()
             }
             lastVisualState = visualState
@@ -183,9 +238,14 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             }
         }
 
-        func numberOfRows(in tableView: NSTableView) -> Int { readyRowCount }
+        func numberOfRows(in tableView: NSTableView) -> Int {
+            readyRowCount + (showsBottomPageMargin ? 1 : 0)
+        }
 
         func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+            if isBottomPageMarginRow(row) {
+                return bottomPageMarginHeight
+            }
             let width = viewportLayoutWidth()
             guard let node = state.node(at: row),
                   let geometry = exactGeometries[node.id],
@@ -197,11 +257,24 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
         }
 
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+            if isBottomPageMarginRow(row) {
+                let view = tableView.makeView(withIdentifier: bottomPageMarginIdentifier, owner: self) ?? NSView()
+                view.identifier = bottomPageMarginIdentifier
+                return view
+            }
             guard let node = state.node(at: row) else { return nil }
             let cell = (tableView.makeView(withIdentifier: rowIdentifier, owner: self) as? NodeMarkdownProseMirrorCellView)
                 ?? NodeMarkdownProseMirrorCellView(identifier: rowIdentifier)
             configure(cell: cell, node: node, row: row, width: viewportLayoutWidth())
             return cell
+        }
+
+        private var showsBottomPageMargin: Bool {
+            readyRowCount > 0 && readyRowCount == state.snapshot.nodes.count
+        }
+
+        private func isBottomPageMarginRow(_ row: Int) -> Bool {
+            showsBottomPageMargin && row == readyRowCount
         }
 
         func tableView(_ tableView: NSTableView, didRemove rowView: NSTableRowView, forRow row: Int) {
@@ -224,6 +297,25 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             guard let replacementString,
                   let nodeTextView = textView as? NodeMarkdownTextKit2TextView,
                   let nodeID = nodeIDByTextView[ObjectIdentifier(nodeTextView)] else { return true }
+            if !editorUndoManager.isUndoing, !editorUndoManager.isRedoing,
+               !nodeTextView.hasActiveInputMethodComposition {
+                let isDeletion = replacementString.isEmpty && affectedCharRange.length > 0
+                if lastNativeEditNodeID != nodeID
+                    || isDeletion != lastNativeEditWasDeletion
+                    || nodeTextView.selectedRange().length > 0 {
+                    nodeTextView.breakUndoCoalescing()
+                }
+                lastNativeEditNodeID = nodeID
+                lastNativeEditWasDeletion = isDeletion
+            }
+            if replacementString.isEmpty, affectedCharRange.length > 0 {
+                let source = nodeTextView.documentString() as NSString
+                let deletedText = affectedCharRange.exact(toLength: source.length).map { source.substring(with: $0) } ?? "<range越界>"
+                NodeMarkdownDiagnostic117.record(
+                    operationID: nodeTextView.diagnostic117OperationID,
+                    "分块管线shouldChange node=\(short(nodeID)) row=\(state.row(for: nodeID).map(String.init) ?? "nil") affected=\(NSStringFromRange(affectedCharRange)) selection=\(NSStringFromRange(nodeTextView.selectedRange())) fullNode=\(affectedCharRange.location == 0 && affectedCharRange.length == source.length) deleted=\(NodeMarkdownDiagnostic117.textSummary(deletedText))"
+                )
+            }
             if let protectedEdit = NodeMarkdownImageEditProtection.protectedEdit(
                 sourceText: nodeTextView.documentString(),
                 affectedRange: affectedCharRange,
@@ -247,13 +339,63 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
         }
 
         func textDidChange(_ notification: Notification) {
+            let diagnosticStart = NodeMarkdownDiagnostic114.now()
+            defer {
+                diagnostic114.recordDuration("输入textDidChange", since: diagnosticStart, slowThresholdMilliseconds: 8)
+                diagnostic114.recordCount("输入次数")
+                diagnostic114.flushIfNeeded(reason: "输入", readyRows: readyRowCount)
+            }
             guard !isApplyingModel,
                   let textView = notification.object as? NodeMarkdownTextKit2TextView,
                   let nodeID = nodeIDByTextView[ObjectIdentifier(textView)],
                   let row = state.row(for: nodeID),
                   let oldNode = state.node(at: row) else { return }
-            let content = textView.string
-            textView.commitProjectedSourceText(content)
+            guard !textView.isApplyingQuickInputReplacement else { return }
+            let isHistoryReplay = editorUndoManager.isUndoing || editorUndoManager.isRedoing
+            defer {
+                if isHistoryReplay {
+                    let revision = state.revision
+                    // AppKit restores its selection after textDidChange. Collapse
+                    // that restored range only after the undo command finishes.
+                    DispatchQueue.main.async { [weak self, weak textView] in
+                        guard let self, let textView,
+                              self.state.revision == revision,
+                              self.nodeIDByTextView[ObjectIdentifier(textView)] == nodeID else { return }
+                        let selection = textView.selectedRange()
+                        let caret = min(NSMaxRange(selection), textView.nodeSourceTextSnapshot.utf16.count)
+                        textView.setSelectedRange(NSRange(location: caret, length: 0))
+                        textView.setNeedsDisplay(textView.bounds)
+                    }
+                    lastNativeEditNodeID = nil
+                }
+            }
+            let typedContent = textView.string
+            if let operationID = textView.diagnostic117OperationID {
+                NodeMarkdownDiagnostic117.record(
+                    operationID: operationID,
+                    "分块管线textDidChange前 node=\(short(nodeID)) row=\(row) old=\(NodeMarkdownDiagnostic117.textSummary(oldNode.content)) typed=\(NodeMarkdownDiagnostic117.textSummary(typedContent)) selection=\(NSStringFromRange(textView.selectedRange()))"
+                )
+            }
+            textView.commitProjectedSourceText(typedContent)
+
+            // 快捷输入只作用于当前 Node 文本，检查与替换都在单块内完成；未命中时不再重复读正文。
+            let quickInputEdit: NodeMarkdownTextKit2QuickInputEdit?
+            let quickInputStart = NodeMarkdownDiagnostic114.now()
+            if !textView.hasActiveInputMethodComposition,
+               textView.undoManager?.isUndoing != true,
+               textView.undoManager?.isRedoing != true {
+                quickInputEdit = textView.applyQuickInputIfNeeded(documentStyle: owner.documentStyle)
+            } else {
+                quickInputEdit = nil
+            }
+            diagnostic114.recordDuration("快捷输入检查", since: quickInputStart)
+
+            let content: String
+            if quickInputEdit != nil {
+                content = textView.string
+            } else {
+                content = typedContent
+            }
             guard content != oldNode.content else { return }
             var replacement = oldNode
             replacement.content = content
@@ -269,15 +411,25 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 recordsHistory: false,
                 label: "Type in Node"
             )
+            let dispatchStart = NodeMarkdownDiagnostic114.now()
             guard let result = state.dispatch(transaction) else {
+                diagnostic114.recordDuration("输入事务dispatch", since: dispatchStart)
                 reinstall(node: oldNode, in: textView, row: row)
                 return
             }
+            if let operationID = textView.diagnostic117OperationID {
+                NodeMarkdownDiagnostic117.record(
+                    operationID: operationID,
+                    "分块管线文字事务成功 node=\(short(nodeID)) row=\(row) new=\(NodeMarkdownDiagnostic117.textSummary(state.node(at: row)?.content ?? "<missing>")) rows=\(state.snapshot.nodes.count)"
+                )
+            }
+            diagnostic114.recordDuration("输入事务dispatch", since: dispatchStart)
             consume(result: result, refresh: false)
             textView.nodeMarkdownRowLayouts = [localLayout(for: replacement, row: row).replacingSpacingBefore(0)]
             owner.onEditingDraftDirtyChange?(true)
             reportFocus(textView: textView, row: row)
             measure(textView: textView, nodeID: nodeID, row: row)
+            scheduleCaretVisibility(textView: textView, nodeID: nodeID)
             textView.setNeedsDisplay(textView.bounds)
         }
 
@@ -299,6 +451,10 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
         }
 
         func commitActiveNode(reason: String) {
+            let diagnosticStart = NodeMarkdownDiagnostic114.now()
+            defer {
+                diagnostic114.recordDuration("提交活动Node", since: diagnosticStart, slowThresholdMilliseconds: 8, details: "reason=\(reason)")
+            }
             guard let nodeID = activeNodeID,
                   let row = state.row(for: nodeID),
                   let node = state.node(at: row) else { return }
@@ -356,16 +512,32 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
 
         func cancelRuntimeTasks() {
             cancelExactLayout()
+            caretVisibilityWorkItem?.cancel()
+            caretVisibilityWorkItem = nil
             if let viewportObserver {
                 NotificationCenter.default.removeObserver(viewportObserver)
                 self.viewportObserver = nil
             }
         }
 
+        func flushDiagnostic114(reason: String) {
+            diagnostic114.flushIfNeeded(reason: reason, readyRows: readyRowCount, force: true)
+        }
+
         private func configure(cell: NodeMarkdownProseMirrorCellView, node: NodeMarkdownTextKit2Node, row: Int, width: CGFloat) {
+            let diagnosticStart = NodeMarkdownDiagnostic114.now()
+            defer {
+                diagnostic114.recordDuration(
+                    "可见Cell配置",
+                    since: diagnosticStart,
+                    details: "row=\(row) nodeUTF16=\(node.content.utf16.count)"
+                )
+                diagnostic114.recordCount("Cell配置次数")
+            }
             let textView = cell.textView
             var record = renderRecord(for: node, row: row, width: width)
             if record == nil, structuralEditInProgress {
+                diagnostic114.recordCount("结构编辑同步补测次数")
                 // A structural edit may invalidate one visible Node. Repair that
                 // exact Node synchronously; never escalate a local miss into a
                 // document-wide geometry reset.
@@ -373,6 +545,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 record = renderRecord(for: node, row: row, width: width)
             }
             guard let record else {
+                diagnostic114.recordCount("Cell缺失几何次数")
                 if let previousNodeID = cell.nodeID {
                     textViewsByNodeID.removeValue(forKey: previousNodeID)
                 }
@@ -405,7 +578,9 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             textView.nodeTextContainer.widthTracksTextView = true
             textView.nodeTextContainer.containerSize = NSSize(width: max(1, width - 32), height: .greatestFiniteMagnitude)
             textView.quickInputSettings = owner.quickInputSettings
-            textView.suppressesAutomaticSelectionScrolling = true
+            textView.suppressesAutomaticSelectionScrolling = !(
+                activeNodeID == node.id && textView.window?.firstResponder === textView
+            )
             textView.onRequestSave = { [weak self] in
                 self?.flushActiveNodeForSave()
                 self?.owner.onRequestSave?()
@@ -424,7 +599,21 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 return self.changeLevel(nodeID: currentID, increaseLevel: increaseLevel)
             }
             textView.onHandleDeleteBackward = { [weak self, weak textView] in
-                guard let self, let textView, textView.selectedRange().location == 0 else { return false }
+                guard let self, let textView else { return false }
+                let selection = textView.selectedRange()
+                let sourceLength = (textView.documentString() as NSString).length
+                if selection.length > 0 {
+                    if selection.location == 0, selection.length == sourceLength {
+                        return self.deleteFullySelectedNode(nodeID: node.id, textView: textView)
+                    }
+                    return false
+                }
+                let atStart = selection.location == 0
+                NodeMarkdownDiagnostic117.record(
+                    operationID: textView.diagnostic117OperationID,
+                    "分块管线Backspace判定 node=\(self.short(node.id)) row=\(self.state.row(for: node.id).map(String.init) ?? "nil") selection=\(NSStringFromRange(selection)) nodeUTF16=\((textView.documentString() as NSString).length) atStart=\(atStart) decision=\(atStart ? "尝试向上合并" : "交给系统删除")"
+                )
+                guard atStart else { return false }
                 return self.joinWithPrevious(nodeID: node.id)
             }
             textView.onHandleDeleteForward = { [weak self, weak textView] in
@@ -438,9 +627,12 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 return self.moveVertically(from: node.id, direction: direction, selection: textView.selectedRange())
             }
             textView.onRequestInsertImage = { [weak self, weak textView] in
-                guard let self, let textView,
-                      let currentID = self.nodeIDByTextView[ObjectIdentifier(textView)] else { return }
-                self.insertImage(at: currentID)
+                guard let self, let textView else { return }
+                let firstResponder = textView.window?.firstResponder as? NodeMarkdownTextKit2TextView
+                let targetTextView = firstResponder ?? textView
+                let targetID = self.activeNodeID ?? self.nodeIDByTextView[ObjectIdentifier(targetTextView)]
+                guard let targetID else { return }
+                self.insertImage(at: targetID, in: targetTextView)
             }
             textView.onRequestDeleteNodePackage = { [weak self] in
                 guard let self, let row = self.state.row(for: node.id) else { return }
@@ -498,8 +690,23 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
 
         private func reinstall(node: NodeMarkdownTextKit2Node, in textView: NodeMarkdownTextKit2TextView, row: Int) {
             let width = viewportLayoutWidth(fallback: textView.bounds.width)
-            guard let record = renderRecord(for: node, row: row, width: width) else { return }
-            reinstall(record: record, in: textView)
+            if let record = renderRecord(for: node, row: row, width: width) {
+                reinstall(record: record, in: textView)
+                return
+            }
+            // renderRecord 暂缺时也要保证可见文本、行布局和编号同步，不丢标记。
+            let layout = localLayout(for: node, row: row).replacingSpacingBefore(0)
+            textView.replaceDocumentText(node.content, documentStyle: owner.documentStyle)
+            textView.nodeMarkdownRowLayouts = [layout]
+            textView.applyNodeMarkdownStyles(
+                rowLayouts: [layout],
+                documentStyle: owner.documentStyle,
+                baseDirectoryURL: owner.workingDirectoryURL,
+                searchQuery: owner.searchQuery,
+                activeRowIndex: owner.activeRowIndex == row ? 0 : nil,
+                activeMatchLocationInRow: owner.activeRowIndex == row ? owner.activeMatchLocationInRow : nil,
+                editingRowIndex: activeNodeID == node.id ? 0 : nil
+            )
         }
 
         private func reinstall(record: NodeMarkdownBlockRenderRecord, in textView: NodeMarkdownTextKit2TextView) {
@@ -547,6 +754,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 owner.onInputSessionStateChange?(true)
                 owner.onActiveRowChange?(row)
             }
+            textView.suppressesAutomaticSelectionScrolling = false
             reportFocus(textView: textView, row: row)
             _ = origin
         }
@@ -627,6 +835,49 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             return true
         }
 
+        private func deleteFullySelectedNode(nodeID: UUID, textView: NodeMarkdownTextKit2TextView) -> Bool {
+            guard let row = state.row(for: nodeID),
+                  let node = state.node(at: row) else { return true }
+            // Preserve the existing protected-heading rules. The final Node stays
+            // editable as an empty paragraph through the native text deletion.
+            guard !node.isProtectedH3 else { return true }
+            guard state.snapshot.nodes.count > 1 else { return false }
+            let selection = textView.selectedRange()
+            guard ownsStructuralInput(nodeID: nodeID, textView: textView),
+                  beginStructuralEdit(nodeID: nodeID, textView: textView) else { return true }
+            let targetRow = row > 0 ? row - 1 : 0
+            guard let target = state.node(at: row > 0 ? row - 1 : row + 1) else {
+                cancelStructuralEdit()
+                return true
+            }
+            let offset = row > 0 ? target.content.utf16.count : 0
+            let transaction = NodeMarkdownTransaction(
+                baseRevision: state.revision,
+                steps: [.deleteNodes(nodeIDs: [nodeID])],
+                selectionBefore: NodeMarkdownNodeSelection(
+                    anchor: .init(nodeID: nodeID, utf16Offset: selection.location),
+                    head: .init(nodeID: nodeID, utf16Offset: NSMaxRange(selection))
+                ),
+                selectionAfter: NodeMarkdownNodeSelection(anchor: .init(nodeID: target.id, utf16Offset: offset)),
+                label: "Delete Selected Node"
+            )
+            guard let result = state.dispatch(transaction) else {
+                cancelStructuralEdit()
+                return true
+            }
+            registerStructuralUndo(from: textView)
+            finishStructuralEdit(
+                result: result,
+                targetNodeID: target.id,
+                targetRow: targetRow,
+                targetOffset: offset,
+                insertedRows: [],
+                removedRows: IndexSet(integer: row),
+                rowsToReload: IndexSet(integersIn: targetRow..<min(row + 1, state.snapshot.nodes.count))
+            )
+            return true
+        }
+
         private func joinWithPrevious(nodeID: UUID) -> Bool {
             guard let row = state.row(for: nodeID), row > 0,
                   let previous = state.node(at: row - 1),
@@ -634,6 +885,10 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                   !node.isProtectedH3 else { return false }
             guard let textView = textViewsByNodeID[nodeID]?.value,
                   ownsStructuralInput(nodeID: nodeID, textView: textView) else { return true }
+            NodeMarkdownDiagnostic117.record(
+                operationID: textView.diagnostic117OperationID,
+                "向上合并开始 left=\(short(previous.id)) right=\(short(node.id)) row=\(row) selection=\(NSStringFromRange(textView.selectedRange())) leftText=\(NodeMarkdownDiagnostic117.textSummary(previous.content)) rightText=\(NodeMarkdownDiagnostic117.textSummary(node.content))"
+            )
             guard beginStructuralEdit(nodeID: nodeID, textView: textView) else { return true }
             let offset = (previous.content as NSString).length
             let transaction = NodeMarkdownTransaction(
@@ -644,9 +899,17 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 label: "Join Nodes"
             )
             guard let result = state.dispatch(transaction) else {
+                NodeMarkdownDiagnostic117.record(
+                    operationID: textView.diagnostic117OperationID,
+                    "向上合并事务失败 row=\(row) revision=\(state.revision)"
+                )
                 cancelStructuralEdit()
                 return true
             }
+            NodeMarkdownDiagnostic117.record(
+                operationID: textView.diagnostic117OperationID,
+                "向上合并事务成功 targetRow=\(row - 1) target=\(short(previous.id)) merged=\(NodeMarkdownDiagnostic117.textSummary(state.node(at: row - 1)?.content ?? "<missing>")) rows=\(state.snapshot.nodes.count)"
+            )
             registerStructuralUndo(from: textView)
             finishStructuralEdit(
                 result: result,
@@ -855,19 +1118,21 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 guard let row = state.row(for: id) else { continue }
                 installExactStaticGeometry(at: row, notifyTable: false)
             }
+            let oldReadyCount = readyRowCount
+            let visibleRemovedRows = IndexSet(removedRows.filter { $0 >= 0 && $0 < oldReadyCount })
             let newReadyCount = max(
                 0,
                 min(
                     state.snapshot.nodes.count,
-                    readyRowCount + insertedRows.count - removedRows.count
+                    oldReadyCount + insertedRows.count - visibleRemovedRows.count
                 )
             )
             readyRowCount = newReadyCount
             initialViewportIsReady = readyRowCount > 0
 
             tableView.beginUpdates()
-            if !removedRows.isEmpty {
-                tableView.removeRows(at: removedRows, withAnimation: [])
+            if !visibleRemovedRows.isEmpty {
+                tableView.removeRows(at: visibleRemovedRows, withAnimation: [])
             }
             if !insertedRows.isEmpty {
                 tableView.insertRows(at: insertedRows, withAnimation: [])
@@ -913,6 +1178,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 label: increaseLevel ? "Sink Node" : "Lift Node"
             )
             guard let result = state.dispatch(transaction) else { return false }
+            registerStructuralUndo(from: textViewsByNodeID[nodeID]?.value)
             consume(result: result, refresh: false)
             if let updated = state.node(at: row), let textView = textViewsByNodeID[nodeID]?.value {
                 reinstall(node: updated, in: textView, row: row)
@@ -922,7 +1188,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             return true
         }
 
-        private func insertImage(at nodeID: UUID) {
+        private func insertImage(at nodeID: UUID, in targetTextView: NodeMarkdownTextKit2TextView) {
             flushActiveNodeForSave()
             guard let row = state.row(for: nodeID),
                   let preparedContent = owner.onRequestInsertImageAtRow?(row),
@@ -936,8 +1202,12 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 label: "Insert Image"
             )
             guard let result = state.dispatch(transaction) else { return }
+            registerStructuralUndo(from: targetTextView)
             consume(result: result, refresh: false)
-            if let updated = state.node(at: row), let textView = textViewsByNodeID[nodeID]?.value {
+            if let updated = state.node(at: row) {
+                let textView = targetTextView
+                textViewsByNodeID[nodeID] = WeakTextView(textView)
+                nodeIDByTextView[ObjectIdentifier(textView)] = nodeID
                 // The open panel temporarily resigns first responder. Reclaim this exact
                 // Node before installing text so the inserted link is immediately shown
                 // as editable source instead of waiting for another click/blur cycle.
@@ -982,6 +1252,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 label: "Protect Image Link"
             )
             guard let result = state.dispatch(transaction) else { return }
+            registerStructuralUndo(from: textView)
             consume(result: result, refresh: false)
             reinstall(node: updated, in: textView, row: row)
             textView.setSelectedRange(NSRange(location: caret, length: 0))
@@ -989,6 +1260,231 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             owner.onEditingDraftDirtyChange?(true)
             reportFocus(textView: textView, row: row)
             publishNow()
+        }
+
+        private func applyInPlaceEditCommand(_ command: NodeMarkdownInPlaceEditCommand, diagnosticID: String?) {
+            switch command {
+            case let .replaceNodeText(nodeID, content):
+                applyReplaceNodeTextInPlace(nodeID: nodeID, content: content)
+            case let .synchronize(nodes):
+                applySynchronizeInPlace(targetNodes: nodes, diagnosticID: diagnosticID)
+            }
+        }
+
+        /// 画图插入：只替换单个 Node 的正文，随后发布快照，让父页面重建 document。
+        private func applyReplaceNodeTextInPlace(nodeID: UUID, content: String) {
+            flushActiveNodeForSave()
+            guard let row = state.row(for: nodeID),
+                  let node = state.node(at: row),
+                  node.content != content else { return }
+            var replacement = node
+            replacement.content = content
+            let selection = NodeMarkdownNodeSelection(
+                anchor: .init(nodeID: nodeID, utf16Offset: content.utf16.count)
+            )
+            let transaction = NodeMarkdownTransaction(
+                baseRevision: state.revision,
+                steps: [.replaceNode(nodeID: nodeID, node: replacement)],
+                selectionAfter: selection,
+                label: "In-Place Drawing"
+            )
+            guard let result = state.dispatch(transaction) else { return }
+            registerStructuralUndo(from: textViewsByNodeID[nodeID]?.value)
+            consume(result: result, refresh: false)
+            if let textView = textViewsByNodeID[nodeID]?.value {
+                nodeIDByTextView[ObjectIdentifier(textView)] = nodeID
+                reinstall(node: replacement, in: textView, row: row)
+                measure(textView: textView, nodeID: nodeID, row: row)
+            } else {
+                refreshRows([row])
+            }
+            // 该命令在 updateNSView 内触发，把快照发布推迟到下一轮 runloop，
+            // 避免在 SwiftUI 视图更新过程中同步修改 @State。
+            DispatchQueue.main.async { [weak self] in
+                self?.publishNow()
+            }
+        }
+
+        /// 随堂插入H3包：将 ProseMirror 状态就地同步到父页面已更新好的目标序列。
+        /// 父页面已经处理了 document、textKitDraft 与磁盘，因此这里只做结构事务，不发布快照。
+        private func applySynchronizeInPlace(targetNodes: [NodeMarkdownTextKit2Node], diagnosticID: String?) {
+            let diagnosticID = diagnosticID ?? "-"
+            let diagnosticStart = TeachingCourseDiagnostic116.now()
+            let current = state.snapshot.nodes
+            guard current != targetNodes else {
+                TeachingCourseDiagnostic116.record(
+                    "op=\(diagnosticID) TextKit2同步跳过 reason=当前与目标相同 nodes=\(current.count)"
+                )
+                return
+            }
+
+            let prefix = commonPrefixCount(current, targetNodes)
+            let suffix = commonSuffixCount(current, targetNodes, prefix: prefix)
+            let removed = Array(current[prefix..<(current.count - suffix)])
+            let inserted = Array(targetNodes[prefix..<(targetNodes.count - suffix)])
+            TeachingCourseDiagnostic116.record(
+                "op=\(diagnosticID) TextKit2结构差分 current=\(current.count) target=\(targetNodes.count) prefix=\(prefix) suffix=\(suffix) removed=\(removed.count) inserted=\(inserted.count) ready=\(readyRowCount)"
+            )
+
+            let removedIDs = Set(removed.map(\.id))
+            let insertedIDs = Set(inserted.map(\.id))
+            let survivingIDs = Set(current.map(\.id)).subtracting(removedIDs)
+            let isClean = removedIDs.isDisjoint(with: insertedIDs)
+                && insertedIDs.isDisjoint(with: survivingIDs)
+                && !(removed.isEmpty && inserted.isEmpty)
+            guard isClean else {
+                TeachingCourseDiagnostic116.record(
+                    "op=\(diagnosticID) TextKit2结构差分回退 reason=身份集合不干净 removedIDs=\(removedIDs.count) insertedIDs=\(insertedIDs.count) surviving=\(survivingIDs.count)"
+                )
+                fallBackToFullExternalReload()
+                return
+            }
+
+            var steps: [NodeMarkdownTransactionStep] = []
+            if !removed.isEmpty {
+                steps.append(.deleteNodes(nodeIDs: removed.map(\.id)))
+            }
+            if !inserted.isEmpty {
+                steps.append(.insertNodes(row: prefix, nodes: inserted))
+            }
+            guard !steps.isEmpty else { return }
+
+            applyExternalInPlaceStructuralEdit(
+                steps: steps,
+                removedCount: removed.count,
+                insertedCount: inserted.count,
+                anchorRow: prefix,
+                diagnosticID: diagnosticID
+            )
+            TeachingCourseDiagnostic116.record(
+                "op=\(diagnosticID) TextKit2同步命令返回 duration=\(String(format: "%.2f", TeachingCourseDiagnostic116.elapsedMilliseconds(since: diagnosticStart)))ms stateNodes=\(state.snapshot.nodes.count) ready=\(readyRowCount)"
+            )
+        }
+
+        private func applyExternalInPlaceStructuralEdit(
+            steps: [NodeMarkdownTransactionStep],
+            removedCount: Int,
+            insertedCount: Int,
+            anchorRow: Int,
+            diagnosticID: String
+        ) {
+            guard let tableView else {
+                TeachingCourseDiagnostic116.record("op=\(diagnosticID) TextKit2结构应用回退 reason=tableView不存在")
+                fallBackToFullExternalReload()
+                return
+            }
+            commitActiveNode(reason: "就地结构更新")
+            structuralEditGeneration &+= 1
+            let generation = structuralEditGeneration
+            structuralEditInProgress = true
+            structuralViewportOrigin = tableView.enclosingScrollView?.contentView.bounds.origin
+            pendingFocusNodeID = nil
+            pendingFocusOffset = nil
+            tableView.window?.makeFirstResponder(tableView)
+
+            let transaction = NodeMarkdownTransaction(
+                baseRevision: state.revision,
+                steps: steps,
+                label: "In-Place External Structural Edit"
+            )
+            guard let result = state.dispatch(transaction) else {
+                TeachingCourseDiagnostic116.record("op=\(diagnosticID) TextKit2结构事务失败 reason=dispatch返回nil")
+                structuralEditInProgress = false
+                structuralViewportOrigin = nil
+                fallBackToFullExternalReload()
+                return
+            }
+            registerStructuralUndo(from: nil)
+
+            if anchorRow >= readyRowCount {
+                TeachingCourseDiagnostic116.record(
+                    "op=\(diagnosticID) TextKit2结构应用尾部路径 anchor=\(anchorRow) ready=\(readyRowCount) removed=\(removedCount) inserted=\(insertedCount) stateNodes=\(state.snapshot.nodes.count)"
+                )
+                // 插入/删除落在尚未测量的尾部，可见行完全不变。只推进精确布局即可，
+                // 不触碰当前表格行，避免把 readyRowCount 清空造成视野跳动。
+                cancelExactLayout()
+                for id in result.impact.deletedNodeIDs {
+                    renderCache.invalidate(nodeID: id)
+                    exactGeometries[id] = nil
+                    textViewsByNodeID.removeValue(forKey: id)
+                }
+                for id in result.impact.layoutNodeIDs {
+                    guard let row = state.row(for: id) else { continue }
+                    installExactStaticGeometry(at: row, notifyTable: false)
+                }
+                scheduleExactLayout()
+                structuralEditInProgress = false
+                structuralViewportOrigin = nil
+                return
+            }
+
+            let removedRows = removedCount > 0
+                ? IndexSet(integersIn: anchorRow..<(anchorRow + removedCount))
+                : IndexSet()
+            let insertedRows = insertedCount > 0
+                ? IndexSet(integersIn: anchorRow..<(anchorRow + insertedCount))
+                : IndexSet()
+            let reloadLower = max(0, anchorRow - 1)
+            let reloadUpper = min(state.snapshot.nodes.count, anchorRow + insertedCount + 1)
+            let rowsToReload = reloadLower < reloadUpper
+                ? IndexSet(integersIn: reloadLower..<reloadUpper)
+                : IndexSet()
+
+            applyStructuralTableDelta(
+                result: result,
+                insertedRows: insertedRows,
+                removedRows: removedRows,
+                rowsToReload: rowsToReload
+            )
+            TeachingCourseDiagnostic116.record(
+                "op=\(diagnosticID) TextKit2表格增删完成 anchor=\(anchorRow) removed=\(removedRows.count) inserted=\(insertedRows.count) ready=\(readyRowCount) stateNodes=\(state.snapshot.nodes.count)"
+            )
+            restoreStructuralViewport()
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.structuralEditGeneration == generation else { return }
+                self.restoreStructuralViewport()
+                self.structuralEditInProgress = false
+                self.structuralViewportOrigin = nil
+            }
+        }
+
+        private func fallBackToFullExternalReload() {
+            captureViewportAnchor()
+            commitActiveNode(reason: "就地同步回退")
+            guard state.replace(text: owner.text, rowMetadata: owner.rowMetadata) else { return }
+            editorUndoManager.removeAllActions()
+            invalidateExactLayout()
+            renderCache.removeAll()
+            activeNodeID = nil
+            baselineNode = nil
+            tableView?.reloadData()
+            scheduleExactLayout()
+        }
+
+        private func commonPrefixCount(
+            _ a: [NodeMarkdownTextKit2Node],
+            _ b: [NodeMarkdownTextKit2Node]
+        ) -> Int {
+            var index = 0
+            while index < a.count && index < b.count && a[index] == b[index] {
+                index += 1
+            }
+            return index
+        }
+
+        private func commonSuffixCount(
+            _ a: [NodeMarkdownTextKit2Node],
+            _ b: [NodeMarkdownTextKit2Node],
+            prefix: Int
+        ) -> Int {
+            var index = 0
+            while index < a.count - prefix && index < b.count - prefix {
+                if a[a.count - 1 - index] != b[b.count - 1 - index] {
+                    break
+                }
+                index += 1
+            }
+            return index
         }
 
         private func focus(nodeID: UUID, offset: Int) {
@@ -1034,7 +1530,74 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                     restoreStructuralViewport()
                     structuralViewportOrigin = nil
                 }
+                scheduleCaretVisibility(textView: textView, nodeID: nodeID)
             }
+        }
+
+        /// 像文字处理器一样，让输入光标始终停留在上下边界内侧。
+        /// 普通输入、软换行、拼音组合态和回车后的新Node共用这一条路径。
+        private func scheduleCaretVisibility(
+            textView: NodeMarkdownTextKit2TextView,
+            nodeID: UUID,
+            allowsActiveComposition: Bool = false
+        ) {
+            caretVisibilityWorkItem?.cancel()
+            let workItem = DispatchWorkItem { [weak self, weak textView] in
+                guard let self, let textView else { return }
+                self.scrollCaretIntoComfortZone(
+                    textView: textView,
+                    nodeID: nodeID,
+                    allowsActiveComposition: allowsActiveComposition
+                )
+            }
+            caretVisibilityWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.03, execute: workItem)
+        }
+
+        private func scrollCaretIntoComfortZone(
+            textView: NodeMarkdownTextKit2TextView,
+            nodeID: UUID,
+            allowsActiveComposition: Bool
+        ) {
+            guard textView.window?.firstResponder === textView,
+                  nodeIDByTextView[ObjectIdentifier(textView)] == nodeID,
+                  let row = state.row(for: nodeID),
+                  row < readyRowCount,
+                  let tableView,
+                  let scrollView = tableView.enclosingScrollView else { return }
+
+            let selection = textView.selectedRange()
+            guard selection.length == 0 else { return }
+            _ = allowsActiveComposition
+
+            textView.suppressesAutomaticSelectionScrolling = false
+            tableView.layoutSubtreeIfNeeded()
+            let rowRect = tableView.rect(ofRow: row)
+            let viewport = scrollView.contentView.bounds
+            let comfortMargin = bottomPageMarginHeight
+            var caretRect = rowRect
+            let screenRect = textView.firstRect(forCharacterRange: selection, actualRange: nil)
+            if !screenRect.isNull,
+               screenRect.height > 0,
+               let window = textView.window {
+                caretRect = tableView.convert(window.convertFromScreen(screenRect), from: nil)
+            }
+
+            let scrollDelta: CGFloat
+            if caretRect.minY < viewport.minY + comfortMargin {
+                scrollDelta = caretRect.minY - (viewport.minY + comfortMargin)
+            } else if caretRect.maxY > viewport.maxY - comfortMargin {
+                scrollDelta = caretRect.maxY - (viewport.maxY - comfortMargin)
+            } else {
+                return
+            }
+            guard abs(scrollDelta) > 0.5 else { return }
+
+            var bounds = viewport
+            bounds.origin.y += scrollDelta
+            let target = scrollView.contentView.constrainBoundsRect(bounds).origin
+            scrollView.contentView.setBoundsOrigin(target)
+            scrollView.reflectScrolledClipView(scrollView.contentView)
         }
 
         private func navigate(to row: Int, in scrollView: NSScrollView) {
@@ -1060,6 +1623,14 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             row: Int,
             transient: Bool = false
         ) {
+            let diagnosticStart = NodeMarkdownDiagnostic114.now()
+            defer {
+                diagnostic114.recordDuration(
+                    transient ? "编辑态瞬时测量" : "可见Node测量",
+                    since: diagnosticStart,
+                    details: "row=\(row)"
+                )
+            }
             guard state.row(for: nodeID) == row,
                   let node = state.node(at: row) else { return }
             let width = viewportLayoutWidth(fallback: textView.bounds.width)
@@ -1104,6 +1675,11 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                     nodeID: nodeID,
                     row: row,
                     transient: true
+                )
+                self.scheduleCaretVisibility(
+                    textView: textView,
+                    nodeID: nodeID,
+                    allowsActiveComposition: true
                 )
             }
         }
@@ -1165,10 +1741,15 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
         ) -> NodeMarkdownBlockRenderRecord? {
             let key = cacheKey(for: node.id, row: row, width: width)
             if let cached = renderCache[key], cached.node == node, cached.row == row {
+                diagnostic114.recordCount("渲染缓存命中")
                 return cached
             }
             guard let geometry = exactGeometries[node.id],
-                  geometry.key == exactLayoutKey(for: node.id, width: width) else { return nil }
+                  geometry.key == exactLayoutKey(for: node.id, width: width) else {
+                diagnostic114.recordCount("渲染缓存缺失几何")
+                return nil
+            }
+            diagnostic114.recordCount("渲染缓存重建")
             let record = NodeMarkdownBlockRenderRecord(
                 key: key,
                 node: node,
@@ -1210,6 +1791,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             let oldScaleMilli = Int((exactLayoutScale * 1_000).rounded())
             let newScaleMilli = Int((scale * 1_000).rounded())
             guard oldPixels != newPixels || oldScaleMilli != newScaleMilli else { return }
+            diagnostic114.recordCount("宽度全文重排次数")
 
             captureViewportAnchor()
             cancelExactLayout()
@@ -1245,6 +1827,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
 
         private func requestExactLayoutRecovery() {
             guard !exactLayoutRecoveryScheduled else { return }
+            diagnostic114.recordCount("布局恢复次数")
             exactLayoutRecoveryScheduled = true
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
@@ -1295,7 +1878,9 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
         }
 
         private func viewportDidChange() {
+            diagnostic114.recordCount("视口变化次数")
             scheduleExactLayout()
+            diagnostic114.flushIfNeeded(reason: "滚动", readyRows: readyRowCount)
         }
 
         private func matchesCurrentDocument(
@@ -1344,6 +1929,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
         }
 
         private func invalidateExactLayout(startingAt row: Int = 0) {
+            diagnostic114.recordCount("布局失效次数")
             cancelExactLayout()
             let start = max(0, min(row, state.snapshot.nodes.count))
             if start == 0 {
@@ -1357,6 +1943,9 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
         }
 
         private func cancelExactLayout() {
+            if exactLayoutTask != nil {
+                diagnostic114.recordCount("布局任务取消次数")
+            }
             exactLayoutTask?.cancel()
             exactLayoutTask = nil
             exactLayoutGeneration &+= 1
@@ -1391,7 +1980,8 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 layout: localLayout(for: node, row: row),
                 width: width,
                 documentStyle: owner.documentStyle,
-                baseDirectoryURL: owner.workingDirectoryURL
+                baseDirectoryURL: owner.workingDirectoryURL,
+                diagnostic114: diagnostic114
             ) else { return }
             let oldHeight = exactGeometries[node.id]?.height
             exactGeometries[node.id] = geometry
@@ -1435,6 +2025,16 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
 
         private func buildExactLayout(generation: UInt64) async {
             guard let tableView else { return }
+            let diagnosticStart = NodeMarkdownDiagnostic114.now()
+            let startingRow = readyRowCount
+            defer {
+                diagnostic114.recordDuration(
+                    "精确布局任务",
+                    since: diagnosticStart,
+                    slowThresholdMilliseconds: 16,
+                    details: "start=\(startingRow) end=\(readyRowCount)"
+                )
+            }
             let width = exactLayoutWidth
             let viewportHeight = tableView.enclosingScrollView?.contentView.bounds.height ?? 0
             var accumulatedHeight: CGFloat = 0
@@ -1444,6 +2044,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 guard let node = state.node(at: row) else { break }
                 let key = exactLayoutKey(for: node.id, width: width)
                 let layout = localLayout(for: node, row: row)
+                let nodeMeasureStart = NodeMarkdownDiagnostic114.now()
                 guard let geometry = exactLayoutEngine.measure(
                     key: key,
                     documentRow: row,
@@ -1451,8 +2052,15 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                     layout: layout,
                     width: width,
                     documentStyle: owner.documentStyle,
-                    baseDirectoryURL: owner.workingDirectoryURL
+                    baseDirectoryURL: owner.workingDirectoryURL,
+                    diagnostic114: diagnostic114
                 ) else { break }
+                diagnostic114.recordDuration(
+                    "精确布局单Node",
+                    since: nodeMeasureStart,
+                    details: "row=\(row) nodeUTF16=\(node.content.utf16.count) fragments=\(geometry.fragmentCount)"
+                )
+                diagnostic114.recordCount("精确布局Node数")
                 exactGeometries[node.id] = geometry
                 accumulatedHeight += geometry.height
                 row += 1
@@ -1461,6 +2069,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 let completedBatch = initialViewportIsReady && row - unpublishedStart >= 12
                 let completedDocument = row == state.snapshot.nodes.count
                 if completedInitialViewport || completedBatch || completedDocument {
+                    let publishStart = NodeMarkdownDiagnostic114.now()
                     readyRowCount = row
                     initialViewportIsReady = true
                     tableView.noteNumberOfRowsChanged()
@@ -1468,6 +2077,13 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                     fulfillPendingNavigationIfPossible()
                     fulfillPendingFocusIfPossible()
                     unpublishedStart = row
+                    diagnostic114.recordDuration("布局批次发布", since: publishStart)
+                    diagnostic114.recordCount("布局批次数")
+                    diagnostic114.flushIfNeeded(
+                        reason: completedInitialViewport ? "首屏就绪" : (completedDocument ? "全文布局完成" : "布局批次"),
+                        readyRows: readyRowCount,
+                        force: completedInitialViewport || completedDocument
+                    )
                 }
                 await Task.yield()
             }
@@ -1481,6 +2097,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                     fulfillPendingFocusIfPossible()
                 }
                 exactLayoutTask = nil
+                diagnostic114.flushIfNeeded(reason: "布局任务结束", readyRows: readyRowCount, force: true)
             }
         }
 
@@ -1492,6 +2109,11 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
         }
 
         private func publishNow() {
+            let diagnosticStart = NodeMarkdownDiagnostic114.now()
+            defer {
+                diagnostic114.recordDuration("发布文档快照", since: diagnosticStart, slowThresholdMilliseconds: 8)
+                diagnostic114.flushIfNeeded(reason: "发布快照", readyRows: readyRowCount)
+            }
             cancelPendingPublish()
             let snapshot = state.snapshot
             if let onDocumentSnapshot = owner.onDocumentSnapshot {
@@ -1531,28 +2153,90 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             )
         }
 
-        private func registerStructuralUndo(from textView: NSTextView) {
-            textView.undoManager?.registerUndo(withTarget: self) { target in
-                target.performStructuralUndo(using: textView.undoManager)
+        func undoManager(for view: NSTextView) -> UndoManager? {
+            editorUndoManager
+        }
+
+        private func registerStructuralUndo(from textView: NSTextView?) {
+            let undoManager = editorUndoManager
+            textView?.breakUndoCoalescing()
+            lastNativeEditNodeID = nil
+            undoManager.registerUndo(withTarget: self) { target in
+                target.performStructuralUndo(using: undoManager)
             }
         }
 
         private func performStructuralUndo(using undoManager: UndoManager?) {
-            guard let result = state.undo() else { return }
-            consume(result: result, refresh: false)
-            publishNow()
+            guard applyHistoryChange(redo: false) else { return }
             undoManager?.registerUndo(withTarget: self) { target in
                 target.performStructuralRedo(using: undoManager)
             }
         }
 
         private func performStructuralRedo(using undoManager: UndoManager?) {
-            guard let result = state.redo() else { return }
-            consume(result: result, refresh: false)
-            publishNow()
+            guard applyHistoryChange(redo: true) else { return }
             undoManager?.registerUndo(withTarget: self) { target in
                 target.performStructuralUndo(using: undoManager)
             }
+        }
+
+        @discardableResult
+        private func applyHistoryChange(redo: Bool) -> Bool {
+            guard !structuralEditInProgress,
+                  redo ? state.canRedo : state.canUndo else { return false }
+            let oldIDs = state.snapshot.nodes.map(\.id)
+            // End the current field editor before replacing table rows. Otherwise
+            // its stale source projection can conceal (or overwrite) restored text.
+            if let nodeID = activeNodeID,
+               let textView = textViewsByNodeID[nodeID]?.value {
+                guard beginStructuralEdit(nodeID: nodeID, textView: textView) else { return false }
+            } else {
+                structuralEditInProgress = true
+                structuralEditGeneration &+= 1
+                structuralViewportOrigin = tableView?.enclosingScrollView?.contentView.bounds.origin
+            }
+            guard let result = redo ? state.redo() : state.undo() else {
+                cancelStructuralEdit()
+                return false
+            }
+            let newIDs = state.snapshot.nodes.map(\.id)
+            let oldSet = Set(oldIDs)
+            let newSet = Set(newIDs)
+            let removed = IndexSet(oldIDs.indices.filter { !newSet.contains(oldIDs[$0]) })
+            let inserted = IndexSet(newIDs.indices.filter { !oldSet.contains(newIDs[$0]) })
+            let affectedRows = IndexSet(result.impact.layoutNodeIDs.compactMap { state.row(for: $0) })
+            let selection = result.mappedSelection
+            let targetID = selection?.anchor.nodeID
+                ?? affectedRows.first.flatMap { state.node(at: $0)?.id }
+                ?? newIDs.first
+            guard let targetID, let targetRow = state.row(for: targetID) else {
+                cancelStructuralEdit()
+                return false
+            }
+            finishStructuralEdit(
+                result: result,
+                targetNodeID: targetID,
+                targetRow: targetRow,
+                targetOffset: selection.map { max($0.anchor.utf16Offset, $0.head.utf16Offset) } ?? 0,
+                insertedRows: inserted,
+                removedRows: removed,
+                rowsToReload: affectedRows
+            )
+            // Restore focus immediately when the affected row is already visible.
+            // finishStructuralEdit also retries after AppKit completes row updates.
+            fulfillPendingFocusIfPossible()
+            if let selection,
+               selection.anchor.nodeID == selection.head.nodeID,
+               let textView = textViewsByNodeID[targetID]?.value {
+                let end = max(selection.anchor.utf16Offset, selection.head.utf16Offset)
+                let range = NSRange(location: end, length: 0)
+                if range.exact(toLength: textView.nodeSourceTextSnapshot.utf16.count) != nil {
+                    textView.setSelectedRange(range)
+                }
+                textView.needsLayout = true
+                textView.setNeedsDisplay(textView.bounds)
+            }
+            return true
         }
 
         private func reportFocus(textView: NSTextView, row: Int) {
@@ -1636,6 +2320,7 @@ private final class NodeMarkdownProseMirrorTableView: NSTableView {
             constrainedSize.width = viewportWidth
         }
         super.setFrameSize(constrainedSize)
+        synchronizeColumnWidth(to: constrainedSize.width)
         reportViewportWidthIfNeeded()
     }
 
@@ -1651,6 +2336,16 @@ private final class NodeMarkdownProseMirrorTableView: NSTableView {
         return width
     }
 
+    /// NSTableView 的 column autoresizing 并不总是把单列可靠地撑满 table 宽度，
+    /// 一旦 column 比 table 窄，cell/textView 的实际宽度就会比测量用的 viewport
+    /// 宽度小，进而让换行边界分叉。这里显式同步，保证渲染与测量用同一个宽度。
+    private func synchronizeColumnWidth(to width: CGFloat) {
+        guard width.isFinite, width > 0, let column = tableColumns.first else { return }
+        if abs(column.width - width) > 0.5 {
+            column.width = width
+        }
+    }
+
     private func reportViewportWidthIfNeeded(force: Bool = false) {
         guard let width = stableViewportWidth() else { return }
         let changed = force || abs(width - lastReportedWidth) > 0.5
@@ -1658,6 +2353,36 @@ private final class NodeMarkdownProseMirrorTableView: NSTableView {
         lastReportedWidth = width
         onWidthWillChange?(width)
         DispatchQueue.main.async { [weak self] in self?.onWidthChange?() }
+    }
+}
+
+final class NodeMarkdownProseMirrorContainerView: NSView {
+    let scrollView: NSScrollView
+    private let bottomFrameView = NSView()
+
+    init(scrollView: NSScrollView, bottomFrameHeight: CGFloat) {
+        self.scrollView = scrollView
+        super.init(frame: .zero)
+
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        bottomFrameView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(scrollView)
+        addSubview(bottomFrameView)
+
+        NSLayoutConstraint.activate([
+            scrollView.topAnchor.constraint(equalTo: topAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: bottomFrameView.topAnchor),
+            bottomFrameView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            bottomFrameView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            bottomFrameView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            bottomFrameView.heightAnchor.constraint(equalToConstant: bottomFrameHeight)
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
     }
 }
 

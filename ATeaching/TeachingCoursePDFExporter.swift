@@ -1,7 +1,7 @@
 import CryptoKit
 import Foundation
 
-enum TeachingCoursePDFExporter {
+nonisolated enum TeachingCoursePDFExporter {
     private static let exportQueue = DispatchQueue(label: "com.ateaching.pdf-export.serial", qos: .utility)
 
     static func exportNotebookPDF(sourceFileURL: URL, destinationURL: URL) throws {

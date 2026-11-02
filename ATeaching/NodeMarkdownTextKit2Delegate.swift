@@ -118,6 +118,7 @@ extension NodeMarkdownTextKit2Coordinator {
 
         let value = textView.documentString()
         let settledAffectedRange = pendingTextEditAffectedRange
+        let settledImpact = pendingTextEditImpact
         if let pendingProjectedRowMetadata {
             rowMetadata = pendingProjectedRowMetadata
             self.pendingProjectedRowMetadata = nil
@@ -141,6 +142,12 @@ extension NodeMarkdownTextKit2Coordinator {
         clearPendingNativeEdit()
         let publishStart = NodeMarkdownDiagnostic35.now()
         publishTextChange(value, structural: changedStructure)
+        if let operationID = textView.diagnostic117OperationID {
+            NodeMarkdownDiagnostic117.record(
+                operationID: operationID,
+                "全文管线textDidChange affected=\(settledAffectedRange.map(NSStringFromRange) ?? "nil") impact=\(String(describing: settledImpact)) changedStructure=\(changedStructure) rows=\(rowLayouts.count) metadata=\(rowMetadata.count) selection=\(NSStringFromRange(textView.selectedRange())) source=\(NodeMarkdownDiagnostic117.textSummary(value))"
+            )
+        }
         recordDiagnostic35Duration("Node发布", since: publishStart)
         NodeMarkdownDiagnostic31.record("textDidChange发布正文后", in: textView, rowLayouts: rowLayouts)
 
@@ -312,6 +319,14 @@ extension NodeMarkdownTextKit2Coordinator {
         let diagnosticStart = NodeMarkdownDiagnostic35.now()
         defer { recordDiagnostic35Duration("shouldChangeText总计", since: diagnosticStart) }
         let replacement = replacementString ?? ""
+        if replacement.isEmpty, affectedCharRange.length > 0 {
+            let source = textView.documentString() as NSString
+            let deletedText = affectedCharRange.exact(toLength: source.length).map { source.substring(with: $0) } ?? "<range越界>"
+            NodeMarkdownDiagnostic117.record(
+                operationID: textView.diagnostic117OperationID,
+                "全文管线shouldChange affected=\(NSStringFromRange(affectedCharRange)) selection=\(NSStringFromRange(textView.selectedRange())) rows=\(rowLayouts.count) deleted=\(NodeMarkdownDiagnostic117.textSummary(deletedText))"
+            )
+        }
         let diagnostic41 = beginDiagnostic41(
             "文字修改 range=\(NSStringFromRange(affectedCharRange)) replacement=\(NodeMarkdownDiagnostic26.textSummary(replacement)) composition=\(textView.hasActiveInputMethodComposition)",
             in: textView

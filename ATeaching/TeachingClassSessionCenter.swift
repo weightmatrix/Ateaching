@@ -25,6 +25,7 @@ final class TeachingClassSessionCenter {
     final class Session {
         let kind: SessionKind
         let notebookPath: String
+        let studentName: String
         let onOpenLessonChecklist: () -> Void
         let onUpdate: () -> Void
         let onOpenReflection: () -> Void
@@ -34,6 +35,7 @@ final class TeachingClassSessionCenter {
         init(
             kind: SessionKind,
             notebookPath: String,
+            studentName: String,
             onOpenLessonChecklist: @escaping () -> Void,
             onUpdate: @escaping () -> Void,
             onOpenReflection: @escaping () -> Void,
@@ -42,6 +44,7 @@ final class TeachingClassSessionCenter {
         ) {
             self.kind = kind
             self.notebookPath = notebookPath
+            self.studentName = studentName
             self.onOpenLessonChecklist = onOpenLessonChecklist
             self.onUpdate = onUpdate
             self.onOpenReflection = onOpenReflection
@@ -56,6 +59,7 @@ final class TeachingClassSessionCenter {
     func start(
         kind: SessionKind = .teaching,
         notebookPath: String,
+        studentName: String,
         onOpenLessonChecklist: @escaping () -> Void,
         onUpdate: @escaping () -> Void,
         onOpenReflection: @escaping () -> Void,
@@ -66,6 +70,7 @@ final class TeachingClassSessionCenter {
         session = Session(
             kind: kind,
             notebookPath: standardizedPath,
+            studentName: studentName,
             onOpenLessonChecklist: onOpenLessonChecklist,
             onUpdate: onUpdate,
             onOpenReflection: onOpenReflection,

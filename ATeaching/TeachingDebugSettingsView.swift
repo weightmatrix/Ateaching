@@ -417,6 +417,9 @@ private struct TeachingDebugLogViewerView: View {
         .task {
             reload()
         }
+        .onReceive(NotificationCenter.default.publisher(for: TeachingDebugLogStore.didAppendNotification)) { _ in
+            reload()
+        }
     }
 
     private func reload() {

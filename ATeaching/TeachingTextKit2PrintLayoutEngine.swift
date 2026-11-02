@@ -1,12 +1,12 @@
 import Foundation
 
-struct TeachingTextKit2LayoutPlan: Sendable, Hashable {
+nonisolated struct TeachingTextKit2LayoutPlan: Sendable, Hashable {
     var pageSpec: TeachingPrintPageSpec
     var estimatedPageCount: Int
     var measuredLineCount: Int
 }
 
-enum TeachingTextKit2PrintLayoutEngine {
+nonisolated enum TeachingTextKit2PrintLayoutEngine {
     static func buildLayoutPlan(
         renderingDocument: TeachingRenderingDocument,
         styleSheet: TeachingPrintStyleSheet
@@ -42,4 +42,3 @@ enum TeachingTextKit2PrintLayoutEngine {
         }
     }
 }
-

@@ -1,7 +1,7 @@
 import Foundation
 
 // MARK: - 学生设置存储 - v4 - 持久化授课快照并支持功能开关与学生级覆盖配置
-enum TeachingStudentSettingsStore {
+nonisolated enum TeachingStudentSettingsStore {
     private static let fileName = "setting-students"
     private static let legacySystemFileName = "setting-studentsystem"
     private static let legacyLessonPlanFileName = "setting-lessonplansystem"
@@ -12,6 +12,23 @@ enum TeachingStudentSettingsStore {
         return encoder
     }()
     private static let decoder = JSONDecoder()
+
+    enum StoreError: LocalizedError {
+        case synchronizationPending
+        case fileMissing
+        case invalidData
+
+        var errorDescription: String? {
+            switch self {
+            case .synchronizationPending:
+                return "学生设置正在从 iCloud 同步，本次不会覆盖任何数据。"
+            case .fileMissing:
+                return "尚未取得 iCloud 中的学生设置文件。"
+            case .invalidData:
+                return "学生设置文件无法解析，已保留原文件且未执行重置。"
+            }
+        }
+    }
 
     static func loadStudents(fileManager: FileManager = .default) throws -> [TeachingStudentItem] {
         let snapshot = try loadSnapshot(fileManager: fileManager)
@@ -133,30 +150,18 @@ enum TeachingStudentSettingsStore {
 
     static func loadSnapshot(fileManager: FileManager = .default) throws -> TeachingSettingsSnapshot {
         let url = try settingsFileURL(fileManager: fileManager)
-        let fallbackStudents = [
-            TeachingStudentItem(name: "学生甲"),
-            TeachingStudentItem(name: "学生乙"),
-            TeachingStudentItem(name: "学生丙")
-        ]
         guard fileManager.fileExists(atPath: url.path) else {
-            if let migrated = try loadLegacySnapshotIfAvailable(fallbackStudents: fallbackStudents, fileManager: fileManager) {
-                try saveSnapshot(migrated, fileManager: fileManager)
-                return migrated
-            }
-            let initial = TeachingSettingsSnapshot.initial(students: fallbackStudents)
-            try saveSnapshot(initial, fileManager: fileManager)
-            return initial
+            throw StoreError.fileMissing
         }
 
-        let data = try Data(contentsOf: url)
+        try ensureCurrentUbiquitousItem(at: url, fileManager: fileManager)
+        let data = try coordinatedRead(from: url)
 
         if let snapshot = try? decoder.decode(TeachingSettingsSnapshot.self, from: data) {
             let normalized = normalize(snapshot)
             let issues = normalized.validationIssues()
             if !issues.isEmpty {
-                let repaired = normalize(normalized)
-                try? saveSnapshot(repaired, fileManager: fileManager)
-                return repaired
+                throw StoreError.invalidData
             }
             return normalized
         }
@@ -167,9 +172,7 @@ enum TeachingStudentSettingsStore {
             return migrated
         }
 
-        let reset = TeachingSettingsSnapshot.initial(students: fallbackStudents)
-        try saveSnapshot(reset, fileManager: fileManager)
-        return reset
+        throw StoreError.invalidData
     }
 
     static func saveSnapshot(_ snapshot: TeachingSettingsSnapshot, fileManager: FileManager = .default) throws {
@@ -178,7 +181,46 @@ enum TeachingStudentSettingsStore {
         normalized.schemaVersion = TeachingSettingsSnapshot.currentSchemaVersion
         normalized.savedAt = ISO8601DateFormatter().string(from: Date())
         let data = try encoder.encode(normalized)
-        try data.write(to: url, options: .atomic)
+        try coordinatedWrite(data, to: url)
+    }
+
+    private static func ensureCurrentUbiquitousItem(at url: URL, fileManager: FileManager) throws {
+        let values = try url.resourceValues(forKeys: [
+            .isUbiquitousItemKey,
+            .ubiquitousItemDownloadingStatusKey
+        ])
+        guard values.isUbiquitousItem == true else { return }
+        guard values.ubiquitousItemDownloadingStatus == .current else {
+            try? fileManager.startDownloadingUbiquitousItem(at: url)
+            throw StoreError.synchronizationPending
+        }
+    }
+
+    private static func coordinatedRead(from url: URL) throws -> Data {
+        let coordinator = NSFileCoordinator()
+        var coordinationError: NSError?
+        var result: Result<Data, Error>?
+        coordinator.coordinate(readingItemAt: url, options: [], error: &coordinationError) { coordinatedURL in
+            result = Result { try Data(contentsOf: coordinatedURL) }
+        }
+        if let coordinationError { throw coordinationError }
+        guard let result else { throw StoreError.synchronizationPending }
+        return try result.get()
+    }
+
+    private static func coordinatedWrite(_ data: Data, to url: URL) throws {
+        let coordinator = NSFileCoordinator()
+        var coordinationError: NSError?
+        var writeError: Error?
+        coordinator.coordinate(writingItemAt: url, options: .forReplacing, error: &coordinationError) { coordinatedURL in
+            do {
+                try data.write(to: coordinatedURL, options: .atomic)
+            } catch {
+                writeError = error
+            }
+        }
+        if let coordinationError { throw coordinationError }
+        if let writeError { throw writeError }
     }
 
     private static func settingsFileURL(fileManager: FileManager = .default) throws -> URL {

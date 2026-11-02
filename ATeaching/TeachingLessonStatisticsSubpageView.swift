@@ -79,7 +79,7 @@ struct TeachingLessonStatisticsSubpageView: View {
         .task {
             loadAllData()
         }
-        .onChange(of: mode) { _ in
+        .onChange(of: mode) { _, _ in
             loadAllData()
         }
         .sheet(isPresented: $showInstitutionEditor) {

@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - 洗教案结果 - 汇总母本、随堂笔记和人工待办
 
-struct TeachingLessonWashUnresolvedItem: Hashable {
+nonisolated struct TeachingLessonWashUnresolvedItem: Hashable {
     let category: String
     let student: String
     let file: String
@@ -17,7 +17,7 @@ struct TeachingLessonWashUnresolvedItem: Hashable {
     }
 }
 
-struct TeachingLessonWashSkippedFile: Hashable {
+nonisolated struct TeachingLessonWashSkippedFile: Hashable {
     let category: String
     let file: String
     let reason: String
@@ -27,7 +27,7 @@ struct TeachingLessonWashSkippedFile: Hashable {
     }
 }
 
-struct TeachingLessonWashIdentityChange: Hashable {
+nonisolated struct TeachingLessonWashIdentityChange: Hashable {
     let category: String
     let student: String
     let file: String
@@ -39,7 +39,7 @@ struct TeachingLessonWashIdentityChange: Hashable {
     let reason: String
 }
 
-struct TeachingLessonWashReport: Hashable {
+nonisolated struct TeachingLessonWashReport: Hashable {
     var lessonFileCount = 0
     var duplicateH3GroupCount = 0
     var reassignedH3Count = 0
@@ -60,9 +60,16 @@ struct TeachingLessonWashReport: Hashable {
     var reportFileURL: URL?
 }
 
+nonisolated struct TeachingLinkedPackageIdentityMigrationResult {
+    let sourceDocument: NodeMarkdownDocument
+    let package: [NodeMarkdownNode]
+    let reassignedNodeCount: Int
+    let updatedNotebookCount: Int
+}
+
 // MARK: - 洗教案服务 - 一次扫描形成映射，再统一修复母本和随堂笔记
 
-enum TeachingLessonWashService {
+nonisolated enum TeachingLessonWashService {
     private static let collectorRelativePath = "上课收集/上课收集.CSV"
     private static let imagePlaceholder = "🌼{图片}🌼"
 
@@ -134,6 +141,131 @@ enum TeachingLessonWashService {
         var removedDuplicateCount = 0
         var unresolved: [TeachingLessonWashUnresolvedItem] = []
         var identityChanges: [TeachingLessonWashIdentityChange] = []
+    }
+
+    static func reassignLinkedPackageDescendantIDs(
+        sourceFile: String,
+        sourceID: String
+    ) throws -> TeachingLinkedPackageIdentityMigrationResult {
+        let fileManager = FileManager.default
+        let workspace = try ArchiveStorage.ensureWorkspace(fileManager: fileManager)
+        let lessonRoot = workspace
+            .appendingPathComponent(ArchiveStorage.systemFolderName, isDirectory: true)
+            .appendingPathComponent(ArchiveStorage.teachingPlanFolderName, isDirectory: true)
+        let normalizedSourceFile = normalizePath(sourceFile)
+        let matchingSourceURLs = try csvFilesRecursively(in: lessonRoot, fileManager: fileManager).filter { url in
+            normalizePath(relativePath(of: url, under: lessonRoot)) == normalizedSourceFile
+        }
+        guard matchingSourceURLs.count == 1, let sourceURL = matchingSourceURLs.first else {
+            throw NSError(
+                domain: "TeachingLessonWashService",
+                code: 8115,
+                userInfo: [NSLocalizedDescriptionKey: "母本路径无法唯一定位，身份迁移已停止：\(sourceFile)"]
+            )
+        }
+        let sourcePayload = try NodeMarkdownFileManager.read(fileURL: sourceURL)
+        var sourceDocument = sourcePayload.0
+        guard let sourceRange = TeachingCoursePackageContentSignature.packageRanges(in: sourceDocument.nodes).first(where: { range in
+            sourceDocument.nodes[range.start].id.uuidString.caseInsensitiveCompare(sourceID) == .orderedSame
+        }) else {
+            throw NSError(
+                domain: "TeachingLessonWashService",
+                code: 8116,
+                userInfo: [NSLocalizedDescriptionKey: "母本中未找到需要迁移的H3包：\(sourceFile)#\(sourceID)"]
+            )
+        }
+
+        let oldPackage = Array(sourceDocument.nodes[sourceRange.start..<sourceRange.end])
+        guard oldPackage.count > 1 else {
+            return TeachingLinkedPackageIdentityMigrationResult(
+                sourceDocument: sourceDocument,
+                package: oldPackage,
+                reassignedNodeCount: 0,
+                updatedNotebookCount: 0
+            )
+        }
+
+        var usedIDs = Set(sourceDocument.nodes.map(\.id))
+        var replacements: [UUID: UUID] = [:]
+        for node in oldPackage.dropFirst() {
+            replacements[node.id] = freshUUID(avoiding: &usedIDs)
+        }
+        for index in sourceRange.start..<sourceRange.end where index > sourceRange.start {
+            if let replacement = replacements[sourceDocument.nodes[index].id] {
+                sourceDocument.nodes[index].id = replacement
+            }
+        }
+        try NodeMarkdownIdentityPolicy.validateForPersistence(sourceDocument)
+
+        let studentsRoot = try ArchiveStorage.ensureArchiveRoot(fileManager: fileManager)
+            .appendingPathComponent("学生", isDirectory: true)
+        let notebookFiles = try listNotebookFiles(in: studentsRoot, fileManager: fileManager)
+        var notebookWrites: [(url: URL, document: NodeMarkdownDocument, meta: NodeMarkdownFileMeta)] = []
+        for notebookURL in notebookFiles {
+            let payload: (NodeMarkdownDocument, NodeMarkdownFileMeta)
+            do {
+                payload = try NodeMarkdownFileManager.read(fileURL: notebookURL)
+            } catch {
+                throw NSError(
+                    domain: "TeachingLessonWashService",
+                    code: 8117,
+                    userInfo: [NSLocalizedDescriptionKey: "无法读取学生随堂笔记，身份迁移已停止：\(notebookURL.lastPathComponent)；\(error.localizedDescription)"]
+                )
+            }
+            var notebookDocument = payload.0
+            var changed = false
+            for range in TeachingCoursePackageContentSignature.packageRanges(in: notebookDocument.nodes).reversed() {
+                let root = notebookDocument.nodes[range.start]
+                guard normalizePath(root.sourceFile) == normalizedSourceFile,
+                      root.sourceID.caseInsensitiveCompare(sourceID) == .orderedSame else { continue }
+                for index in range.start..<range.end where index > range.start {
+                    if let replacement = replacements[notebookDocument.nodes[index].id] {
+                        notebookDocument.nodes[index].id = replacement
+                        changed = true
+                    }
+                }
+            }
+            guard changed else { continue }
+            try NodeMarkdownIdentityPolicy.validateForPersistence(notebookDocument)
+            notebookWrites.append((notebookURL, notebookDocument, payload.1))
+        }
+
+        let writeTargets = [sourceURL] + notebookWrites.map(\.url)
+        let originals = try Dictionary(uniqueKeysWithValues: writeTargets.map { url in
+            (url.standardizedFileURL.path, try Data(contentsOf: url))
+        })
+        var writtenURLs: [URL] = []
+        do {
+            writtenURLs.append(sourceURL)
+            try NodeMarkdownFileManager.write(document: sourceDocument, meta: sourcePayload.1, to: sourceURL)
+            for write in notebookWrites {
+                writtenURLs.append(write.url)
+                try NodeMarkdownFileManager.write(document: write.document, meta: write.meta, to: write.url)
+            }
+        } catch {
+            for url in writtenURLs.reversed() {
+                if let original = originals[url.standardizedFileURL.path] {
+                    try? original.write(to: url, options: .atomic)
+                }
+            }
+            throw error
+        }
+
+        for write in notebookWrites {
+            NotificationCenter.default.post(
+                name: .teachingNotebookDidPersistChange,
+                object: nil,
+                userInfo: ["filePath": write.url.path, "reason": "packageIdentityMigration"]
+            )
+        }
+
+        let migratedPackage = Array(sourceDocument.nodes[sourceRange.start..<sourceRange.end])
+        return TeachingLinkedPackageIdentityMigrationResult(
+            sourceDocument: sourceDocument,
+            package: migratedPackage,
+            reassignedNodeCount: replacements.count,
+            updatedNotebookCount: notebookWrites.count
+        )
     }
 
     /// 正式母本中的UUID可以在多个学生的同一H3包中重复出现，这是引用关系；

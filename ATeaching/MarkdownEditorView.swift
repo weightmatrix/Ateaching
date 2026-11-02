@@ -47,12 +47,14 @@ enum MarkdownExportFormat: String, CaseIterable {
     case pdf = "PDF"
     case html = "HTML"
     case markdown = "MD"
+    case word = "Word"
 
     var fileExtension: String {
         switch self {
         case .pdf: return "pdf"
         case .html: return "html"
         case .markdown: return "md"
+        case .word: return "doc"
         }
     }
 
@@ -61,6 +63,7 @@ enum MarkdownExportFormat: String, CaseIterable {
         case .pdf: return .pdf
         case .html: return .html
         case .markdown: return .plainText
+        case .word: return UTType(filenameExtension: "doc") ?? .data
         }
     }
 
@@ -74,7 +77,7 @@ enum MarkdownExportFormat: String, CaseIterable {
 }
 
 // MARK: - 系统等宽字体常量 - v1 - 提供统一的Apple System Monospaced字体标识
-let appleSystemMonospacedFontName = "Apple System Monospaced"
+nonisolated let appleSystemMonospacedFontName = "Apple System Monospaced"
 
 // MARK: - Markdown编辑器性能探针 - v1 - 为TextKit2迁移前建立输入渲染边界画像
 private enum MarkdownEditorPerformanceProbe {
@@ -334,6 +337,7 @@ struct MarkdownRoleStyle: Hashable {
 
 // MARK: - 文档样式配置 - v5 - 聚合H1-H6正文注释并应用43号源码模式统一规则基线
 struct MarkdownDocumentStyle: Hashable {
+    var progressivelyIndentHeadings = false
     var h1 = MarkdownRoleStyle(fontName: appleSystemMonospacedFontName, fontSize: 30, color: markdownHexColor(0x26619C), semanticColor: nil)
     var h2 = MarkdownRoleStyle(fontName: appleSystemMonospacedFontName, fontSize: 26, color: markdownHexColor(0x1C39BB), semanticColor: nil)
     var h3 = MarkdownRoleStyle(fontName: appleSystemMonospacedFontName, fontSize: 22, color: markdownHexColor(0x50C878), semanticColor: nil)
@@ -387,6 +391,7 @@ extension MarkdownDocumentStyle {
         let baseSize = 15.0
         let headingColor = markdownHexColor(0x702963)
         return MarkdownDocumentStyle(
+            progressivelyIndentHeadings: false,
             h1: MarkdownRoleStyle(fontName: appleSystemMonospacedFontName, fontSize: baseSize, color: headingColor, semanticColor: nil),
             h2: MarkdownRoleStyle(fontName: appleSystemMonospacedFontName, fontSize: baseSize, color: headingColor, semanticColor: nil),
             h3: MarkdownRoleStyle(fontName: appleSystemMonospacedFontName, fontSize: baseSize, color: headingColor, semanticColor: nil),
@@ -425,7 +430,7 @@ func markdownPresetPalette() -> [MarkdownPaletteItem] {
     ]
 }
 
-func markdownHexColor(_ hex: UInt32) -> Color {
+nonisolated func markdownHexColor(_ hex: UInt32) -> Color {
     let red = Double((hex >> 16) & 0xFF) / 255.0
     let green = Double((hex >> 8) & 0xFF) / 255.0
     let blue = Double(hex & 0xFF) / 255.0
@@ -490,6 +495,7 @@ struct MarkdownRoleStyleRecord: Codable, Hashable {
 
 // MARK: - 文档样式存储模型 - v1 - 定义Markdown文档样式配置文件格式
 struct MarkdownDocumentStyleRecord: Codable, Hashable {
+    var progressivelyIndentHeadings: Bool?
     var h1: MarkdownRoleStyleRecord
     var h2: MarkdownRoleStyleRecord
     var h3: MarkdownRoleStyleRecord
@@ -500,6 +506,7 @@ struct MarkdownDocumentStyleRecord: Codable, Hashable {
     var comment: MarkdownRoleStyleRecord
 
     init(style: MarkdownDocumentStyle) {
+        progressivelyIndentHeadings = style.progressivelyIndentHeadings
         h1 = MarkdownRoleStyleRecord(style: style.h1)
         h2 = MarkdownRoleStyleRecord(style: style.h2)
         h3 = MarkdownRoleStyleRecord(style: style.h3)
@@ -512,6 +519,7 @@ struct MarkdownDocumentStyleRecord: Codable, Hashable {
 
     var style: MarkdownDocumentStyle {
         var value = MarkdownDocumentStyle()
+        value.progressivelyIndentHeadings = progressivelyIndentHeadings ?? false
         value.h1 = h1.style
         value.h2 = h2.style
         value.h3 = h3.style
@@ -525,14 +533,14 @@ struct MarkdownDocumentStyleRecord: Codable, Hashable {
 }
 
 // MARK: - 快捷输入单目规则 - v1 - 定义单触发替换规则
-struct MarkdownSingleShortcutRule: Codable, Hashable, Identifiable {
+nonisolated struct MarkdownSingleShortcutRule: Codable, Hashable, Identifiable {
     var id = UUID()
     var trigger: String
     var replacement: String
 }
 
 // MARK: - 快捷输入双目规则 - v1 - 定义开闭触发替换规则
-struct MarkdownPairShortcutRule: Codable, Hashable, Identifiable {
+nonisolated struct MarkdownPairShortcutRule: Codable, Hashable, Identifiable {
     var id = UUID()
     var openTrigger: String
     var closeTrigger: String
@@ -541,7 +549,7 @@ struct MarkdownPairShortcutRule: Codable, Hashable, Identifiable {
 }
 
 // MARK: - 快捷输入配置 - v1 - 聚合单目与双目快捷替换规则
-struct MarkdownQuickInputSettings: Codable, Hashable {
+nonisolated struct MarkdownQuickInputSettings: Codable, Hashable {
     var singleRules: [MarkdownSingleShortcutRule] = []
     var pairRules: [MarkdownPairShortcutRule] = []
 }
@@ -557,7 +565,7 @@ enum MarkdownShortcutEntryMode: String, CaseIterable, Identifiable {
 // MARK: - Markdown设置存储 - v1 - 管理文档样式与快捷输入配置文件读写
 enum MarkdownSettingsStore {
     private static let markdownStyleFilePrefix = "setting-Markdown文档设置"
-    private static let quickInputFileName = "setting-快捷输入.json"
+    nonisolated private static let quickInputFileName = "setting-快捷输入.json"
 
     static func loadDocumentStyle() -> MarkdownDocumentStyle? {
         guard let url = try? markdownDocumentStyleURL() else { return nil }
@@ -572,13 +580,13 @@ enum MarkdownSettingsStore {
         try? data.write(to: url, options: .atomic)
     }
 
-    static func loadQuickInputSettings() -> MarkdownQuickInputSettings? {
+    nonisolated static func loadQuickInputSettings() -> MarkdownQuickInputSettings? {
         guard let url = try? quickInputSettingsURL() else { return nil }
         guard let data = try? Data(contentsOf: url) else { return nil }
         return try? JSONDecoder().decode(MarkdownQuickInputSettings.self, from: data)
     }
 
-    static func saveQuickInputSettings(_ settings: MarkdownQuickInputSettings) {
+    nonisolated static func saveQuickInputSettings(_ settings: MarkdownQuickInputSettings) {
         guard let url = try? quickInputSettingsURL() else { return }
         guard let data = try? JSONEncoder().encode(settings) else { return }
         try? data.write(to: url, options: .atomic)
@@ -590,12 +598,12 @@ enum MarkdownSettingsStore {
         return settingsFolder.appendingPathComponent(fileName, isDirectory: false)
     }
 
-    private static func quickInputSettingsURL() throws -> URL {
+    nonisolated private static func quickInputSettingsURL() throws -> URL {
         let settingsFolder = try settingsFolderURL()
         return settingsFolder.appendingPathComponent(quickInputFileName, isDirectory: false)
     }
 
-    private static func settingsFolderURL(fileManager: FileManager = .default) throws -> URL {
+    nonisolated private static func settingsFolderURL(fileManager: FileManager = .default) throws -> URL {
         let documentsRoot = try ArchiveStorage.ensureWorkspace(fileManager: fileManager)
         let settingsFolder = documentsRoot.appendingPathComponent(ArchiveStorage.settingsFolderName, isDirectory: true)
         try fileManager.createDirectory(at: settingsFolder, withIntermediateDirectories: true)
@@ -804,6 +812,8 @@ struct MarkdownEditorView: View {
     @State private var showQuickInputSheet = false
     @State private var showExportActionDialog = false
     @State private var pendingExportFormat: MarkdownExportFormat = .pdf
+    @State private var showScaledPDFSheet = false
+    @AppStorage("markdownScaledPDFMultiplier") private var scaledPDFMultiplier = 1.0
     @State private var documentStyleRefreshToken = 0
     @StateObject private var textKit2CommitBridge = MarkdownTextKit2CommitBridge()
     @ObservedObject private var screenCastAnnotationHub = ScreenCastAnnotationHub.shared
@@ -915,7 +925,7 @@ struct MarkdownEditorView: View {
             }
         }
         .preferredColorScheme(preferredScheme)
-        .task { loadFile() }
+        .task { FrequentDocumentUsage.record(fileURL); loadFile() }
         .task { fontCatalog.prewarmIfNeeded() }
         .onDisappear {
             pendingScreenCastPublishTask?.cancel()
@@ -981,6 +991,11 @@ struct MarkdownEditorView: View {
             )
             .markdownAdaptiveSheetSize(width: 520, height: 460)
         }
+        .sheet(isPresented: $showScaledPDFSheet) {
+            MarkdownScaledPDFExportSheet(multiplier: $scaledPDFMultiplier) { multiplier in
+                exportScaledPDF(multiplier: multiplier)
+            }
+        }
         .confirmationDialog("选择导出方式", isPresented: $showExportActionDialog, titleVisibility: .visible) {
             Button("导出到微信") {
                 exportToWeChat(format: pendingExportFormat)
@@ -1017,7 +1032,7 @@ struct MarkdownEditorView: View {
     }
 
     private var windowTitle: String {
-        "Markdown-\(fileURL.lastPathComponent)"
+        "📝·Markdown·\(fileURL.deletingPathExtension().lastPathComponent)"
     }
 
     private func scheduleScreenCastPublish(source: String) {
@@ -1212,6 +1227,8 @@ struct MarkdownEditorView: View {
             Button("导出为PDF") { beginExport(format: .pdf) }
             Button("导出为HTML") { beginExport(format: .html) }
             Button("导出为MD") { beginExport(format: .markdown) }
+            Button("导出为Word") { beginExport(format: .word) }
+            Button("导出PDF（可调字体大小）") { showScaledPDFSheet = true }
         } label: {
             Image(systemName: "square.and.arrow.up")
         }
@@ -1559,6 +1576,59 @@ struct MarkdownEditorView: View {
             baseURL: fileURL.deletingLastPathComponent()
         )
     }
+
+    @MainActor
+    private func exportScaledPDF(multiplier: Double) {
+        do {
+            let scale = min(3.0, max(0.15, 0.6 * multiplier))
+            let descriptor = TeachingDocumentExportDescriptor(
+                displayName: "PDF（可调字体大小）",
+                fileExtension: "pdf",
+                contentType: .pdf
+            )
+            try TeachingDocumentExportService.saveToFile(
+                sourceFileURL: fileURL,
+                descriptor: descriptor
+            ) {
+                try MarkdownExportRenderer.renderScaledPDFData(
+                    source: markdownText,
+                    style: documentStyle,
+                    preferredScheme: preferredScheme,
+                    baseURL: fileURL.deletingLastPathComponent(),
+                    scale: scale
+                )
+            }
+        } catch {
+            saveState = .failed
+        }
+    }
+}
+
+private struct MarkdownScaledPDFExportSheet: View {
+    @Binding var multiplier: Double
+    let onExport: (Double) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("PDF 字体/图片缩放")
+                .font(.headline)
+            Slider(value: $multiplier, in: 0.25...5.0, step: 0.05)
+            Text("\(Int((multiplier * 100).rounded()))%")
+                .font(.system(.title2, design: .monospaced))
+                .monospacedDigit()
+            HStack(spacing: 12) {
+                Button("取消", role: .cancel) { dismiss() }
+                Button("导出") {
+                    onExport(multiplier)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(width: 360)
+    }
 }
 
 // MARK: - 文档样式设置页 - v4 - 使用延迟字体选择器避免首屏加载超大字体菜单
@@ -1575,6 +1645,12 @@ struct MarkdownStyleSettingsView: View {
         NavigationStack {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
+                    Toggle("依次后错", isOn: $documentStyle.progressivelyIndentHeadings)
+                    Text("开启后，H1–H6 每增加一级向后错 24 pt。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Divider()
+
                     ForEach(MarkdownStyleRole.allCases) { role in
                         MarkdownStyleRowView(
                             role: role,
@@ -2789,25 +2865,36 @@ private func markdownHangingPrefix(in line: String) -> String? {
     markdownSourceHangingPrefix(in: line)
 }
 
-private func markdownHangingParagraphStyle(prefix: String, font: NSFont) -> NSParagraphStyle {
+private func markdownHeadingIndent(in line: String, enabled: Bool) -> CGFloat {
+    guard enabled, let level = parseHeadingLevelForStyling(in: line) else { return 0 }
+    return CGFloat(max(0, level - 1)) * 24
+}
+
+private func markdownHangingParagraphStyle(prefix: String, font: NSFont, baseIndent: CGFloat = 0) -> NSParagraphStyle {
     let paragraph = NSMutableParagraphStyle()
     paragraph.lineBreakMode = .byWordWrapping
-    paragraph.firstLineHeadIndent = 0
-    paragraph.headIndent = ceil((prefix as NSString).size(withAttributes: [.font: font]).width)
+    paragraph.firstLineHeadIndent = baseIndent
+    paragraph.headIndent = baseIndent + ceil((prefix as NSString).size(withAttributes: [.font: font]).width)
     return paragraph
 }
 
-private func markdownHangingParagraphStyle(for line: String, font: NSFont) -> NSParagraphStyle? {
-    guard let prefix = markdownHangingPrefix(in: line) else { return nil }
-    return markdownHangingParagraphStyle(prefix: prefix, font: font)
+private func markdownHangingParagraphStyle(for line: String, font: NSFont, baseIndent: CGFloat = 0) -> NSParagraphStyle? {
+    if let prefix = markdownHangingPrefix(in: line) {
+        return markdownHangingParagraphStyle(prefix: prefix, font: font, baseIndent: baseIndent)
+    }
+    guard baseIndent > 0 else { return nil }
+    let paragraph = NSMutableParagraphStyle()
+    paragraph.lineBreakMode = .byWordWrapping
+    paragraph.firstLineHeadIndent = baseIndent
+    paragraph.headIndent = baseIndent
+    return paragraph
 }
 
-private func applyMarkdownHangingIndentStyle(to text: NSMutableAttributedString, rawLine: String, range: NSRange) {
-    guard range.length > 0,
-          let prefix = markdownHangingPrefix(in: rawLine) else { return }
+private func applyMarkdownHangingIndentStyle(to text: NSMutableAttributedString, rawLine: String, range: NSRange, baseIndent: CGFloat = 0) {
+    guard range.length > 0 else { return }
     let font = text.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont
         ?? NSFont.monospacedSystemFont(ofSize: 15, weight: .regular)
-    let paragraph = markdownHangingParagraphStyle(prefix: prefix, font: font)
+    guard let paragraph = markdownHangingParagraphStyle(for: rawLine, font: font, baseIndent: baseIndent) else { return }
     text.addAttributes([
         .paragraphStyle: paragraph
     ], range: range)
@@ -3244,7 +3331,11 @@ struct MarkdownIOSStyledTextEditor: UIViewRepresentable {
             let source = textView.text ?? ""
             let style = markdownIOSRoleStyle(at: textView.selectedRange.location, in: source, documentStyle: documentStyle)
             let line = markdownIOSLineText(at: textView.selectedRange.location, in: source)
-            textView.typingAttributes = markdownIOSTextAttributes(for: style, line: line)
+            textView.typingAttributes = markdownIOSTextAttributes(
+                for: style,
+                line: line,
+                progressivelyIndentHeadings: documentStyle.progressivelyIndentHeadings
+            )
         }
 
         private func applyAutoContinueRule(in textView: UITextView, replacementRange: NSRange) -> Bool {
@@ -3369,7 +3460,14 @@ private func markdownIOSStyledAttributedString(from source: String, style: Markd
         let lineRange = nsText.lineRange(for: NSRange(location: cursor, length: 0))
         let rawLine = nsText.substring(with: lineRange).trimmingCharacters(in: .newlines)
         let roleStyle = markdownIOSRoleStyle(forLine: rawLine, documentStyle: style)
-        attributed.addAttributes(markdownIOSTextAttributes(for: roleStyle, line: rawLine), range: lineRange)
+        attributed.addAttributes(
+            markdownIOSTextAttributes(
+                for: roleStyle,
+                line: rawLine,
+                progressivelyIndentHeadings: style.progressivelyIndentHeadings
+            ),
+            range: lineRange
+        )
         let next = NSMaxRange(lineRange)
         if next <= cursor { break }
         cursor = next
@@ -3423,14 +3521,20 @@ private func markdownIOSLineText(at location: Int, in source: String) -> String 
     return nsText.substring(with: lineRange).trimmingCharacters(in: .newlines)
 }
 
-private func markdownIOSTextAttributes(for style: MarkdownRoleStyle, line: String? = nil) -> [NSAttributedString.Key: Any] {
+private func markdownIOSTextAttributes(for style: MarkdownRoleStyle, line: String? = nil, progressivelyIndentHeadings: Bool = false) -> [NSAttributedString.Key: Any] {
     let font = markdownIOSResolvedFont(name: style.fontName, size: style.fontSize)
     let paragraph = NSMutableParagraphStyle()
     paragraph.lineBreakMode = .byWordWrapping
-    if let line,
-       let prefix = markdownSourceHangingPrefix(in: line) {
-        paragraph.firstLineHeadIndent = 0
-        paragraph.headIndent = ceil((prefix as NSString).size(withAttributes: [.font: font]).width)
+    if let line {
+        let headingLevel = markdownIOSHeadingLevel(in: line) ?? 1
+        let baseIndent = progressivelyIndentHeadings
+            ? CGFloat(max(0, headingLevel - 1)) * 24
+            : 0
+        paragraph.firstLineHeadIndent = baseIndent
+        paragraph.headIndent = baseIndent
+        if let prefix = markdownSourceHangingPrefix(in: line) {
+            paragraph.headIndent += ceil((prefix as NSString).size(withAttributes: [.font: font]).width)
+        }
     }
     return [
         .font: font,
@@ -3760,6 +3864,9 @@ func markdownWebBootstrapHTML(style: MarkdownDocumentStyle, preferredScheme: Col
     let h6Color = markdownWebRoleColor(style.h6, preferredScheme: preferredScheme)
     let codeBackground = preferredScheme == .dark ? "#232323" : "#F4F4F4"
     let codeColor = preferredScheme == .dark ? "#F3F3F3" : "#222222"
+    let headingIndent: (Int) -> Int = { level in
+        style.progressivelyIndentHeadings ? max(0, level - 1) * 24 : 0
+    }
 
     return """
     <!doctype html>
@@ -3779,12 +3886,12 @@ func markdownWebBootstrapHTML(style: MarkdownDocumentStyle, preferredScheme: Col
         font-size: \(style.body.fontSize)px;
         color: \(foreground);
       }
-      #md-root h1 { font-family: \(markdownWebCSSFontFamily(style.h1.fontName)); font-size: \(style.h1.fontSize)px; color: \(h1Color); }
-      #md-root h2 { font-family: \(markdownWebCSSFontFamily(style.h2.fontName)); font-size: \(style.h2.fontSize)px; color: \(h2Color); }
-      #md-root h3 { font-family: \(markdownWebCSSFontFamily(style.h3.fontName)); font-size: \(style.h3.fontSize)px; color: \(h3Color); }
-      #md-root h4 { font-family: \(markdownWebCSSFontFamily(style.h4.fontName)); font-size: \(style.h4.fontSize)px; color: \(h4Color); }
-      #md-root h5 { font-family: \(markdownWebCSSFontFamily(style.h5.fontName)); font-size: \(style.h5.fontSize)px; color: \(h5Color); }
-      #md-root h6 { font-family: \(markdownWebCSSFontFamily(style.h6.fontName)); font-size: \(style.h6.fontSize)px; color: \(h6Color); }
+      #md-root h1 { font-family: \(markdownWebCSSFontFamily(style.h1.fontName)); font-size: \(style.h1.fontSize)px; color: \(h1Color); margin-left: \(headingIndent(1))px; }
+      #md-root h2 { font-family: \(markdownWebCSSFontFamily(style.h2.fontName)); font-size: \(style.h2.fontSize)px; color: \(h2Color); margin-left: \(headingIndent(2))px; }
+      #md-root h3 { font-family: \(markdownWebCSSFontFamily(style.h3.fontName)); font-size: \(style.h3.fontSize)px; color: \(h3Color); margin-left: \(headingIndent(3))px; }
+      #md-root h4 { font-family: \(markdownWebCSSFontFamily(style.h4.fontName)); font-size: \(style.h4.fontSize)px; color: \(h4Color); margin-left: \(headingIndent(4))px; }
+      #md-root h5 { font-family: \(markdownWebCSSFontFamily(style.h5.fontName)); font-size: \(style.h5.fontSize)px; color: \(h5Color); margin-left: \(headingIndent(5))px; }
+      #md-root h6 { font-family: \(markdownWebCSSFontFamily(style.h6.fontName)); font-size: \(style.h6.fontSize)px; color: \(h6Color); margin-left: \(headingIndent(6))px; }
       #md-root blockquote {
         margin: 8px 0;
         padding-left: 10px;
@@ -3844,6 +3951,7 @@ func markdownWebBootstrapHTML(style: MarkdownDocumentStyle, preferredScheme: Col
 // MARK: - Web样式签名 - v1 - 生成样式配置签名用于判断是否需要重建壳页面
 func markdownWebStyleSignature(_ style: MarkdownDocumentStyle) -> String {
     [
+        "progressivelyIndentHeadings=\(style.progressivelyIndentHeadings)",
         style.h1.fontName, "\(style.h1.fontSize)", markdownWebRoleColorSignature(style.h1),
         style.h2.fontName, "\(style.h2.fontSize)", markdownWebRoleColorSignature(style.h2),
         style.h3.fontName, "\(style.h3.fontSize)", markdownWebRoleColorSignature(style.h3),
@@ -3935,7 +4043,7 @@ func markdownWebBuildPatchScript(previousBlocks: [MarkdownWebBlock], nextBlocks:
 }
 
 // MARK: - Web资源定位 - v2 - 同时兼容扁平资源与MarkdownAssets目录资源结构
-func markdownWebAssetURL(fileName: String) -> URL? {
+nonisolated func markdownWebAssetURL(fileName: String) -> URL? {
     let bundle = Bundle.main
     let parts = fileName.split(separator: ".", maxSplits: 1, omittingEmptySubsequences: false)
     let base = String(parts.first ?? "")
@@ -3956,13 +4064,13 @@ func markdownWebAssetURL(fileName: String) -> URL? {
 }
 
 // MARK: - Web脚本标签 - v1 - 生成安全的本地脚本标签并避免Swift多行字符串中的JS语法风险
-func markdownWebScriptTag(fileName: String) -> String {
+nonisolated func markdownWebScriptTag(fileName: String) -> String {
     guard let url = markdownWebAssetURL(fileName: fileName) else { return "" }
     return "<script src=\"\(url.absoluteString)\"></script>"
 }
 
 // MARK: - Web公式样式标签 - v1 - 读取KaTeX样式并修正字体目录映射后内联注入
-func markdownWebInlineKaTeXStyleTag() -> String {
+nonisolated func markdownWebInlineKaTeXStyleTag() -> String {
     guard
         let cssURL = markdownWebAssetURL(fileName: "katex.min.css"),
         var css = try? String(contentsOf: cssURL, encoding: .utf8)
@@ -5433,7 +5541,11 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         }
 
         textStorage.addAttributes(
-            [.paragraphStyle: textKit2ParagraphStyle(rawLine: rawLine, roleStyle: roleStyle)],
+            [.paragraphStyle: textKit2ParagraphStyle(
+                rawLine: rawLine,
+                roleStyle: roleStyle,
+                progressivelyIndentHeadings: style.progressivelyIndentHeadings
+            )],
             range: lineRange
         )
     }
@@ -5660,22 +5772,30 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         ]
     }
 
-    private func textKit2ParagraphStyle(rawLine: String, roleStyle: MarkdownRoleStyle) -> NSParagraphStyle {
+    private func textKit2ParagraphStyle(
+        rawLine: String,
+        roleStyle: MarkdownRoleStyle,
+        progressivelyIndentHeadings: Bool = false
+    ) -> NSParagraphStyle {
         let font = markdownResolvedFont(name: roleStyle.fontName, size: roleStyle.fontSize)
-        return textKit2ParagraphStyle(rawLine: rawLine, font: font)
+        return textKit2ParagraphStyle(
+            rawLine: rawLine,
+            font: font,
+            baseIndent: markdownHeadingIndent(in: rawLine, enabled: progressivelyIndentHeadings)
+        )
     }
 
-    private func textKit2ParagraphStyle(rawLine: String, font: NSFont) -> NSParagraphStyle {
+    private func textKit2ParagraphStyle(rawLine: String, font: NSFont, baseIndent: CGFloat = 0) -> NSParagraphStyle {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineBreakMode = .byWordWrapping
-        paragraph.firstLineHeadIndent = 0
-        paragraph.headIndent = 0
+        paragraph.firstLineHeadIndent = baseIndent
+        paragraph.headIndent = baseIndent
         paragraph.paragraphSpacingBefore = 0
         paragraph.paragraphSpacing = 0
         paragraph.lineSpacing = 0
 
         if let prefix = markdownHangingPrefix(in: rawLine) {
-            paragraph.headIndent = ceil((prefix as NSString).size(withAttributes: [.font: font]).width)
+            paragraph.headIndent += ceil((prefix as NSString).size(withAttributes: [.font: font]).width)
         }
 
         let glyphHeight = ceil(font.ascender - font.descender + max(0, font.leading))
@@ -6285,7 +6405,11 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         let rawLine = caretLineText(at: location)
         let style = currentDocumentStyle ?? MarkdownDocumentStyle()
         let lineStyle = lineRoleStyle(at: location, style: style)
-        return textKit2ParagraphStyle(rawLine: rawLine, roleStyle: lineStyle)
+        return textKit2ParagraphStyle(
+            rawLine: rawLine,
+            roleStyle: lineStyle,
+            progressivelyIndentHeadings: style.progressivelyIndentHeadings
+        )
     }
 
     private func caretLineRange(at location: Int, in nsText: NSString) -> NSRange {
@@ -6884,6 +7008,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     }
 
     private func parseNumberedLine(in line: String) -> MarkdownNumberedLine? {
+        guard !line.hasPrefix("#") else { return nil }
         let nsLine = line as NSString
         let pattern = #"^( *)(.*?)(\d+)\. (.*)$"#
         guard let regex = try? NSRegularExpression(pattern: pattern),
@@ -7722,7 +7847,12 @@ final class MarkdownTextView: NSTextView {
                 applyRoleStyle(style.comment, to: textStorage, range: lineRange)
             }
 
-            applyMarkdownHangingIndentStyle(to: textStorage, rawLine: rawLine, range: lineRange)
+            applyMarkdownHangingIndentStyle(
+                to: textStorage,
+                rawLine: rawLine,
+                range: lineRange,
+                baseIndent: markdownHeadingIndent(in: rawLine, enabled: style.progressivelyIndentHeadings)
+            )
 
             for codeRange in parseInlineCodeRanges(in: rawLine, base: lineRange.location) {
                 let codeFont = NSFont.monospacedSystemFont(ofSize: style.body.fontSize, weight: .regular)
@@ -7809,7 +7939,11 @@ final class MarkdownTextView: NSTextView {
         }
         let lineStyle = lineRoleStyle(at: location, style: style)
         let font = markdownResolvedFont(name: lineStyle.fontName, size: lineStyle.fontSize)
-        return markdownHangingParagraphStyle(for: rawLine, font: font)
+        return markdownHangingParagraphStyle(
+            for: rawLine,
+            font: font,
+            baseIndent: markdownHeadingIndent(in: rawLine, enabled: style.progressivelyIndentHeadings)
+        )
     }
 
     private func caretLineRange(at location: Int, in nsText: NSString) -> NSRange {

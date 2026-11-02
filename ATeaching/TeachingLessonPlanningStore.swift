@@ -3,7 +3,7 @@ import Foundation
 // MARK: - 排课/周表数据层 - v1 - 复用课单结构并分别落盘到排课.json、周表.json
 
 /// 排课与周表使用和正式课单相同的课程快照结构，方便插入周表时直接拷贝到上课单。
-enum TeachingLessonPlanningStore {
+nonisolated enum TeachingLessonPlanningStore {
     enum PlanningKind {
         case planning
         case weekly
@@ -70,7 +70,7 @@ enum TeachingLessonPlanningStore {
 
 /// 排课中的占位块不是学生课程，不参与预计课时和预计收入。
 /// UUID沿用旧数据，显示名称可以安全迁移，不依赖文字判断身份。
-enum TeachingLessonPlanningPlaceholder {
+nonisolated enum TeachingLessonPlanningPlaceholder {
     nonisolated static let studentID = UUID(uuidString: "5A6DB295-6BB5-4D1C-84E8-A19D9490E5AD")!
     nonisolated static let institutionID = UUID(uuidString: "7E7E9A8C-18DE-4C42-B569-E7C80431D9A4")!
     nonisolated static let studentName = "占位"

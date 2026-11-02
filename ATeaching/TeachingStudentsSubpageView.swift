@@ -8,6 +8,7 @@ struct TeachingStudentsSubpageView: View {
     let showProfileOverrideAction: Bool
     let onAdd: () -> Void
     let onBackup: () -> Void
+    let onRestore: () -> Void
     let onSettings: () -> Void
     let onRefresh: () -> Void
     let onUpdateIcon: (UUID, String) -> Void
@@ -30,6 +31,12 @@ struct TeachingStudentsSubpageView: View {
                 }
                 .appGlassButtonStyle()
                 .disabled(isRunningStudentBackup || students.isEmpty)
+
+                Button(action: onRestore) {
+                    Label("恢复", systemImage: "arrow.uturn.backward.circle")
+                }
+                .appGlassButtonStyle()
+                .disabled(isRunningStudentBackup)
 
                 Button(action: onSettings) {
                     Label("设置", systemImage: "slider.horizontal.3")

@@ -1,4 +1,5 @@
 import SwiftUI
+import AppIntents
 #if os(macOS)
 import AppKit
 #endif
@@ -26,6 +27,7 @@ struct ATeachingApp: App {
         }
         #if os(macOS)
         .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
         #endif
 
         #if os(macOS)
@@ -70,7 +72,7 @@ struct ATeachingApp: App {
     #if os(macOS)
     private func closeChildWindowsBeforeTerminate() {
         for window in NSApplication.shared.windows {
-            if window.title.hasPrefix("Markdown-") {
+            if window.title.hasPrefix("📝·Markdown") {
                 window.close()
             }
         }
@@ -205,7 +207,7 @@ private final class ATeachingMacApplicationDelegate: NSObject, NSApplicationDele
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
         let menu = NSMenu()
         let item = NSMenuItem(
-            title: "主窗口",
+            title: AppDisplayTitle.defaultMainWindowTitle,
             action: #selector(showMainWindowFromDockMenu(_:)),
             keyEquivalent: ""
         )
@@ -296,6 +298,7 @@ private enum ATeachingMacMainWindowPresenter {
         window.identifier = NSUserInterfaceItemIdentifier(ATeachingWindowID.main)
         window.title = AppDisplayTitle.defaultMainWindowTitle
         window.isReleasedWhenClosed = false
+        window.isRestorable = false
         window.center()
         window.contentView = NSHostingView(rootView: MacFallbackMainWindowRoot())
         fallbackWindow = window

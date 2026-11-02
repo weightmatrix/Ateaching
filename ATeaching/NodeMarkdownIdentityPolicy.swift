@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Node身份规则 - UUID只表示一个Node，编辑保留、增加新建、删除作废、剪切整体移动
 
-enum NodeMarkdownIdentityPolicy {
+nonisolated enum NodeMarkdownIdentityPolicy {
     static func validateForPersistence(_ document: NodeMarkdownDocument) throws {
         try validateUniqueNodeIDs(document)
 
@@ -49,7 +49,7 @@ enum NodeMarkdownIdentityPolicy {
     }
 
     // 同步允许半截来源进入既有修复流程，但不允许重复身份或完整链接指向别的UUID。
-    static func validateForSynchronization(_ document: NodeMarkdownDocument) throws {
+    nonisolated static func validateForSynchronization(_ document: NodeMarkdownDocument) throws {
         try validateUniqueNodeIDs(document)
         for node in document.nodes where node.level == 3 {
             let sourceID = node.sourceID.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -19,6 +19,8 @@ struct TeachingHomeView: View {
     @State private var draggingStudentID: UUID?
     @State private var selectedPage: TeachingPage = .teaching
     @State private var didLoadStudents = false
+    @State private var isApplyingStudentSnapshot = false
+    @State private var studentSettingsRetryTask: Task<Void, Never>?
     @State private var featureFlags = TeachingFeatureFlags()
     @State private var lessonStatisticsEnabled = false
     @State private var showStudentSystemSettings = false
@@ -29,6 +31,7 @@ struct TeachingHomeView: View {
     @State private var selectedCourseInitialMode: TeachingCoursePageView.CourseMode = .teaching
     @State private var presentedHomeStudentDocument: TeachingHomeStudentDocument?
     @State private var showStudentBackupSheet = false
+    @State private var showStudentRestoreSheet = false
     @State private var isRunningStudentBackup = false
     @State private var pendingInitializationStudentIDs: Set<UUID> = []
     @State private var lessonPlanCreateToken = 0
@@ -70,10 +73,14 @@ struct TeachingHomeView: View {
             loadStudentsFromSettings()
         }
         .onChange(of: students) { _, _ in
+            guard !isApplyingStudentSnapshot else { return }
             saveStudentsToSettings()
         }
         .onReceive(NotificationCenter.default.publisher(for: .teachingStudentsDidChange)) { _ in
             loadStudentsFromSettings()
+        }
+        .onDisappear {
+            studentSettingsRetryTask?.cancel()
         }
         .sheet(isPresented: $showStudentSystemSettings) {
             TeachingStudentSystemSettingsView()
@@ -97,6 +104,11 @@ struct TeachingHomeView: View {
         .sheet(isPresented: $showStudentBackupSheet) {
             TeachingStudentBackupSheet(students: students) { selectedIDs in
                 runStudentBackup(selectedIDs: selectedIDs)
+            }
+        }
+        .sheet(isPresented: $showStudentRestoreSheet) {
+            TeachingStudentRestoreSheet { entries in
+                runStudentRestore(entries)
             }
         }
         .sheet(item: $presentedHomeStudentDocument) { document in
@@ -123,15 +135,23 @@ struct TeachingHomeView: View {
     }
 
     private var topButtonsRow: some View {
-        HStack(spacing: 10) {
-            pageButton(title: "授课", systemImage: "play.rectangle", page: .teaching)
-            pageButton(title: "教案", systemImage: "book.closed", page: .lessonPlan)
-            pageButton(title: "教辅", systemImage: "books.vertical", page: .workbook)
-            pageButton(title: "学生", systemImage: "person.2", page: .students)
-            if lessonStatisticsEnabled {
-                pageButton(title: "统计", systemImage: "chart.bar.doc.horizontal", page: .statistics)
+        HStack(spacing: 12) {
+            HStack(spacing: 2) {
+                pageButton(title: "授课", systemImage: "play.rectangle", page: .teaching)
+                pageButton(title: "教案", systemImage: "book.closed", page: .lessonPlan)
+                pageButton(title: "教辅", systemImage: "books.vertical", page: .workbook)
+                pageButton(title: "学生", systemImage: "person.2", page: .students)
+                if lessonStatisticsEnabled {
+                    pageButton(title: "统计", systemImage: "chart.bar.doc.horizontal", page: .statistics)
+                }
+                pageButton(title: "同步", systemImage: "arrow.triangle.2.circlepath", page: .sync)
             }
-            pageButton(title: "同步", systemImage: "arrow.triangle.2.circlepath", page: .sync)
+            .padding(4)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+            }
             Spacer()
             topActionButtons
         }
@@ -206,8 +226,16 @@ struct TeachingHomeView: View {
             }
         } label: {
             actionLabel(title, systemImage: systemImage)
+                .foregroundStyle(selectedPage == page ? Color.accentColor : .secondary)
+                .padding(.horizontal, 12)
+                .frame(height: 32)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(selectedPage == page ? Color.accentColor.opacity(0.14) : .clear)
+                )
+                .contentShape(Rectangle())
         }
-        .appGlassButtonStyle(selectedPage == page ? .prominent : .regular)
+        .buttonStyle(.plain)
         .help(title)
     }
 
@@ -277,20 +305,30 @@ struct TeachingHomeView: View {
     }
 
     private var teachingMainPanel: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("授课")
-                .font(.headline)
+        let designStyle = AppBackgroundSettingsStore.load().designStyle
+        return VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(students.isEmpty ? "添加学生后，即可从这里进入课堂" : "选择一位学生进入课堂 · 共 \(students.count) 位")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if !students.isEmpty {
+                    Text("最近更新")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+            }
 
             if students.isEmpty {
                 Text("暂无学生")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             } else {
-                let columns = [
-                    GridItem(.adaptive(minimum: 120, maximum: 180), spacing: 10, alignment: .top)
-                ]
+                let columns = [GridItem(.adaptive(minimum: 220, maximum: 320), spacing: 14, alignment: .top)]
                 ScrollView {
-                    LazyVGrid(columns: columns, spacing: 10) {
+                    LazyVGrid(columns: columns, spacing: 14) {
                         ForEach(students) { student in
                             Button {
                                 let needsInitialize = pendingInitializationStudentIDs.contains(student.id) || !isStudentInitialized(student)
@@ -302,24 +340,36 @@ struct TeachingHomeView: View {
                                 selectedCourseStudent = student
                                 #endif
                             } label: {
-                                VStack(spacing: 8) {
+                                HStack(spacing: 14) {
                                     Image(systemName: student.iconName)
-                                        .font(.system(size: 24, weight: .semibold))
+                                        .font(.system(size: 21, weight: .semibold))
                                         .foregroundStyle(student.color.value)
-                                    Text(student.name)
-                                        .font(.system(size: 15, weight: .medium))
-                                        .foregroundStyle(.primary)
-                                        .lineLimit(1)
+                                        .frame(width: 46, height: 46)
+                                        .background(student.color.value.opacity(0.13), in: Circle())
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(student.name)
+                                            .font(.system(size: 15, weight: .semibold))
+                                            .foregroundStyle(.primary)
+                                            .lineLimit(1)
+                                        Text("进入课堂")
+                                            .font(.system(size: 12))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer(minLength: 8)
+                                    Image(systemName: "chevron.right")
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .foregroundStyle(.tertiary)
                                 }
-                                .frame(maxWidth: .infinity, minHeight: 88)
-                                .padding(8)
+                                .frame(maxWidth: .infinity, minHeight: 58)
+                                .padding(14)
                                 .background(
-                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                        .fill(Color.primary.opacity(0.03))
+                                    RoundedRectangle(cornerRadius: designStyle == .minimal ? 8 : 16, style: .continuous)
+                                        .fill(designStyle == .apple ? Color.primary.opacity(0.045) : Color.primary.opacity(designStyle == .vibrant ? 0.07 : 0.025))
                                         .overlay(
-                                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                                .stroke(Color.secondary.opacity(0.18), lineWidth: 1)
+                                            RoundedRectangle(cornerRadius: designStyle == .minimal ? 8 : 16, style: .continuous)
+                                                .stroke(Color.secondary.opacity(designStyle == .apple ? 0.12 : 0.18), lineWidth: 1)
                                         )
+                                        .shadow(color: designStyle == .apple ? Color.black.opacity(0.08) : .clear, radius: 12, y: 6)
                                 )
                                 .contentShape(Rectangle())
                             }
@@ -367,11 +417,8 @@ struct TeachingHomeView: View {
                 }
             }
         }
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.secondary.opacity(0.08))
-        )
+        .padding(.horizontal, 6)
+        .padding(.vertical, 8)
     }
 
     private func coursePage(for student: TeachingStudentItem) -> some View {
@@ -397,6 +444,9 @@ struct TeachingHomeView: View {
             },
             onBackup: {
                 showStudentBackupSheet = true
+            },
+            onRestore: {
+                showStudentRestoreSheet = true
             },
             onSettings: {
                 showStudentSystemSettings = true
@@ -463,24 +513,41 @@ struct TeachingHomeView: View {
     }
 
     private func loadStudentsFromSettings() {
+        isApplyingStudentSnapshot = true
+        defer {
+            Task { @MainActor in
+                await Task.yield()
+                isApplyingStudentSnapshot = false
+            }
+        }
         do {
             let snapshot = try TeachingStudentSettingsStore.loadSnapshot()
+            studentSettingsRetryTask?.cancel()
+            studentSettingsRetryTask = nil
             students = snapshot.students
             featureFlags = snapshot.featureFlags
             lessonStatisticsEnabled = TeachingDebugLogStore.isLessonStatisticsEnabled()
             if selectedPage == .statistics && !lessonStatisticsEnabled {
                 selectedPage = .teaching
             }
-            if students.isEmpty {
-                refreshStudentsFromArchive()
-            }
         } catch {
-            refreshStudentsFromArchive()
-            if students.isEmpty {
-                statusMessage = "学生设置加载失败：\(error.localizedDescription)"
-            } else {
-                statusMessage = "学生设置异常，已按档案目录自动重建。"
+            statusMessage = error.localizedDescription
+            scheduleStudentSettingsRetryIfNeeded(for: error)
+        }
+    }
+
+    private func scheduleStudentSettingsRetryIfNeeded(for error: Error) {
+        guard let storeError = error as? TeachingStudentSettingsStore.StoreError else { return }
+        switch storeError {
+        case .synchronizationPending, .fileMissing:
+            studentSettingsRetryTask?.cancel()
+            studentSettingsRetryTask = Task { @MainActor in
+                try? await Task.sleep(for: .seconds(2))
+                guard !Task.isCancelled else { return }
+                loadStudentsFromSettings()
             }
+        case .invalidData:
+            break
         }
     }
 
@@ -543,6 +610,36 @@ struct TeachingHomeView: View {
                 await MainActor.run {
                     isRunningStudentBackup = false
                     statusMessage = "备份失败：\(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func runStudentRestore(_ entries: [TeachingStudentBackupEntry]) {
+        guard !isRunningStudentBackup, !entries.isEmpty else { return }
+        isRunningStudentBackup = true
+        statusMessage = "正在恢复学生..."
+        Task(priority: .userInitiated) {
+            do {
+                let result = try TeachingStudentBackupService.restoreBackups(entries)
+                await MainActor.run {
+                    let existingIDs = Set(students.map(\.id))
+                    students.append(contentsOf: result.restoredStudents.filter { !existingIDs.contains($0.id) })
+                    saveStudentsToSettings()
+                    for student in result.restoredStudents {
+                        if let profile = result.restoredProfiles[student.id] {
+                            try? TeachingStudentSettingsStore.saveStudentProfile(profile, studentID: student.id)
+                        }
+                    }
+                    isRunningStudentBackup = false
+                    statusMessage = result.skippedNames.isEmpty
+                        ? "恢复完成：\(result.restoredStudents.count) 人。"
+                        : "恢复完成：\(result.restoredStudents.count) 人；跳过重名：\(result.skippedNames.joined(separator: "、"))"
+                }
+            } catch {
+                await MainActor.run {
+                    isRunningStudentBackup = false
+                    statusMessage = "恢复失败：\(error.localizedDescription)"
                 }
             }
         }
@@ -695,7 +792,7 @@ private extension View {
     }
 }
 
-struct TeachingStudentItem: Identifiable, Equatable, Codable {
+nonisolated struct TeachingStudentItem: Identifiable, Equatable, Codable {
     static let supportedIcons: [String] = [
         "person.fill",
         "star.fill",

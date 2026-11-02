@@ -3,6 +3,8 @@ import Foundation
 
 struct BackupManagementView: View {
     @State private var snapshots: [TeachingBackupSnapshotManifest] = []
+    @State private var storedBackupBytes: Int64?
+    @State private var isLoadingSnapshots = true
     @State private var statusMessage = ""
     @State private var isRunningBackup = false
     @State private var backupProgress: TeachingBackupProgressSnapshot?
@@ -46,7 +48,28 @@ struct BackupManagementView: View {
             }
 
             AppSettingsCard(title: "备份快照（最多100份）", systemImage: "clock.arrow.circlepath") {
-                if snapshots.isEmpty {
+                HStack {
+                    Text("备份总占用")
+                    Spacer()
+                    if let storedBackupBytes {
+                        Text(Self.byteFormatter.string(fromByteCount: storedBackupBytes))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                }
+
+                AppSettingsDivider()
+
+                if isLoadingSnapshots {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("正在加载备份列表…")
+                            .foregroundStyle(.secondary)
+                    }
+                } else if snapshots.isEmpty {
                     Text("暂无备份")
                         .foregroundStyle(.secondary)
                 } else {
@@ -172,10 +195,22 @@ struct BackupManagementView: View {
                 let loaded = try await TeachingBackupService.shared.listSnapshots()
                 await MainActor.run {
                     snapshots = loaded
+                    isLoadingSnapshots = false
                 }
             } catch {
                 await MainActor.run {
+                    isLoadingSnapshots = false
                     statusMessage = "加载备份失败：\(error.localizedDescription)"
+                }
+                return
+            }
+
+            do {
+                let storedBytes = try await TeachingBackupService.shared.storedBackupBytes()
+                await MainActor.run { storedBackupBytes = storedBytes }
+            } catch {
+                await MainActor.run {
+                    statusMessage = "备份容量统计失败：\(error.localizedDescription)"
                 }
             }
         }
@@ -358,7 +393,7 @@ private struct BackupSnapshotDetailView: View {
                 runFullRestore()
             }
         } message: {
-            Text("将覆盖 iCloud 根目录内部所有内容，是否继续？")
+            Text("将通过协调写入原位恢复快照内容，并清理快照外旧文件；不会删除后重建 iCloud 根目录。是否继续？")
         }
         .onDisappear {
             restoreProgressPollingTask?.cancel()

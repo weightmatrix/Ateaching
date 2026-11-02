@@ -12,7 +12,7 @@ enum TeachingPrintDecorationTheme: String, Sendable {
     case nodeMarkdown
 }
 
-enum TeachingPrintDecorationRenderer {
+nonisolated enum TeachingPrintDecorationRenderer {
     static func drawStripe(
         in context: CGContext,
         rect: CGRect,

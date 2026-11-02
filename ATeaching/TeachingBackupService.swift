@@ -135,6 +135,19 @@ private struct TeachingBackupChecksumsManifest: Codable {
     let fileHashes: [String: String]
 }
 
+private struct TeachingBackupObjectEntry: Codable, Hashable {
+    let hash: String
+    let size: Int64
+    let modifiedAt: Date
+}
+
+private struct TeachingBackupObjectManifest: Codable {
+    let formatVersion: Int
+    let generatedAt: Date
+    let files: [String: TeachingBackupObjectEntry]
+    let directories: [String]
+}
+
 private struct TeachingBackupSchedulerState: Codable, Hashable {
     var lastDailyBackupKey: String?
     var lastHourlyBackupKey: String?
@@ -146,6 +159,7 @@ actor TeachingBackupService {
     private let fileManager = FileManager.default
     private let maxSnapshots = 100
     private let maxTotalBackupBytes: Int64 = 20 * 1024 * 1024 * 1024
+    private let objectManifestFileName = "object-manifest.json"
 
     private let excludedDirectoryNames: Set<String> = [
         "tmp",
@@ -163,6 +177,7 @@ actor TeachingBackupService {
         "lock"
     ]
     private var currentProgressSnapshot: TeachingBackupProgressSnapshot?
+    private var verifiedObjectHashes: Set<String> = []
 
     func listSnapshots() async throws -> [TeachingBackupSnapshotManifest] {
         let snapshotsRoot = try ensureSnapshotsRoot()
@@ -182,6 +197,11 @@ actor TeachingBackupService {
         return manifests.sorted { $0.createdAt > $1.createdAt }
     }
 
+    func storedBackupBytes() async throws -> Int64 {
+        let snapshots = try await listSnapshots()
+        return try estimatedStoredBackupBytes(snapshotManifests: snapshots)
+    }
+
     func currentBackupProgress() -> TeachingBackupProgressSnapshot? {
         currentProgressSnapshot
     }
@@ -197,40 +217,42 @@ actor TeachingBackupService {
         let workspaceRoot = try ArchiveStorage.ensureWorkspace(fileManager: fileManager)
         let snapshotContentRoot = try snapshotContentRoot(for: snapshotID)
         try await validateSnapshotIntegrity(snapshotID: snapshotID)
-        let deleteCount = try countEligibleTopLevelItems(in: workspaceRoot)
+        let objectManifest = try await loadObjectManifest(snapshotID: snapshotID)
+        let preexistingNumericCopies = try numericCopyPaths(in: workspaceRoot)
+        let snapshotInventory = try buildRestoreInventory(in: snapshotContentRoot)
+        let workspaceInventory = try buildRestoreInventory(in: workspaceRoot)
+        let obsoleteFileCount = workspaceInventory.files.subtracting(snapshotInventory.files).count
         let copyCount = try countEligibleFiles(in: snapshotContentRoot)
-        let totalFiles = max(1, deleteCount + copyCount)
+        let totalFiles = max(1, obsoleteFileCount + copyCount)
         let progressTracker = FileProgressTracker(totalFiles: totalFiles)
-        setProgress(phase: "恢复前清理", completedFiles: 0, totalFiles: totalFiles)
+        setProgress(phase: "协调恢复中", completedFiles: 0, totalFiles: totalFiles)
         defer { currentProgressSnapshot = nil }
 
-        let existingItems = try fileManager.contentsOfDirectory(
-            at: workspaceRoot,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
-        )
-        for item in existingItems {
-            try throwIfCancelled()
-            let relativePath = relativePath(for: item, base: workspaceRoot)
-            guard !shouldExclude(relativePath: relativePath, isDirectory: (try? item.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true) else {
-                continue
-            }
-            try fileManager.removeItem(at: item)
-            progressTracker.completedFiles += 1
-            setProgress(
-                phase: "恢复前清理",
-                completedFiles: progressTracker.completedFiles,
-                totalFiles: progressTracker.totalFiles,
-                currentRelativePath: relativePath
-            )
-        }
-        try copyDirectoryContent(
+        try restoreDirectoryContent(
             from: snapshotContentRoot,
             to: workspaceRoot,
-            overwrite: true,
             conflictStrategy: .overwrite,
             progressTracker: progressTracker,
-            progressPhase: "恢复中"
+            progressPhase: "协调恢复中"
+        )
+        try removeItemsMissingFromSnapshot(
+            sourceRoot: snapshotContentRoot,
+            destinationRoot: workspaceRoot,
+            progressTracker: progressTracker,
+            progressPhase: "清理旧文件"
+        )
+        if let objectManifest {
+            try applyRestoredMetadata(
+                objectManifest,
+                sourceRelativePath: nil,
+                destinationRoot: workspaceRoot
+            )
+        }
+        try verifyRestoredContent(from: snapshotContentRoot, at: workspaceRoot)
+        try rejectNewNumericCopies(
+            in: workspaceRoot,
+            preexisting: preexistingNumericCopies,
+            allowedBySnapshot: snapshotInventory.files.union(snapshotInventory.directories)
         )
     }
 
@@ -243,6 +265,9 @@ actor TeachingBackupService {
         let workspaceRoot = try ArchiveStorage.ensureWorkspace(fileManager: fileManager)
         let snapshotContentRoot = try snapshotContentRoot(for: snapshotID)
         try await validateSnapshotIntegrity(snapshotID: snapshotID)
+        let objectManifest = try await loadObjectManifest(snapshotID: snapshotID)
+        let preexistingNumericCopies = try numericCopyPaths(in: workspaceRoot)
+        let snapshotInventory = try buildRestoreInventory(in: snapshotContentRoot)
 
         let collapsedSelection = collapseSelectedPaths(
             normalizeSelected(relativePaths: relativePaths)
@@ -262,15 +287,39 @@ actor TeachingBackupService {
             if fileManager.fileExists(atPath: destinationURL.path), strategy == .renameCopy {
                 destinationURL = makeRenamedCopyURL(for: destinationURL)
             }
-            try copyItem(
+            try restoreItem(
                 from: sourceURL,
                 to: destinationURL,
-                overwrite: strategy == .overwrite,
                 conflictStrategy: strategy,
                 progressTracker: progressTracker,
-                progressPhase: "部分恢复中"
+                progressPhase: "部分恢复中",
+                progressRelativePath: relativePath
             )
+            if strategy == .overwrite,
+               (try? sourceURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+                try removeItemsMissingFromSnapshot(
+                    sourceRoot: sourceURL,
+                    destinationRoot: destinationURL,
+                    progressTracker: nil,
+                    progressPhase: "部分恢复清理"
+                )
+            }
+            if strategy != .skip {
+                if let objectManifest {
+                    try applyRestoredMetadata(
+                        objectManifest,
+                        sourceRelativePath: relativePath,
+                        destinationRoot: destinationURL
+                    )
+                }
+                try verifyRestoredContent(from: sourceURL, at: destinationURL)
+            }
         }
+        try rejectNewNumericCopies(
+            in: workspaceRoot,
+            preexisting: preexistingNumericCopies,
+            allowedBySnapshot: snapshotInventory.files.union(snapshotInventory.directories)
+        )
     }
 
     func listSnapshotItems(snapshotID: String) throws -> [TeachingBackupSnapshotItem] {
@@ -361,18 +410,30 @@ actor TeachingBackupService {
         let start = Date()
         let snapshotID = makeSnapshotID(createdAt: createdAt)
         let snapshotRoot = snapshotsRoot.appendingPathComponent(snapshotID, isDirectory: true)
-        let snapshotContentRoot = snapshotRoot.appendingPathComponent("content", isDirectory: true)
+        let buildingRoot = snapshotsRoot.appendingPathComponent(".\(snapshotID).building", isDirectory: true)
+        let snapshotContentRoot = buildingRoot.appendingPathComponent("content", isDirectory: true)
         let totalFiles = try countEligibleFiles(in: sourceRoot)
         let progressTracker = FileProgressTracker(totalFiles: totalFiles)
         setProgress(phase: "准备备份", completedFiles: 0, totalFiles: totalFiles)
         defer { currentProgressSnapshot = nil }
-
+        if fileManager.fileExists(atPath: buildingRoot.path) {
+            try fileManager.removeItem(at: buildingRoot)
+        }
         try fileManager.createDirectory(at: snapshotContentRoot, withIntermediateDirectories: true)
-        try copyDirectoryContent(
+        var didPublishSnapshot = false
+        defer {
+            if !didPublishSnapshot {
+                try? fileManager.removeItem(at: buildingRoot)
+            }
+        }
+
+        let snapshots = try await listSnapshots()
+        let latest = snapshots.first
+        let previousContentRoot = latest.flatMap { try? self.snapshotContentRoot(for: $0.id) }
+        let objectManifest = try createContentAddressedSnapshot(
             from: sourceRoot,
             to: snapshotContentRoot,
-            overwrite: true,
-            conflictStrategy: .overwrite,
+            previousContentRoot: previousContentRoot,
             progressTracker: progressTracker,
             progressPhase: "备份中"
         )
@@ -382,9 +443,20 @@ actor TeachingBackupService {
             totalFiles: progressTracker.totalFiles
         )
 
-        let stats = try computeStats(in: snapshotContentRoot)
-        let checksums = try buildChecksumManifest(in: snapshotContentRoot)
-        let checksumURL = snapshotRoot.appendingPathComponent("checksums.json", isDirectory: false)
+        let stats = (
+            fileCount: objectManifest.files.count,
+            directoryCount: objectManifest.directories.count,
+            totalBytes: objectManifest.files.values.reduce(Int64(0)) { $0 + $1.size }
+        )
+        let checksums = TeachingBackupChecksumsManifest(
+            generatedAt: createdAt,
+            fileHashes: objectManifest.files.mapValues(\.hash)
+        )
+        let objectManifestURL = buildingRoot.appendingPathComponent(objectManifestFileName, isDirectory: false)
+        let objectManifestData = try await MainActor.run { try JSONEncoder().encode(objectManifest) }
+        try objectManifestData.write(to: objectManifestURL, options: .atomic)
+
+        let checksumURL = buildingRoot.appendingPathComponent("checksums.json", isDirectory: false)
         let checksumData = try await MainActor.run { try JSONEncoder().encode(checksums) }
         try checksumData.write(to: checksumURL, options: .atomic)
 
@@ -400,9 +472,12 @@ actor TeachingBackupService {
                 checksummedFileCount: checksums.fileHashes.count
             )
         }
-        let manifestURL = snapshotRoot.appendingPathComponent("manifest.json", isDirectory: false)
+        let manifestURL = buildingRoot.appendingPathComponent("manifest.json", isDirectory: false)
         let data = try await MainActor.run { try JSONEncoder().encode(manifest) }
         try data.write(to: manifestURL, options: .atomic)
+
+        try fileManager.moveItem(at: buildingRoot, to: snapshotRoot)
+        didPublishSnapshot = true
 
         try await pruneSnapshotsIfNeeded()
         return manifest
@@ -422,6 +497,12 @@ actor TeachingBackupService {
 
     private func ensureSnapshotsRoot() throws -> URL {
         let root = try ensureVaultRoot().appendingPathComponent("snapshots", isDirectory: true)
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
+    }
+
+    private func ensureObjectsRoot() throws -> URL {
+        let root = try ensureVaultRoot().appendingPathComponent("objects", isDirectory: true)
         try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
         return root
     }
@@ -491,6 +572,36 @@ actor TeachingBackupService {
     private func validateSnapshotIntegrity(snapshotID: String) async throws {
         let root = try snapshotRoot(for: snapshotID)
         let contentRoot = root.appendingPathComponent("content", isDirectory: true)
+        if let objectManifest = try await loadObjectManifest(snapshotID: snapshotID) {
+            var mismatched: [String] = []
+            for (relativePath, entry) in objectManifest.files {
+                let objectURL = try backupObjectURL(for: entry.hash, createParent: false)
+                let contentURL = contentRoot.appendingPathComponent(relativePath, isDirectory: false)
+                guard fileManager.fileExists(atPath: objectURL.path),
+                      fileManager.fileExists(atPath: contentURL.path) else {
+                    mismatched.append(relativePath)
+                    if mismatched.count >= 20 { break }
+                    continue
+                }
+                if !verifiedObjectHashes.contains(entry.hash) {
+                    guard try sha256Hex(of: objectURL) == entry.hash else {
+                        mismatched.append(relativePath)
+                        if mismatched.count >= 20 { break }
+                        continue
+                    }
+                    verifiedObjectHashes.insert(entry.hash)
+                }
+            }
+            if !mismatched.isEmpty {
+                throw NSError(
+                    domain: "TeachingBackup",
+                    code: 11,
+                    userInfo: [NSLocalizedDescriptionKey: "备份对象完整性校验失败，异常文件：\(mismatched.joined(separator: "，"))"]
+                )
+            }
+            return
+        }
+
         let checksumURL = root.appendingPathComponent("checksums.json", isDirectory: false)
         guard fileManager.fileExists(atPath: checksumURL.path) else {
             return
@@ -524,34 +635,164 @@ actor TeachingBackupService {
         }
     }
 
+    private func loadObjectManifest(snapshotID: String) async throws -> TeachingBackupObjectManifest? {
+        let url = try snapshotRoot(for: snapshotID)
+            .appendingPathComponent(objectManifestFileName, isDirectory: false)
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
+        let data = try Data(contentsOf: url)
+        return try await MainActor.run {
+            try JSONDecoder().decode(TeachingBackupObjectManifest.self, from: data)
+        }
+    }
+
+    private func applyRestoredMetadata(
+        _ manifest: TeachingBackupObjectManifest,
+        sourceRelativePath: String?,
+        destinationRoot: URL
+    ) throws {
+        for (relativePath, entry) in manifest.files {
+            let destinationURL: URL
+            if let sourceRelativePath {
+                guard relativePath == sourceRelativePath || relativePath.hasPrefix(sourceRelativePath + "/") else {
+                    continue
+                }
+                if relativePath == sourceRelativePath {
+                    destinationURL = destinationRoot
+                } else {
+                    let suffixStart = relativePath.index(
+                        relativePath.startIndex,
+                        offsetBy: sourceRelativePath.count + 1
+                    )
+                    destinationURL = destinationRoot.appendingPathComponent(
+                        String(relativePath[suffixStart...]),
+                        isDirectory: false
+                    )
+                }
+            } else {
+                destinationURL = destinationRoot.appendingPathComponent(relativePath, isDirectory: false)
+            }
+            guard fileManager.fileExists(atPath: destinationURL.path) else { continue }
+            try fileManager.setAttributes(
+                [.modificationDate: entry.modifiedAt],
+                ofItemAtPath: destinationURL.path
+            )
+        }
+    }
+
     private func pruneSnapshotsIfNeeded() async throws {
         let snapshotsRoot = try ensureSnapshotsRoot()
-        let manifests = try await listSnapshots()
-        var toRemove: [TeachingBackupSnapshotManifest] = []
-
-        if manifests.count > maxSnapshots {
-            toRemove.append(contentsOf: manifests.dropFirst(maxSnapshots))
-        }
-
-        var totalBytes = manifests.reduce(Int64(0)) { $0 + $1.totalBytes }
-        if totalBytes > maxTotalBackupBytes {
-            for manifest in manifests.reversed() {
-                if toRemove.contains(where: { $0.id == manifest.id }) { continue }
-                toRemove.append(manifest)
-                totalBytes -= manifest.totalBytes
-                if totalBytes <= maxTotalBackupBytes {
-                    break
+        var manifests = try await listSnapshots()
+        let countOverflow = max(0, manifests.count - maxSnapshots)
+        if countOverflow > 0 {
+            for manifest in manifests.suffix(countOverflow) {
+                let root = snapshotsRoot.appendingPathComponent(manifest.id, isDirectory: true)
+                if fileManager.fileExists(atPath: root.path) {
+                    try fileManager.removeItem(at: root)
                 }
             }
+            manifests.removeLast(countOverflow)
         }
 
-        let uniqueRemoveIDs = Set(toRemove.map(\.id))
-        for snapshotID in uniqueRemoveIDs {
-            let root = snapshotsRoot.appendingPathComponent(snapshotID, isDirectory: true)
+        try await pruneUnreferencedObjects(snapshotManifests: manifests)
+        while manifests.count > 1,
+              try estimatedStoredBackupBytes(snapshotManifests: manifests) > maxTotalBackupBytes {
+            let oldest = manifests.removeLast()
+            let root = snapshotsRoot.appendingPathComponent(oldest.id, isDirectory: true)
             if fileManager.fileExists(atPath: root.path) {
                 try fileManager.removeItem(at: root)
             }
+            try await pruneUnreferencedObjects(snapshotManifests: manifests)
         }
+    }
+
+    private func pruneUnreferencedObjects(
+        snapshotManifests: [TeachingBackupSnapshotManifest]
+    ) async throws {
+        var referencedHashes: Set<String> = []
+        let snapshotsRoot = try ensureSnapshotsRoot()
+        for snapshot in snapshotManifests {
+            let objectManifestURL = snapshotsRoot
+                .appendingPathComponent(snapshot.id, isDirectory: true)
+                .appendingPathComponent(objectManifestFileName, isDirectory: false)
+            guard let data = try? Data(contentsOf: objectManifestURL),
+                  let objectManifest = try? await MainActor.run(body: {
+                      try JSONDecoder().decode(TeachingBackupObjectManifest.self, from: data)
+                  }) else {
+                continue
+            }
+            referencedHashes.formUnion(objectManifest.files.values.map(\.hash))
+        }
+
+        let objectsRoot = try ensureObjectsRoot()
+        let enumerator = fileManager.enumerator(
+            at: objectsRoot,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        )
+        while let objectURL = enumerator?.nextObject() as? URL {
+            let values = try? objectURL.resourceValues(forKeys: [.isRegularFileKey])
+            guard values?.isRegularFile == true else { continue }
+            if !referencedHashes.contains(objectURL.lastPathComponent) {
+                try fileManager.removeItem(at: objectURL)
+            }
+        }
+
+        let prefixes = try fileManager.contentsOfDirectory(
+            at: objectsRoot,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )
+        for prefixURL in prefixes {
+            let values = try? prefixURL.resourceValues(forKeys: [.isDirectoryKey])
+            guard values?.isDirectory == true else { continue }
+            if try fileManager.contentsOfDirectory(atPath: prefixURL.path).isEmpty {
+                try fileManager.removeItem(at: prefixURL)
+            }
+        }
+    }
+
+    private func estimatedStoredBackupBytes(
+        snapshotManifests: [TeachingBackupSnapshotManifest]
+    ) throws -> Int64 {
+        var total = try allocatedFileBytes(in: ensureObjectsRoot())
+        let snapshotsRoot = try ensureSnapshotsRoot()
+        for snapshot in snapshotManifests {
+            let root = snapshotsRoot.appendingPathComponent(snapshot.id, isDirectory: true)
+            let objectManifestURL = root.appendingPathComponent(objectManifestFileName, isDirectory: false)
+            if fileManager.fileExists(atPath: objectManifestURL.path) {
+                for name in ["manifest.json", "checksums.json", objectManifestFileName] {
+                    let url = root.appendingPathComponent(name, isDirectory: false)
+                    total += try allocatedFileBytes(at: url)
+                }
+            } else {
+                total += try allocatedFileBytes(in: root)
+            }
+        }
+        return total
+    }
+
+    private func allocatedFileBytes(in root: URL) throws -> Int64 {
+        guard fileManager.fileExists(atPath: root.path) else { return 0 }
+        let enumerator = fileManager.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey, .totalFileAllocatedSizeKey, .fileAllocatedSizeKey],
+            options: [.skipsHiddenFiles]
+        )
+        var total: Int64 = 0
+        while let url = enumerator?.nextObject() as? URL {
+            let values = try? url.resourceValues(
+                forKeys: [.isRegularFileKey, .totalFileAllocatedSizeKey, .fileAllocatedSizeKey]
+            )
+            guard values?.isRegularFile == true else { continue }
+            total += Int64(values?.totalFileAllocatedSize ?? values?.fileAllocatedSize ?? 0)
+        }
+        return total
+    }
+
+    private func allocatedFileBytes(at url: URL) throws -> Int64 {
+        guard fileManager.fileExists(atPath: url.path) else { return 0 }
+        let values = try url.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey])
+        return Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0)
     }
 
     private func appendItems(
@@ -681,10 +922,41 @@ actor TeachingBackupService {
         }
     }
 
-    private func copyDirectoryContent(
+    private struct RestoreInventory {
+        var files: Set<String> = []
+        var directories: Set<String> = []
+    }
+
+    private func buildRestoreInventory(in root: URL) throws -> RestoreInventory {
+        let enumerator = fileManager.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )
+        var inventory = RestoreInventory()
+        while let url = enumerator?.nextObject() as? URL {
+            try throwIfCancelled()
+            let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey])
+            let isDirectory = values?.isDirectory == true
+            let relative = relativePath(for: url, base: root)
+            guard !shouldExclude(relativePath: relative, isDirectory: isDirectory) else {
+                if isDirectory {
+                    enumerator?.skipDescendants()
+                }
+                continue
+            }
+            if isDirectory {
+                inventory.directories.insert(relative)
+            } else if values?.isRegularFile == true {
+                inventory.files.insert(relative)
+            }
+        }
+        return inventory
+    }
+
+    private func restoreDirectoryContent(
         from sourceRoot: URL,
         to destinationRoot: URL,
-        overwrite: Bool,
         conflictStrategy: TeachingBackupRestoreConflictStrategy,
         progressTracker: FileProgressTracker? = nil,
         progressPhase: String? = nil,
@@ -707,10 +979,9 @@ actor TeachingBackupService {
             } else {
                 childProgressPath = relative
             }
-            try copyItem(
+            try restoreItem(
                 from: child,
                 to: destination,
-                overwrite: overwrite,
                 conflictStrategy: conflictStrategy,
                 progressTracker: progressTracker,
                 progressPhase: progressPhase,
@@ -719,10 +990,143 @@ actor TeachingBackupService {
         }
     }
 
-    private func copyItem(
+    private func createContentAddressedSnapshot(
+        from sourceRoot: URL,
+        to destinationRoot: URL,
+        previousContentRoot: URL?,
+        sourceBaseRoot: URL? = nil,
+        progressTracker: FileProgressTracker? = nil,
+        progressPhase: String? = nil,
+        accumulatedFiles: [String: TeachingBackupObjectEntry] = [:],
+        accumulatedDirectories: [String] = []
+    ) throws -> TeachingBackupObjectManifest {
+        let sourceBaseRoot = sourceBaseRoot ?? sourceRoot
+        try fileManager.createDirectory(at: destinationRoot, withIntermediateDirectories: true)
+        var files = accumulatedFiles
+        var directories = accumulatedDirectories
+        let children = try fileManager.contentsOfDirectory(
+            at: sourceRoot,
+            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .fileSizeKey, .contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        )
+        for child in children {
+            try throwIfCancelled()
+            let relative = relativePath(for: child, base: sourceBaseRoot)
+            let values = try? child.resourceValues(
+                forKeys: [.isDirectoryKey, .isRegularFileKey, .fileSizeKey, .contentModificationDateKey]
+            )
+            let isDirectory = values?.isDirectory == true
+            guard !shouldExclude(relativePath: relative, isDirectory: isDirectory) else { continue }
+
+            let destination = destinationRoot.appendingPathComponent(child.lastPathComponent, isDirectory: false)
+            if isDirectory {
+                directories.append(relative)
+                let nested = try createContentAddressedSnapshot(
+                    from: child,
+                    to: destination,
+                    previousContentRoot: previousContentRoot,
+                    sourceBaseRoot: sourceBaseRoot,
+                    progressTracker: progressTracker,
+                    progressPhase: progressPhase,
+                    accumulatedFiles: files,
+                    accumulatedDirectories: directories
+                )
+                files = nested.files
+                directories = nested.directories
+                continue
+            }
+
+            let parent = destination.deletingLastPathComponent()
+            try fileManager.createDirectory(at: parent, withIntermediateDirectories: true)
+            let hash = try sha256Hex(of: child)
+            let entry = TeachingBackupObjectEntry(
+                hash: hash,
+                size: Int64(values?.fileSize ?? 0),
+                modifiedAt: values?.contentModificationDate ?? .distantPast
+            )
+            let previousURL = previousContentRoot?
+                .appendingPathComponent(relative, isDirectory: false)
+            let objectURL = try ensureBackupObject(
+                hash: hash,
+                size: entry.size,
+                sourceURL: child,
+                reusableURL: previousURL
+            )
+            try fileManager.linkItem(at: objectURL, to: destination)
+            files[relative] = entry
+
+            if let progressTracker {
+                progressTracker.completedFiles += 1
+                setProgress(
+                    phase: progressPhase ?? "备份中",
+                    completedFiles: progressTracker.completedFiles,
+                    totalFiles: progressTracker.totalFiles,
+                    currentRelativePath: relative
+                )
+            }
+        }
+
+        return TeachingBackupObjectManifest(
+            formatVersion: 1,
+            generatedAt: Date(),
+            files: files,
+            directories: directories
+        )
+    }
+
+    private func ensureBackupObject(
+        hash: String,
+        size: Int64,
+        sourceURL: URL,
+        reusableURL: URL?
+    ) throws -> URL {
+        let objectURL = try backupObjectURL(for: hash, createParent: true)
+        if fileManager.fileExists(atPath: objectURL.path) {
+            let values = try objectURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+            let hasValidHash = verifiedObjectHashes.contains(hash)
+                ? true
+                : try sha256Hex(of: objectURL) == hash
+            guard values.isRegularFile == true,
+                  Int64(values.fileSize ?? -1) == size,
+                  hasValidHash else {
+                throw NSError(
+                    domain: "TeachingBackup",
+                    code: 21,
+                    userInfo: [NSLocalizedDescriptionKey: "备份对象库损坏：\(hash)"]
+                )
+            }
+            verifiedObjectHashes.insert(hash)
+            return objectURL
+        }
+
+        let temporaryURL = objectURL.deletingLastPathComponent()
+            .appendingPathComponent(".\(hash).\(UUID().uuidString).tmp", isDirectory: false)
+        defer { try? fileManager.removeItem(at: temporaryURL) }
+
+        if let reusableURL,
+           fileManager.fileExists(atPath: reusableURL.path),
+           try sha256Hex(of: reusableURL) == hash {
+            try fileManager.linkItem(at: reusableURL, to: temporaryURL)
+        } else {
+            try fileManager.copyItem(at: sourceURL, to: temporaryURL)
+        }
+        try fileManager.moveItem(at: temporaryURL, to: objectURL)
+        verifiedObjectHashes.insert(hash)
+        return objectURL
+    }
+
+    private func backupObjectURL(for hash: String, createParent: Bool) throws -> URL {
+        let prefix = String(hash.prefix(2))
+        let parent = try ensureObjectsRoot().appendingPathComponent(prefix, isDirectory: true)
+        if createParent {
+            try fileManager.createDirectory(at: parent, withIntermediateDirectories: true)
+        }
+        return parent.appendingPathComponent(hash, isDirectory: false)
+    }
+
+    private func restoreItem(
         from source: URL,
         to destination: URL,
-        overwrite: Bool,
         conflictStrategy: TeachingBackupRestoreConflictStrategy,
         progressTracker: FileProgressTracker? = nil,
         progressPhase: String? = nil,
@@ -736,9 +1140,7 @@ actor TeachingBackupService {
         if destinationExists {
             switch conflictStrategy {
             case .overwrite:
-                if overwrite {
-                    try fileManager.removeItem(at: destination)
-                }
+                break
             case .skip:
                 return
             case .renameCopy:
@@ -747,7 +1149,14 @@ actor TeachingBackupService {
         }
 
         if isDirectory {
-            try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
+            if destinationExists {
+                let destinationValues = try destination.resourceValues(forKeys: [.isDirectoryKey])
+                guard destinationValues.isDirectory == true else {
+                    throw restoreTypeMismatchError(at: destination)
+                }
+            } else {
+                try createCoordinatedDirectory(at: destination)
+            }
             let children = try fileManager.contentsOfDirectory(
                 at: source,
                 includingPropertiesForKeys: [.isDirectoryKey],
@@ -762,10 +1171,9 @@ actor TeachingBackupService {
                 } else {
                     childProgressPath = child.lastPathComponent
                 }
-                try copyItem(
+                try restoreItem(
                     from: child,
                     to: target,
-                    overwrite: overwrite,
                     conflictStrategy: conflictStrategy,
                     progressTracker: progressTracker,
                     progressPhase: progressPhase,
@@ -774,9 +1182,20 @@ actor TeachingBackupService {
             }
         } else {
             let parent = destination.deletingLastPathComponent()
-            try fileManager.createDirectory(at: parent, withIntermediateDirectories: true)
-            if !fileManager.fileExists(atPath: destination.path) {
-                try fileManager.copyItem(at: source, to: destination)
+            if !fileManager.fileExists(atPath: parent.path) {
+                try createCoordinatedDirectory(at: parent)
+            }
+            if destinationExists {
+                let destinationValues = try destination.resourceValues(forKeys: [.isDirectoryKey])
+                guard destinationValues.isDirectory != true else {
+                    throw restoreTypeMismatchError(at: destination)
+                }
+            }
+            let needsReplacement = destinationExists
+                ? try !filesHaveSameContent(source, destination)
+                : true
+            if needsReplacement {
+                try replaceFileCoordinated(from: source, to: destination)
             }
             if let progressTracker {
                 progressTracker.completedFiles += 1
@@ -788,6 +1207,243 @@ actor TeachingBackupService {
                 )
             }
         }
+    }
+
+    private func removeItemsMissingFromSnapshot(
+        sourceRoot: URL,
+        destinationRoot: URL,
+        progressTracker: FileProgressTracker?,
+        progressPhase: String
+    ) throws {
+        guard fileManager.fileExists(atPath: destinationRoot.path) else { return }
+        let sourceInventory = try buildRestoreInventory(in: sourceRoot)
+        let destinationInventory = try buildRestoreInventory(in: destinationRoot)
+
+        for relativePath in destinationInventory.files.subtracting(sourceInventory.files).sorted() {
+            try throwIfCancelled()
+            let destination = destinationRoot.appendingPathComponent(relativePath, isDirectory: false)
+            try removeCoordinatedItem(at: destination)
+            if let progressTracker {
+                progressTracker.completedFiles += 1
+                setProgress(
+                    phase: progressPhase,
+                    completedFiles: progressTracker.completedFiles,
+                    totalFiles: progressTracker.totalFiles,
+                    currentRelativePath: relativePath
+                )
+            }
+        }
+
+        let obsoleteDirectories = destinationInventory.directories
+            .subtracting(sourceInventory.directories)
+            .sorted { lhs, rhs in
+                let lhsDepth = lhs.split(separator: "/").count
+                let rhsDepth = rhs.split(separator: "/").count
+                return lhsDepth == rhsDepth ? lhs > rhs : lhsDepth > rhsDepth
+            }
+        for relativePath in obsoleteDirectories {
+            try throwIfCancelled()
+            let destination = destinationRoot.appendingPathComponent(relativePath, isDirectory: true)
+            let children = try fileManager.contentsOfDirectory(atPath: destination.path)
+            if children.isEmpty {
+                try removeCoordinatedItem(at: destination)
+            }
+        }
+    }
+
+    private func createCoordinatedDirectory(at destination: URL) throws {
+        let parent = destination.deletingLastPathComponent()
+        if parent.path != destination.path, !fileManager.fileExists(atPath: parent.path) {
+            try createCoordinatedDirectory(at: parent)
+        }
+        try coordinateWriting(at: parent, options: .forMerging) { coordinatedParent in
+            let coordinatedDestination = coordinatedParent.appendingPathComponent(
+                destination.lastPathComponent,
+                isDirectory: true
+            )
+            if !fileManager.fileExists(atPath: coordinatedDestination.path) {
+                try fileManager.createDirectory(at: coordinatedDestination, withIntermediateDirectories: false)
+            }
+        }
+    }
+
+    private func replaceFileCoordinated(from source: URL, to destination: URL) throws {
+        let stagingRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("ATeaching-Restore", isDirectory: true)
+        try fileManager.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
+        let stagedURL = stagingRoot.appendingPathComponent(UUID().uuidString, isDirectory: false)
+        try fileManager.copyItem(at: source, to: stagedURL)
+        defer { try? fileManager.removeItem(at: stagedURL) }
+
+        if fileManager.fileExists(atPath: destination.path) {
+            try coordinateWriting(at: destination, options: .forReplacing) { coordinatedDestination in
+                _ = try fileManager.replaceItemAt(
+                    coordinatedDestination,
+                    withItemAt: stagedURL,
+                    backupItemName: nil,
+                    options: []
+                )
+            }
+        } else {
+            let parent = destination.deletingLastPathComponent()
+            try coordinateWriting(at: parent, options: .forMerging) { coordinatedParent in
+                let coordinatedDestination = coordinatedParent.appendingPathComponent(
+                    destination.lastPathComponent,
+                    isDirectory: false
+                )
+                if fileManager.fileExists(atPath: coordinatedDestination.path) {
+                    _ = try fileManager.replaceItemAt(
+                        coordinatedDestination,
+                        withItemAt: stagedURL,
+                        backupItemName: nil,
+                        options: []
+                    )
+                } else {
+                    try fileManager.moveItem(at: stagedURL, to: coordinatedDestination)
+                }
+            }
+        }
+    }
+
+    private func removeCoordinatedItem(at destination: URL) throws {
+        guard fileManager.fileExists(atPath: destination.path) else { return }
+        try coordinateWriting(at: destination, options: .forDeleting) { coordinatedDestination in
+            if fileManager.fileExists(atPath: coordinatedDestination.path) {
+                try fileManager.removeItem(at: coordinatedDestination)
+            }
+        }
+    }
+
+    private func coordinateWriting(
+        at url: URL,
+        options: NSFileCoordinator.WritingOptions,
+        operation: (URL) throws -> Void
+    ) throws {
+        let coordinator = NSFileCoordinator(filePresenter: nil)
+        var coordinationError: NSError?
+        var operationError: Error?
+        coordinator.coordinate(writingItemAt: url, options: options, error: &coordinationError) { coordinatedURL in
+            do {
+                try operation(coordinatedURL)
+            } catch {
+                operationError = error
+            }
+        }
+        if let operationError {
+            throw operationError
+        }
+        if let coordinationError {
+            throw coordinationError
+        }
+    }
+
+    private func filesHaveSameContent(_ lhs: URL, _ rhs: URL) throws -> Bool {
+        let lhsValues = try lhs.resourceValues(forKeys: [.fileSizeKey])
+        let rhsValues = try rhs.resourceValues(forKeys: [.fileSizeKey])
+        guard lhsValues.fileSize == rhsValues.fileSize else { return false }
+        return try sha256Hex(of: lhs) == sha256Hex(of: rhs)
+    }
+
+    private func verifyRestoredContent(from source: URL, at destination: URL) throws {
+        let sourceValues = try source.resourceValues(forKeys: [.isDirectoryKey])
+        if sourceValues.isDirectory == true {
+            let sourceInventory = try buildRestoreInventory(in: source)
+            let destinationInventory = try buildRestoreInventory(in: destination)
+            let missingFiles = sourceInventory.files.subtracting(destinationInventory.files)
+            guard missingFiles.isEmpty else {
+                throw restoreVerificationError(paths: Array(missingFiles.prefix(10)))
+            }
+            for relativePath in sourceInventory.files.sorted() {
+                try throwIfCancelled()
+                let sourceFile = source.appendingPathComponent(relativePath, isDirectory: false)
+                let destinationFile = destination.appendingPathComponent(relativePath, isDirectory: false)
+                guard try filesHaveSameContent(sourceFile, destinationFile) else {
+                    throw restoreVerificationError(paths: [relativePath])
+                }
+                try rejectUnresolvedVersions(at: destinationFile)
+            }
+        } else {
+            guard fileManager.fileExists(atPath: destination.path),
+                  try filesHaveSameContent(source, destination) else {
+                throw restoreVerificationError(paths: [destination.lastPathComponent])
+            }
+            try rejectUnresolvedVersions(at: destination)
+        }
+    }
+
+    private func rejectUnresolvedVersions(at url: URL) throws {
+        let conflicts = NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []
+        guard conflicts.isEmpty else {
+            throw NSError(
+                domain: "TeachingBackup",
+                code: 14,
+                userInfo: [NSLocalizedDescriptionKey: "恢复后发现 iCloud 文件版本冲突：\(url.path)"]
+            )
+        }
+    }
+
+    private func numericCopyPaths(in root: URL) throws -> Set<String> {
+        let enumerator = fileManager.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )
+        var paths: Set<String> = []
+        while let url = enumerator?.nextObject() as? URL {
+            try throwIfCancelled()
+            if hasNumericCopySuffix(url.lastPathComponent) {
+                paths.insert(relativePath(for: url, base: root))
+            }
+        }
+        return paths
+    }
+
+    private func hasNumericCopySuffix(_ name: String) -> Bool {
+        let pathExtension = (name as NSString).pathExtension
+        let stem = pathExtension.isEmpty ? name : (name as NSString).deletingPathExtension
+        guard let separator = stem.lastIndex(of: " ") else { return false }
+        let suffix = stem[stem.index(after: separator)...]
+        guard let number = Int(suffix), number >= 2 else { return false }
+        return !stem[..<separator].isEmpty
+    }
+
+    private func rejectNewNumericCopies(
+        in root: URL,
+        preexisting: Set<String>,
+        allowedBySnapshot: Set<String>
+    ) throws {
+        let unexpected = try numericCopyPaths(in: root)
+            .subtracting(preexisting)
+            .subtracting(allowedBySnapshot)
+        guard unexpected.isEmpty else {
+            throw NSError(
+                domain: "TeachingBackup",
+                code: 15,
+                userInfo: [
+                    NSLocalizedDescriptionKey: "恢复期间产生了数字冲突副本，已停止：\(unexpected.sorted().prefix(10).joined(separator: "，"))"
+                ]
+            )
+        }
+    }
+
+    private func restoreVerificationError(paths: [String]) -> NSError {
+        NSError(
+            domain: "TeachingBackup",
+            code: 13,
+            userInfo: [
+                NSLocalizedDescriptionKey: "恢复后内容校验失败：\(paths.sorted().joined(separator: "，"))"
+            ]
+        )
+    }
+
+    private func restoreTypeMismatchError(at destination: URL) -> NSError {
+        NSError(
+            domain: "TeachingBackup",
+            code: 12,
+            userInfo: [
+                NSLocalizedDescriptionKey: "恢复目标类型冲突，已停止以避免删除重建：\(destination.path)"
+            ]
+        )
     }
 
     private func computeStats(in root: URL) throws -> (fileCount: Int, directoryCount: Int, totalBytes: Int64) {
@@ -858,23 +1514,6 @@ actor TeachingBackupService {
             }
         }
         return max(1, count)
-    }
-
-    private func countEligibleTopLevelItems(in root: URL) throws -> Int {
-        let items = try fileManager.contentsOfDirectory(
-            at: root,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
-        )
-        var count = 0
-        for item in items {
-            try throwIfCancelled()
-            let relativePath = relativePath(for: item, base: root)
-            let isDirectory = (try? item.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
-            guard !shouldExclude(relativePath: relativePath, isDirectory: isDirectory) else { continue }
-            count += 1
-        }
-        return count
     }
 
     private func setProgress(

@@ -1,11 +1,11 @@
 import Foundation
 
-enum TeachingCoursePackageSyncExecutor {
-    static func previewUpdate(student: TeachingStudentItem) async throws -> TeachingCourseUpdatePreview {
+nonisolated enum TeachingCoursePackageSyncExecutor {
+    nonisolated static func previewUpdate(student: TeachingStudentItem) async throws -> TeachingCourseUpdatePreview {
         try await TeachingCourseWorkflowService.previewNotebookUpdate(student: student)
     }
 
-    static func syncDirtyPackages(
+    nonisolated static func syncDirtyPackages(
         student: TeachingStudentItem,
         placementTarget: TeachingCourseUpdatePlacementTarget?,
         allowedNewPackageIDs: Set<String>? = nil

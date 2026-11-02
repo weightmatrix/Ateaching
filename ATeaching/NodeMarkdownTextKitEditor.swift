@@ -1067,7 +1067,7 @@ private struct NodeMarkdownTextKitRepresentable: NSViewRepresentable {
             let paragraph = NSMutableParagraphStyle()
             paragraph.lineBreakMode = .byWordWrapping
             let markerX = Self.leadingPadding
-                + CGFloat(max(0, level - 1)) * Self.levelIndentStep
+                + Self.renderContract.layout.indentOffset(for: level)
             let targetContentX = markerX + max(1, font.pointSize)
             let prefixWidth = (prefix as NSString).size(withAttributes: [.font: font]).width
             paragraph.firstLineHeadIndent = max(0, targetContentX - prefixWidth)
@@ -5511,7 +5511,7 @@ private final class NodeMarkdownStyledTextView: NSTextView, NSLayoutManagerDeleg
 
             let markerX = containerOrigin.x
                 + Self.leadingPadding
-                + CGFloat(max(0, level - 1)) * Self.levelIndentStep
+                + Self.renderContract.layout.indentOffset(for: level)
             if markerX >= trailingEdge { continue }
 
             if roleStyle.hasBackgroundBar {
@@ -5606,7 +5606,7 @@ private final class NodeMarkdownStyledTextView: NSTextView, NSLayoutManagerDeleg
         let roleStyle = nodeDocumentStyle.style(forLevel: level)
         let markerX = containerOrigin.x
             + Self.leadingPadding
-            + CGFloat(max(0, level - 1)) * Self.levelIndentStep
+            + Self.renderContract.layout.indentOffset(for: level)
         guard markerX < trailingEdge else { return }
 
         if roleStyle.hasBackgroundBar {
@@ -5800,8 +5800,8 @@ private enum NodeMarkdownFormulaRenderMode: Hashable {
 #endif
 
 // MARK: - 正文编解码 - v2 - 编辑缓冲区只容纳Content，层级由行元数据承载
-enum NodeMarkdownPlainTextCodec {
-    static func serialize(document: NodeMarkdownDocument) -> String {
+nonisolated enum NodeMarkdownPlainTextCodec {
+    nonisolated static func serialize(document: NodeMarkdownDocument) -> String {
         document.nodes
             .map { NodeMarkdownLegacyAttachmentSourceRepair.repair($0.text) }
             .joined(separator: "\n")
@@ -5809,7 +5809,7 @@ enum NodeMarkdownPlainTextCodec {
 
     /// 旧管线的结构快照已经逐行携带完整身份，不再通过正文相似度或前后位置
     /// 猜测UUID。只有快照中新建或重复的非法身份才生成新UUID。
-    static func parse(
+    nonisolated static func parse(
         snapshot: NodeMarkdownLegacyDocumentSnapshot,
         previousNodes: [NodeMarkdownNode]
     ) -> NodeMarkdownDocument {
@@ -5885,7 +5885,7 @@ enum NodeMarkdownPlainTextCodec {
         return NodeMarkdownDocument(nodes: nodes)
     }
 
-    static func parse(
+    nonisolated static func parse(
         text: String,
         previousNodes: [NodeMarkdownNode],
         rowMetadata: [NodeMarkdownTextKitRowMetadata]? = nil

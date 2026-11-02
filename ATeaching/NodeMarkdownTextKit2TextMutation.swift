@@ -31,10 +31,12 @@ extension NodeMarkdownTextKit2Coordinator {
             in: textView,
             scrollView: scrollView
         )
+        let targetRow = sourceRow + 1
         textView.suppressesAutomaticSelectionScrolling = true
         defer {
             restoreViewportAfterStructuralEdit(
                 viewportAnchor,
+                caretRow: targetRow,
                 scrollView: scrollView,
                 textView: textView
             )
@@ -90,7 +92,6 @@ extension NodeMarkdownTextKit2Coordinator {
             rebuildRowLayouts(from: textView, value: value, applyStyles: false)
         }
 
-        let targetRow = sourceRow + 1
         let previousEditingRow = editingRowIndex
         editingRowIndex = targetRow
         textView.nodeMarkdownEditingRowIndex = targetRow
@@ -131,6 +132,7 @@ extension NodeMarkdownTextKit2Coordinator {
 
     private func restoreViewportAfterStructuralEdit(
         _ anchor: StructuralViewportAnchor?,
+        caretRow: Int,
         scrollView: NSScrollView?,
         textView: NodeMarkdownTextKit2TextView
     ) {
@@ -156,9 +158,42 @@ extension NodeMarkdownTextKit2Coordinator {
             restore()
             DispatchQueue.main.async {
                 restore()
-                textView?.suppressesAutomaticSelectionScrolling = false
+                guard let textView else { return }
+                textView.suppressesAutomaticSelectionScrolling = false
+                self.scrollCaretIntoBottomComfortZone(
+                    rowIndex: caretRow,
+                    in: textView,
+                    scrollView: scrollView
+                )
             }
         }
+    }
+
+    /// 类似Word：只在插入点越过底部舒适区时向上滚动必要距离，
+    /// 不把正常的段落拆分强制居中，也不破坏结构事务的视口锚点。
+    private func scrollCaretIntoBottomComfortZone(
+        rowIndex: Int,
+        in textView: NodeMarkdownTextKit2TextView,
+        scrollView: NSScrollView
+    ) {
+        guard rowLayouts.indices.contains(rowIndex),
+              let fragmentRect = layoutFragmentRect(
+                for: rowLayouts[rowIndex],
+                in: textView
+              ) else { return }
+
+        let clipView = scrollView.contentView
+        let viewport = clipView.bounds
+        let lineHeight = max(1, fragmentRect.height)
+        let preferredMargin = max(48, lineHeight * 2.5)
+        let bottomComfortMargin = min(preferredMargin, viewport.height * 0.28)
+        let overflow = fragmentRect.maxY - (viewport.maxY - bottomComfortMargin)
+        guard overflow > 0.5 else { return }
+
+        var bounds = viewport
+        bounds.origin.y += overflow
+        clipView.setBoundsOrigin(clipView.constrainBoundsRect(bounds).origin)
+        scrollView.reflectScrolledClipView(clipView)
     }
 
     private func structuralViewportAnchor(
@@ -181,6 +216,13 @@ extension NodeMarkdownTextKit2Coordinator {
         for rowLayout: NodeMarkdownTextKit2RowLayout,
         in textView: NodeMarkdownTextKit2TextView
     ) -> CGFloat? {
+        layoutFragmentRect(for: rowLayout, in: textView)?.minY
+    }
+
+    private func layoutFragmentRect(
+        for rowLayout: NodeMarkdownTextKit2RowLayout,
+        in textView: NodeMarkdownTextKit2TextView
+    ) -> NSRect? {
         let documentStart = textView.nodeTextContentStorage.documentRange.location
         guard let location = textView.nodeTextContentStorage.location(
             documentStart,
@@ -189,7 +231,10 @@ extension NodeMarkdownTextKit2Coordinator {
         let fragment = textView.nodeTextLayoutManager.textLayoutFragment(for: location) else {
             return nil
         }
-        return textView.textContainerOrigin.y + fragment.layoutFragmentFrame.minY
+        return fragment.layoutFragmentFrame.offsetBy(
+            dx: textView.textContainerOrigin.x,
+            dy: textView.textContainerOrigin.y
+        )
     }
 
     /// 图片文件已经由父页面落盘；正文链接仍必须作为当前行的本地编辑写入。

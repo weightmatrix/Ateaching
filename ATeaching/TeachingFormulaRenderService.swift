@@ -2,13 +2,13 @@
 import Foundation
 import CoreGraphics
 
-struct TeachingFormulaLayoutInfo: Sendable, Hashable {
+nonisolated struct TeachingFormulaLayoutInfo: Sendable, Hashable {
     var sourceBlockID: UUID
     var formulaText: String
     var estimatedSize: CGSize
 }
 
-enum TeachingFormulaRenderService {
+nonisolated enum TeachingFormulaRenderService {
     private static var cache: [String: CGSize] = [:]
     private static let cacheQueue = DispatchQueue(label: "com.ateaching.formula-cache", qos: .utility)
 

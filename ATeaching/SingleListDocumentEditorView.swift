@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import Foundation
 
 #if os(macOS)
 import AppKit
@@ -7,6 +8,7 @@ import AppKit
 import UIKit
 #endif
 
+// MARK: - 课反工具栏诊断·81 - 只记录课反编辑器与工具栏可见性，不修改行为
 // MARK: - 单列表格编辑器 - v2 - Content专注编辑 + 工具栏对齐 + 图片导出
 struct SingleListDocumentEditorView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -14,6 +16,13 @@ struct SingleListDocumentEditorView: View {
     let fileURL: URL
     var externalExportImageToken: Int = 0
     var showsReflectionSiblingNavigation: Bool = true
+    var showsInlineReflectionNavigation: Bool = false
+    var onCurrentFileChange: ((URL) -> Void)?
+    var navigationTitleOverride: String?
+    var onRequestClose: (() -> Void)?
+    var onRequestToggleStudentInfo: (() -> Void)?
+    var studentInfoToggleTitle: String = "主"
+    var studentInfoToggleDisabled: Bool = false
     var onClose: (() -> Void)?
 
     @State private var currentFileURL: URL
@@ -44,11 +53,25 @@ struct SingleListDocumentEditorView: View {
         fileURL: URL,
         externalExportImageToken: Int = 0,
         showsReflectionSiblingNavigation: Bool = true,
+        showsInlineReflectionNavigation: Bool = false,
+        onCurrentFileChange: ((URL) -> Void)? = nil,
+        navigationTitleOverride: String? = nil,
+        onRequestClose: (() -> Void)? = nil,
+        onRequestToggleStudentInfo: (() -> Void)? = nil,
+        studentInfoToggleTitle: String = "主",
+        studentInfoToggleDisabled: Bool = false,
         onClose: (() -> Void)? = nil
     ) {
         self.fileURL = fileURL
         self.externalExportImageToken = externalExportImageToken
         self.showsReflectionSiblingNavigation = showsReflectionSiblingNavigation
+        self.showsInlineReflectionNavigation = showsInlineReflectionNavigation
+        self.onCurrentFileChange = onCurrentFileChange
+        self.navigationTitleOverride = navigationTitleOverride
+        self.onRequestClose = onRequestClose
+        self.onRequestToggleStudentInfo = onRequestToggleStudentInfo
+        self.studentInfoToggleTitle = studentInfoToggleTitle
+        self.studentInfoToggleDisabled = studentInfoToggleDisabled
         self.onClose = onClose
         _currentFileURL = State(initialValue: fileURL)
     }
@@ -78,6 +101,37 @@ struct SingleListDocumentEditorView: View {
                     .padding(.horizontal, editorHorizontalPadding)
                     .padding(.top, isCompactEditor ? 8 : 14)
 
+                if showsInlineReflectionNavigation && showsReflectionNavigation {
+                    HStack(spacing: 10) {
+                        Button {
+                            stepReflectionFile(delta: -1)
+                        } label: {
+                            Image(systemName: "chevron.left")
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(reflectionSiblingFiles.count < 2)
+
+                        Button {
+                            stepReflectionFile(delta: 1)
+                        } label: {
+                            Image(systemName: "chevron.right")
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(reflectionSiblingFiles.count < 2)
+
+                        Spacer()
+
+                        Button {
+                            exportAsImage()
+                        } label: {
+                            Label("导出", systemImage: "square.and.arrow.up.on.square")
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    .padding(.horizontal, editorHorizontalPadding)
+                    .padding(.bottom, 8)
+                }
+
                 List {
                     ForEach(Array(rows.enumerated()), id: \.element.id) { index, _ in
                         rowView(index: index, row: $rows[index])
@@ -94,6 +148,7 @@ struct SingleListDocumentEditorView: View {
                             .id(rows[index].id)
                     }
                 }
+                .id(currentFileURL.standardizedFileURL.path)
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
                 .background(Color.clear)
@@ -111,8 +166,16 @@ struct SingleListDocumentEditorView: View {
             .clipShape(RoundedRectangle(cornerRadius: isCompactEditor ? 18 : 28, style: .continuous))
             .padding(isCompactEditor ? 4 : 12)
         }
-        .navigationTitle(meta.title.isEmpty ? currentFileURL.lastPathComponent : meta.title)
+        .navigationTitle(
+            navigationTitleOverride
+                ?? (meta.title.isEmpty ? currentFileURL.lastPathComponent : meta.title)
+        )
         .toolbar {
+            if let onRequestClose {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("关闭", action: onRequestClose)
+                }
+            }
             if onClose == nil {
                 if showsReflectionNavigation {
                     ToolbarItemGroup(placement: .secondaryAction) {
@@ -181,8 +244,19 @@ struct SingleListDocumentEditorView: View {
                     .keyboardShortcut("s", modifiers: .command)
                 }
             }
+            if onClose == nil, let onRequestToggleStudentInfo {
+                ToolbarItem(placement: .primaryAction) {
+                    Button(action: onRequestToggleStudentInfo) {
+                        Label(
+                            studentInfoToggleTitle,
+                            systemImage: studentInfoToggleTitle == "课反" ? "doc.text" : "person.text.rectangle"
+                        )
+                    }
+                    .disabled(studentInfoToggleDisabled)
+                }
+            }
         }
-        .task { load() }
+        .task { FrequentDocumentUsage.record(fileURL); load() }
         .onChange(of: fileURL) { _, newURL in
             guard newURL.standardizedFileURL != currentFileURL.standardizedFileURL else { return }
             switchToFile(newURL)
@@ -202,6 +276,8 @@ struct SingleListDocumentEditorView: View {
         .onDisappear {
             autoSaveTask?.cancel()
             saveBeforeClose()
+        }
+        .onAppear {
         }
         .preferredColorScheme(preferredSchemeOverride)
     }
@@ -223,6 +299,17 @@ struct SingleListDocumentEditorView: View {
                     Label("关闭", systemImage: "xmark")
                 }
                 .appGlassButtonStyle()
+
+                if let onRequestToggleStudentInfo {
+                    Button(action: onRequestToggleStudentInfo) {
+                        Label(
+                            studentInfoToggleTitle,
+                            systemImage: studentInfoToggleTitle == "课反" ? "doc.text" : "person.text.rectangle"
+                        )
+                    }
+                    .appGlassButtonStyle()
+                    .disabled(studentInfoToggleDisabled)
+                }
 
                 if showsReflectionNavigation {
                     Button {
@@ -415,7 +502,9 @@ struct SingleListDocumentEditorView: View {
     }
 
     private var showsReflectionNavigation: Bool {
-        showsReflectionSiblingNavigation && isReflectionFile(currentFileURL)
+        // fileURL 是父视图当前选中文件的事实来源。弹窗首次展示时，SwiftUI 可能仍在
+        // 恢复 currentFileURL 的旧 State，若用它判断会让课反导航按钮首帧缺失。
+        showsReflectionSiblingNavigation && isReflectionFile(fileURL)
     }
 
     private func isReflectionFile(_ url: URL) -> Bool {
@@ -451,7 +540,9 @@ struct SingleListDocumentEditorView: View {
         guard url.standardizedFileURL != currentFileURL.standardizedFileURL else { return }
         autoSaveTask?.cancel()
         commitActiveEditorThen {
-            guard saveCurrentDocument() else { return }
+            guard saveCurrentDocument() else {
+                return
+            }
             currentFileURL = url
             rows = []
             styleMap = [:]
@@ -459,6 +550,7 @@ struct SingleListDocumentEditorView: View {
             activeEditingRowID = nil
             statusMessage = ""
             isLoading = true
+            onCurrentFileChange?(url)
             load()
         }
     }
@@ -712,7 +804,11 @@ private struct SingleListMacContentTextView: NSViewRepresentable {
     @Binding var measuredHeight: CGFloat
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text, measuredHeight: $measuredHeight, onBecameActive: onBecameActive)
+        Coordinator(
+            text: $text,
+            measuredHeight: $measuredHeight,
+            onBecameActive: onBecameActive
+        )
     }
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -722,6 +818,9 @@ private struct SingleListMacContentTextView: NSViewRepresentable {
         scrollView.drawsBackground = false
 
         let textView = SingleListAutoContinueTextView()
+        textView.onMouseActivation = {
+            context.coordinator.notifyBecameActive()
+        }
         textView.drawsBackground = false
         textView.isRichText = false
         textView.isAutomaticQuoteSubstitutionEnabled = false
@@ -750,7 +849,11 @@ private struct SingleListMacContentTextView: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSScrollView, context: Context) {
         guard let textView = context.coordinator.textView else { return }
-        context.coordinator.update(text: $text, measuredHeight: $measuredHeight, onBecameActive: onBecameActive)
+        context.coordinator.update(
+            text: $text,
+            measuredHeight: $measuredHeight,
+            onBecameActive: onBecameActive
+        )
         context.coordinator.syncExternalTextIfNeeded(text, into: textView)
         textView.font = NSFont(name: fontName, size: fontSize) ?? .systemFont(ofSize: fontSize)
         textView.textColor = NSColor(colorFromHex(textColorHex))
@@ -790,6 +893,10 @@ private struct SingleListMacContentTextView: NSViewRepresentable {
             textBinding = text
             measuredHeightBinding = measuredHeight
             self.onBecameActive = onBecameActive
+        }
+
+        func notifyBecameActive() {
+            onBecameActive()
         }
 
         func syncExternalTextIfNeeded(_ externalText: String, into textView: NSTextView) {
@@ -910,6 +1017,13 @@ private final class SingleListForwardingScrollView: NSScrollView {
 }
 
 private final class SingleListAutoContinueTextView: NSTextView {
+    var onMouseActivation: (() -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        onMouseActivation?()
+        super.mouseDown(with: event)
+    }
+
     override func insertNewline(_ sender: Any?) {
         if applyAutoContinueRule() {
             return

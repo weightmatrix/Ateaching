@@ -21,6 +21,7 @@ enum NodeMarkdownTextKit2RegressionSuite {
         testDocumentStateSplitsNodeLocally()
         testProseMirrorCharacterTransactionAndMapping()
         testProseMirrorStructuralIndexAndHistory()
+        testSelectedNodeDeletionHistory()
         testProtectedH3SplitCanUndo()
         testProseMirrorRejectsStaleTransaction()
         testTransactionImpactAndNodeVersions()
@@ -248,6 +249,35 @@ enum NodeMarkdownTextKit2RegressionSuite {
         assert(state.row(for: inserted) == nil)
         assert(state.redo() != nil)
         assert(state.snapshot.plainText == "H1\nPackage\nCh\nild")
+    }
+
+    private static func testSelectedNodeDeletionHistory() {
+        let ids = (0..<3).map { _ in UUID() }
+        let state = NodeMarkdownTextKit2DocumentState(
+            text: "Before\n待删除😀\nAfter",
+            rowMetadata: ids.map { metadata($0, level: 4) }
+        )
+        let selected = NodeMarkdownNodeSelection(
+            anchor: .init(nodeID: ids[1], utf16Offset: 0),
+            head: .init(nodeID: ids[1], utf16Offset: "待删除😀".utf16.count)
+        )
+        let transaction = NodeMarkdownTransaction(
+            baseRevision: state.revision,
+            steps: [.deleteNodes(nodeIDs: [ids[1]])],
+            selectionBefore: selected,
+            selectionAfter: .init(anchor: .init(nodeID: ids[0], utf16Offset: 6)),
+            label: "Delete Selected Node"
+        )
+        assert(state.dispatch(transaction) != nil)
+        for _ in 0..<3 {
+            assert(state.snapshot.plainText == "Before\nAfter")
+            assert(state.row(for: ids[1]) == nil)
+            let restored = state.undo()
+            assert(restored?.mappedSelection == selected)
+            assert(state.snapshot.plainText == "Before\n待删除😀\nAfter")
+            assert(state.snapshot.nodes.map(\.id) == ids)
+            assert(state.redo() != nil)
+        }
     }
 
     private static func testProseMirrorRejectsStaleTransaction() {

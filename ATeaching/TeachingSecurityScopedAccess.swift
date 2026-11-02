@@ -4,7 +4,7 @@ import Foundation
 import AppKit
 #endif
 
-enum TeachingSecurityScopedAccess {
+nonisolated enum TeachingSecurityScopedAccess {
     private static let defaultsKey = "teaching.security_scoped.bookmarks.v2"
 
     private struct BookmarkMatch {
@@ -111,7 +111,9 @@ enum TeachingSecurityScopedAccess {
         } catch {
             #if os(macOS)
             if allowInteractiveRecovery {
-                let authorizedURL = try requestWritableAuthorization(for: targetURL)
+                let authorizedURL = try MainActor.assumeIsolated {
+                    try requestWritableAuthorization(for: targetURL)
+                }
                 try storeBookmark(for: authorizedURL)
                 return try withWritableAccess(
                     toPath: canonical,
@@ -136,6 +138,7 @@ enum TeachingSecurityScopedAccess {
     /// 失效的普通书签不能被程序静默升级，这是macOS沙盒的硬限制。
     /// 下课自动导出允许在失败点直接补授权；用户可以选择目标学生目录，
     /// 也可以选择它的任意上级目录，一次授权可覆盖同目录下其他学生。
+    @MainActor
     private static func requestWritableAuthorization(for targetURL: URL) throws -> URL {
         let panel = NSOpenPanel()
         panel.title = "重新授权学生同步目录"

@@ -8,7 +8,7 @@ import UIKit
 #endif
 
 // MARK: - NodeMarkdown样式角色 - v2 - 定义H1-H6正文5层与注释共12类样式
-enum NodeMarkdownStyleRole: String, CaseIterable, Identifiable {
+nonisolated enum NodeMarkdownStyleRole: String, CaseIterable, Identifiable {
     case h1 = "H1"
     case h2 = "H2"
     case h3 = "H3"
@@ -55,7 +55,7 @@ enum NodeMarkdownStyleRole: String, CaseIterable, Identifiable {
 }
 
 // MARK: - NodeMarkdown深浅模式 - v1 - 支持系统固定浅色固定深色三种模式
-enum NodeMarkdownPreferredScheme: String, Codable, Hashable, CaseIterable, Identifiable {
+nonisolated enum NodeMarkdownPreferredScheme: String, Codable, Hashable, CaseIterable, Identifiable {
     case system
     case light
     case dark
@@ -70,7 +70,7 @@ enum NodeMarkdownPreferredScheme: String, Codable, Hashable, CaseIterable, Ident
 }
 
 // MARK: - NodeMarkdown语义颜色 - v1 - 定义可持久化的深浅自适应语义色
-enum NodeMarkdownSemanticColor: String, Codable, Hashable {
+nonisolated enum NodeMarkdownSemanticColor: String, Codable, Hashable {
     case adaptiveBlackWhite
 
     var color: Color {
@@ -82,7 +82,7 @@ enum NodeMarkdownSemanticColor: String, Codable, Hashable {
 }
 
 // MARK: - NodeMarkdown行样式 - v2 - 记录字体大小颜色粗体下划线背景条配置
-struct NodeMarkdownRoleStyle: Hashable {
+nonisolated struct NodeMarkdownRoleStyle: Hashable {
     var fontName: String
     var fontSize: Double
     var color: Color
@@ -130,7 +130,7 @@ struct NodeMarkdownRoleStyle: Hashable {
 }
 
 // MARK: - NodeMarkdown图标配置 - v1 - 定义12层前缀图标
-struct NodeMarkdownLevelIconConfig: Codable, Hashable {
+nonisolated struct NodeMarkdownLevelIconConfig: Codable, Hashable {
     var symbols: [String] = [
         "1",
         "(1)",
@@ -153,7 +153,7 @@ struct NodeMarkdownLevelIconConfig: Codable, Hashable {
 }
 
 // MARK: - NodeMarkdown文档样式 - v2 - 聚合角色样式背景色深浅模式与12层图标配置
-struct NodeMarkdownDocumentStyle: Hashable {
+nonisolated struct NodeMarkdownDocumentStyle: Hashable {
     var h1 = NodeMarkdownRoleStyle(fontName: appleSystemMonospacedFontName, fontSize: 30, color: markdownHexColor(0x26619C), semanticColor: nil, isBold: true, hasBackgroundBar: false, paragraphSpacingBefore: 10, paragraphSpacingAfter: 8, peerLineSpacing: 0)
     var h2 = NodeMarkdownRoleStyle(fontName: appleSystemMonospacedFontName, fontSize: 26, color: markdownHexColor(0x1C39BB), semanticColor: nil, isBold: true, hasBackgroundBar: false, paragraphSpacingBefore: 8, paragraphSpacingAfter: 6, peerLineSpacing: 0)
     var h3 = NodeMarkdownRoleStyle(fontName: appleSystemMonospacedFontName, fontSize: 22, color: markdownHexColor(0x50C878), semanticColor: nil, isBold: true, hasBackgroundBar: true, paragraphSpacingBefore: 6, paragraphSpacingAfter: 5, peerLineSpacing: 0)
@@ -254,7 +254,7 @@ struct NodeMarkdownDocumentStyle: Hashable {
 }
 
 // MARK: - NodeMarkdown颜色存储记录 - v1 - 为JSON文件编码颜色与语义色
-struct NodeMarkdownColorRecord: Codable, Hashable {
+nonisolated struct NodeMarkdownColorRecord: Codable, Hashable {
     var red: Double
     var green: Double
     var blue: Double
@@ -292,7 +292,7 @@ struct NodeMarkdownColorRecord: Codable, Hashable {
 }
 
 // MARK: - NodeMarkdown行样式记录 - v1 - 为角色样式提供持久化结构
-struct NodeMarkdownRoleStyleRecord: Codable, Hashable {
+nonisolated struct NodeMarkdownRoleStyleRecord: Codable, Hashable {
     var fontName: String
     var fontSize: Double
     var color: NodeMarkdownColorRecord
@@ -358,7 +358,7 @@ struct NodeMarkdownRoleStyleRecord: Codable, Hashable {
 }
 
 // MARK: - NodeMarkdown文档样式记录 - v2 - 定义NodeMarkdown设置文件结构
-struct NodeMarkdownDocumentStyleRecord: Codable, Hashable {
+nonisolated struct NodeMarkdownDocumentStyleRecord: Codable, Hashable {
     var h1: NodeMarkdownRoleStyleRecord
     var h2: NodeMarkdownRoleStyleRecord
     var h3: NodeMarkdownRoleStyleRecord
@@ -482,7 +482,7 @@ extension NodeMarkdownDocumentStyle {
 }
 
 // MARK: - NodeMarkdown设置存储 - v1 - 独立文档样式文件并共享Markdown快捷输入文件
-enum NodeMarkdownSettingsStore {
+nonisolated enum NodeMarkdownSettingsStore {
     private static let styleFileName = "settingnodemarkdown.json"
     private static let tocExpandModeKey = "node_markdown_toc_expand_mode"
 

@@ -7,7 +7,7 @@ struct TeachingCoursePackageStateSummary: Hashable {
     var conflictPackageCount: Int = 0
 }
 
-enum TeachingCoursePackageStateEngine {
+nonisolated enum TeachingCoursePackageStateEngine {
     static func summarizePreviewState(
         notebookDocument: NodeMarkdownDocument,
         resolveSourceURL: (String) throws -> URL?,

@@ -4,6 +4,30 @@ import SwiftUI
 // MARK: - 全局背景设置 - v1 - 管理主界面、清单、单列表格和导出图共用背景
 
 struct AppBackgroundSettings: Codable, Equatable {
+    enum DesignStyle: String, Codable, CaseIterable, Identifiable {
+        case apple
+        case minimal
+        case vibrant
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .apple: return "Apple"
+            case .minimal: return "极简"
+            case .vibrant: return "活力"
+            }
+        }
+
+        var subtitle: String {
+            switch self {
+            case .apple: return "系统蓝、通透材质与柔和圆角"
+            case .minimal: return "灰阶、细边框与紧凑布局"
+            case .vibrant: return "鲜明色彩、卡片层次与强调反馈"
+            }
+        }
+    }
+
     enum BackgroundStyle: String, Codable, CaseIterable, Identifiable {
         case plain
         case verdantGold
@@ -19,6 +43,26 @@ struct AppBackgroundSettings: Codable, Equatable {
     }
 
     var backgroundStyle: BackgroundStyle = .verdantGold
+    var designStyle: DesignStyle = .apple
+
+    private enum CodingKeys: String, CodingKey {
+        case backgroundStyle
+        case designStyle
+    }
+
+    init(
+        backgroundStyle: BackgroundStyle = .verdantGold,
+        designStyle: DesignStyle = .apple
+    ) {
+        self.backgroundStyle = backgroundStyle
+        self.designStyle = designStyle
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        backgroundStyle = try container.decodeIfPresent(BackgroundStyle.self, forKey: .backgroundStyle) ?? .verdantGold
+        designStyle = try container.decodeIfPresent(DesignStyle.self, forKey: .designStyle) ?? .apple
+    }
 }
 
 enum AppBackgroundSettingsStore {
@@ -44,6 +88,7 @@ enum AppBackgroundSettingsStore {
         let url = try fileURL(fileManager: fileManager)
         let data = try encoder.encode(settings)
         try data.write(to: url, options: .atomic)
+        NotificationCenter.default.post(name: .appAppearanceDidChange, object: nil)
     }
 
     private static func fileURL(fileManager: FileManager) throws -> URL {
@@ -59,6 +104,109 @@ enum AppBackgroundSettingsStore {
         }
         let legacyURL = preferredURL.deletingLastPathComponent().appendingPathComponent(legacyFileName, isDirectory: false)
         return fileManager.fileExists(atPath: legacyURL.path) ? legacyURL : preferredURL
+    }
+}
+
+extension Notification.Name {
+    static let appAppearanceDidChange = Notification.Name("appAppearanceDidChange")
+}
+
+struct AppDisplaySettingsView: View {
+    @State private var settings = AppBackgroundSettingsStore.load()
+    @State private var statusMessage = ""
+
+    var body: some View {
+        AppSettingsPage(title: "显示设置", subtitle: "调整界面风格与全局背景") {
+            AppSettingsCard(title: "设计风格", systemImage: "circle.lefthalf.filled") {
+                VStack(spacing: 10) {
+                    ForEach(AppBackgroundSettings.DesignStyle.allCases) { style in
+                        Button {
+                            settings.designStyle = style
+                        } label: {
+                            HStack(spacing: 14) {
+                                DesignStylePreview(style: style)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(style.title).font(.headline)
+                                    Text(style.subtitle)
+                                        .font(.footnote)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: settings.designStyle == style ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(settings.designStyle == style ? Color.accentColor : .secondary)
+                            }
+                            .padding(12)
+                            .contentShape(Rectangle())
+                            .background(
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .fill(settings.designStyle == style ? Color.accentColor.opacity(0.10) : Color.secondary.opacity(0.06))
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
+            AppSettingsCard(title: "背景", systemImage: "paintpalette") {
+                AppSettingsNavigationRow(
+                    title: "背景设置",
+                    subtitle: "管理主界面、清单和表格共用的背景",
+                    systemImage: "photo.on.rectangle.angled"
+                ) {
+                    AppBackgroundSettingsView()
+                }
+            }
+            AppSettingsStatusMessage(message: statusMessage)
+        }
+        .onChange(of: settings) { _, _ in save() }
+    }
+
+    private func save() {
+        do {
+            try AppBackgroundSettingsStore.save(settings)
+            statusMessage = "已应用"
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+}
+
+private struct DesignStylePreview: View {
+    let style: AppBackgroundSettings.DesignStyle
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: style == .minimal ? 6 : 12, style: .continuous)
+                .fill(fill)
+            HStack(spacing: 3) {
+                ForEach(0..<3, id: \.self) { index in
+                    Capsule()
+                        .fill(index == 0 ? accent : Color.primary.opacity(0.13))
+                        .frame(width: index == 0 ? 13 : 7, height: 7)
+                }
+            }
+        }
+        .frame(width: 56, height: 42)
+        .overlay(
+            RoundedRectangle(cornerRadius: style == .minimal ? 6 : 12, style: .continuous)
+                .stroke(Color.primary.opacity(0.10), lineWidth: 1)
+        )
+    }
+
+    private var fill: Color {
+        switch style {
+        case .apple: return Color.blue.opacity(0.13)
+        case .minimal: return Color.secondary.opacity(0.08)
+        case .vibrant: return Color.purple.opacity(0.18)
+        }
+    }
+
+    private var accent: Color {
+        switch style {
+        case .apple: return .blue
+        case .minimal: return .primary
+        case .vibrant: return .purple
+        }
     }
 }
 

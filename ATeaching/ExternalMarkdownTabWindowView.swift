@@ -87,9 +87,9 @@ struct ExternalMarkdownTabWindowView: View {
 
     private var windowTitle: String {
         if let selectedTab = store.selectedTab {
-            return "Markdown-\(selectedTab.displayName)"
+            return "📝·Markdown·\((selectedTab.displayName as NSString).deletingPathExtension)"
         }
-        return "Markdown"
+        return "📝·Markdown"
     }
 
     private var tabStrip: some View {
@@ -251,7 +251,7 @@ enum ExternalMarkdownWindowPresenter {
             backing: .buffered,
             defer: false
         )
-        window.title = "Markdown-\(standardizedURL.lastPathComponent)"
+        window.title = "📝·Markdown·\(standardizedURL.deletingPathExtension().lastPathComponent)"
         window.isReleasedWhenClosed = false
         window.center()
         window.contentView = NSHostingView(
@@ -275,7 +275,7 @@ enum ExternalMarkdownWindowPresenter {
             backing: .buffered,
             defer: false
         )
-        window.title = "Markdown"
+        window.title = "📝·Markdown"
         window.isReleasedWhenClosed = false
         window.center()
         window.contentView = NSHostingView(

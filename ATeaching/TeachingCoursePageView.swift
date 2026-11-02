@@ -119,6 +119,7 @@ struct TeachingCoursePageView: View {
     @State private var selectedUpdateChapterPath = ""
     @State private var selectedUpdateAnchorID = ""
     @State private var showReflectionSheet = false
+    @State private var reflectionOpeningFileURL: URL?
     @State private var reflectionFiles: [URL] = []
     @State private var reflectionIndex = 0
     @State private var reflectionShowStudentInfo = false
@@ -136,7 +137,10 @@ struct TeachingCoursePageView: View {
                 Spacer(minLength: 0)
             }
             .padding(16)
-            .navigationTitle("课程页-\(student.name)")
+            .navigationTitle(coursePageWindowTitle)
+            #if os(macOS)
+            .background(WindowTitleSetter(title: coursePageWindowTitle).frame(width: 0, height: 0))
+            #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("返回") {
@@ -342,74 +346,30 @@ struct TeachingCoursePageView: View {
             }
             .sheet(isPresented: $showReflectionSheet) {
                 NavigationStack {
-                    VStack(spacing: 0) {
-                        HStack(spacing: 8) {
-                            Button {
-                                stepReflection(delta: -1)
-                            } label: {
-                                Image(systemName: "chevron.left")
-                            }
-                            .appGlassButtonStyle()
-                            .disabled(reflectionFiles.isEmpty || reflectionShowStudentInfo)
-
-                            Button {
-                                stepReflection(delta: 1)
-                            } label: {
-                                Image(systemName: "chevron.right")
-                            }
-                            .appGlassButtonStyle()
-                            .disabled(reflectionFiles.isEmpty || reflectionShowStudentInfo)
-
-                            Button {
-                                reflectionShowStudentInfo.toggle()
-                            } label: {
-                                Label(reflectionShowStudentInfo ? "课" : "主", systemImage: reflectionShowStudentInfo ? "doc.text" : "person.text.rectangle")
-                            }
-                            .appGlassButtonStyle()
-                            .disabled(studentInfoReflectionURL == nil)
-
-                            Spacer()
-
-                            Text(reflectionTitleText)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-
-                            Button {
-                                exportReflectionCurrentFile()
-                            } label: {
-                                Label("导出", systemImage: "square.and.arrow.up.on.square")
-                            }
-                            .appGlassButtonStyle()
-                            .disabled(currentReflectionFileURL == nil)
-                        }
-                        .padding(12)
-
-                        if let currentURL = currentReflectionFileURL {
-                            SingleListDocumentEditorView(
-                                fileURL: currentURL,
-                                externalExportImageToken: reflectionExportImageToken,
-                                showsReflectionSiblingNavigation: false
-                            )
-                            .id(currentURL.path)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            #if os(macOS)
-                            .frame(minHeight: 520)
-                            #endif
-                        } else {
-                            ContentUnavailableView("无可用文件", systemImage: "doc")
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            #if os(macOS)
-                                .frame(minHeight: 520)
-                            #endif
-                        }
-                    }
-                    .navigationTitle("课反")
-                    .toolbar {
-                        ToolbarItem(placement: .cancellationAction) {
-                            Button("关闭") {
+                    if let currentURL = currentReflectionFileURL ?? reflectionOpeningFileURL {
+                        SingleListDocumentEditorView(
+                            fileURL: currentURL,
+                            externalExportImageToken: reflectionExportImageToken,
+                            showsReflectionSiblingNavigation: true,
+                            onCurrentFileChange: { url in
+                                if let index = reflectionFiles.firstIndex(where: {
+                                    $0.standardizedFileURL == url.standardizedFileURL
+                                }) {
+                                    reflectionIndex = index
+                                }
+                            },
+                            navigationTitleOverride: "课反",
+                            onRequestToggleStudentInfo: { reflectionShowStudentInfo.toggle() },
+                            studentInfoToggleTitle: reflectionShowStudentInfo ? "课反" : "学生信息",
+                            studentInfoToggleDisabled: studentInfoReflectionURL == nil,
+                            onClose: {
                                 showReflectionSheet = false
+                                reflectionOpeningFileURL = nil
                             }
-                        }
+                        )
+                        .id(currentURL.path)
+                    } else {
+                        ContentUnavailableView("无可用文件", systemImage: "doc")
                     }
                 }
                 .singleListAdaptivePresentation(minWidth: 900, minHeight: 620)
@@ -1495,6 +1455,7 @@ struct TeachingCoursePageView: View {
         TeachingClassSessionCenter.shared.start(
             kind: kind,
             notebookPath: notebookPath,
+            studentName: student.name,
             onOpenLessonChecklist: { loadLessonCompletionFiles() },
             onUpdate: { requestUpdatePreview() },
             onOpenReflection: { openLatestClassInfo() },
@@ -1510,6 +1471,10 @@ struct TeachingCoursePageView: View {
                 dismiss()
             }
         )
+    }
+
+    private var coursePageWindowTitle: String {
+        "🗓️·课程页·\(student.name)"
     }
 
     private func runUpdate() {
@@ -1794,10 +1759,14 @@ struct TeachingCoursePageView: View {
     private func openLatestClassInfo() {
         do {
             try repairReflectionFilesIfNeeded()
+            reflectionShowStudentInfo = false
+            let todayURL = try TeachingCourseWorkflowService.classInfoFileURL(student: student, on: Date())
             reflectionFiles = try TeachingCourseWorkflowService.classInfoFileURLs(student: student)
                 .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
-            reflectionIndex = max(0, reflectionFiles.count - 1)
-            reflectionShowStudentInfo = false
+            reflectionIndex = reflectionFiles.firstIndex {
+                $0.standardizedFileURL == todayURL.standardizedFileURL
+            } ?? max(0, reflectionFiles.count - 1)
+            reflectionOpeningFileURL = todayURL
             if reflectionFiles.isEmpty && studentInfoReflectionURL == nil {
                 modeStatusMessage = "未找到课反相关文件。"
                 return
@@ -1831,7 +1800,7 @@ struct TeachingCoursePageView: View {
         if reflectionShowStudentInfo {
             return studentInfoReflectionURL
         }
-        guard !reflectionFiles.isEmpty else { return studentInfoReflectionURL }
+        guard !reflectionFiles.isEmpty else { return nil }
         let safeIndex = max(0, min(reflectionIndex, reflectionFiles.count - 1))
         return reflectionFiles[safeIndex]
     }

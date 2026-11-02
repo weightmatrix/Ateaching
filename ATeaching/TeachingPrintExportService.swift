@@ -1,7 +1,7 @@
 // PIPELINE MARKER: NodeMarkdown legacy pipeline (TeachingPrint export service).
 import Foundation
 
-enum TeachingPrintExportService {
+nonisolated enum TeachingPrintExportService {
     struct JobToken: Hashable, Sendable {
         let id: UUID
     }

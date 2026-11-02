@@ -3,7 +3,7 @@ import Foundation
 // MARK: - NodeMarkdown内存结构索引 - 扁平文件之上的树与H3包查询层
 /// CSV仍只保存有序Node。索引在打开文档或结构变化后由内存重建，不参与编码、落盘和同步。
 /// 普通字符输入不会改变UUID、level或行序，因此可以持续复用同一份索引。
-struct NodeMarkdownDocumentIndex {
+nonisolated struct NodeMarkdownDocumentIndex {
     private(set) var nodeCount = 0
     private var firstRowByID: [UUID: Int] = [:]
     private var allRowsByID: [UUID: [Int]] = [:]

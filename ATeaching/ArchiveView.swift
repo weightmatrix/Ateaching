@@ -409,7 +409,17 @@ struct ArchiveView: View {
     private var topFeatureBar: some View {
         if usesCollapsedTopBar {
             HStack(spacing: 10) {
-                compactFeatureMenu
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 2) {
+                        featureButton(title: "档案", systemImage: "folder", panel: .archive)
+                        featureButton(title: "模板管理", systemImage: "doc.on.doc", panel: .templateManagement)
+                        featureButton(title: "自动填写", systemImage: "wand.and.stars", panel: .autoFill)
+                        featureButton(title: "智能收集", systemImage: "sparkles", panel: .smartCollect)
+                        featureButton(title: "回收站", systemImage: "trash", panel: .recycleBin)
+                    }
+                    .padding(4)
+                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 11))
+                }
                 Spacer(minLength: 8)
                 compactActionMenu
             }
@@ -417,11 +427,17 @@ struct ArchiveView: View {
             .padding(.top, 10)
         } else {
             HStack(spacing: 10) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 2) {
                 featureButton(title: "档案", systemImage: "folder", panel: .archive)
                 featureButton(title: "模板管理", systemImage: "doc.on.doc", panel: .templateManagement)
                 featureButton(title: "自动填写", systemImage: "wand.and.stars", panel: .autoFill)
                 featureButton(title: "智能收集", systemImage: "sparkles", panel: .smartCollect)
                 featureButton(title: "回收站", systemImage: "trash", panel: .recycleBin)
+                    }
+                    .padding(4)
+                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 11))
+                }
                 Spacer()
                 topActionButtons
             }

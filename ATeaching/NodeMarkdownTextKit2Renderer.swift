@@ -79,7 +79,6 @@ extension NodeMarkdownTextKit2TextView {
         }
         guard let visibleRange, visibleRange.length > 0 else { return 0 }
 
-        let documentStart = nodeTextContentStorage.documentRange.location
         var drawnCount = 0
         nodeTextLayoutManager.ensureLayout(for: visibleTextContainerRect(in: dirtyRect))
         attributed.enumerateAttribute(
@@ -89,20 +88,20 @@ extension NodeMarkdownTextKit2TextView {
         ) { value, range, _ in
             guard let color = value as? NSColor,
                   range.length > 0,
-                  let layout = rowLayout(containing: range),
-                  let lineRect = firstLineRect(for: layout, documentStart: documentStart),
-                  let highlightRect = inlineHighlightRect(
-                    for: range,
-                    in: attributed,
-                    layout: layout,
-                    lineRect: lineRect
-                  ),
-                  highlightRect.intersects(dirtyRect) else { return }
-
+                  let layout = rowLayout(containing: range) else { return }
+            let lineFragments = highlightLineFragments(for: range)
             color.setFill()
-            let radius = min(8, highlightRect.height * 0.28)
-            NSBezierPath(roundedRect: highlightRect, xRadius: radius, yRadius: radius).fill()
-            drawnCount += 1
+            let highlightRects = inlineHighlightRects(
+                for: range,
+                in: attributed,
+                layout: layout,
+                lineFragments: lineFragments
+            )
+            for highlightRect in highlightRects where highlightRect.intersects(dirtyRect) {
+                let radius = min(8, highlightRect.height * 0.28)
+                NSBezierPath(roundedRect: highlightRect, xRadius: radius, yRadius: radius).fill()
+                drawnCount += 1
+            }
         }
         return drawnCount
     }
@@ -368,6 +367,71 @@ extension NodeMarkdownTextKit2TextView {
             height = max(height, ceil(font.ascender - font.descender))
         }
         return (width, height, containsAttachment)
+    }
+
+    private func highlightLineFragments(for range: NSRange) -> [(intersection: NSRange, lineRange: NSRange, rect: NSRect)] {
+        var result: [(intersection: NSRange, lineRange: NSRange, rect: NSRect)] = []
+        guard range.length > 0,
+              range.exact(toLength: nodeTextStorage.length) != nil else { return result }
+        let documentStart = nodeTextContentStorage.documentRange.location
+        guard let startLocation = nodeTextContentStorage.location(documentStart, offsetBy: range.location) else {
+            return result
+        }
+        let rangeEnd = NSMaxRange(range)
+        nodeTextLayoutManager.enumerateTextLayoutFragments(from: startLocation, options: [.ensuresLayout]) { [weak self] fragment in
+            guard let self else { return false }
+            let fragmentStart = self.nodeTextContentStorage.offset(from: documentStart, to: fragment.rangeInElement.location)
+            guard fragmentStart < rangeEnd else { return false }
+            let fragmentFrame = fragment.layoutFragmentFrame
+            for (lineFragment, lineRange) in self.nodeMarkdownLineCharacterRanges(in: fragment) {
+                let intersection = NSIntersectionRange(lineRange, range)
+                guard intersection.length > 0 else { continue }
+                let bounds = lineFragment.typographicBounds
+                let rect = NSRect(
+                    x: self.textContainerOrigin.x + fragmentFrame.minX + bounds.minX,
+                    y: self.textContainerOrigin.y + fragmentFrame.minY + bounds.minY,
+                    width: bounds.width,
+                    height: bounds.height
+                )
+                result.append((intersection, lineRange, rect))
+            }
+            return true
+        }
+        return result
+    }
+
+    private func inlineHighlightRects(
+        for range: NSRange,
+        in attributed: NSAttributedString,
+        layout: NodeMarkdownTextKit2RowLayout,
+        lineFragments: [(intersection: NSRange, lineRange: NSRange, rect: NSRect)]
+    ) -> [NSRect] {
+        let rowContentX = textContainerOrigin.x + layout.lineStyle.contentX
+        return lineFragments.compactMap { fragment in
+            let intersection = fragment.intersection
+            let lineRange = fragment.lineRange
+            let lineRect = fragment.rect
+            let prefixLength = max(0, intersection.location - lineRange.location)
+            let prefixWidth: CGFloat
+            if prefixLength > 0 {
+                prefixWidth = inlineRenderedMetrics(
+                    in: attributed,
+                    range: NSRange(location: lineRange.location, length: prefixLength)
+                ).width
+            } else {
+                prefixWidth = 0
+            }
+            let highlightMetrics = inlineRenderedMetrics(in: attributed, range: intersection)
+            let highlightWidth = max(1, highlightMetrics.width)
+            let highlightPadding: CGFloat = highlightMetrics.containsAttachment ? 2 : 4
+            let highlightHeight = max(1, highlightMetrics.height) + highlightPadding
+            return NSRect(
+                x: rowContentX + prefixWidth - 2,
+                y: lineRect.midY - highlightHeight * 0.5,
+                width: highlightWidth + 4,
+                height: highlightHeight
+            )
+        }
     }
 
     private func backgroundBarRect(for layout: NodeMarkdownTextKit2RowLayout, textRect: NSRect) -> NSRect {

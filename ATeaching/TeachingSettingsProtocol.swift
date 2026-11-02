@@ -1,7 +1,7 @@
 import Foundation
 
 // MARK: - 授课设置快照 - v3 - 统一承载授课配置并加入功能开关与学生级覆盖
-struct TeachingSettingsSnapshot: Codable, Equatable {
+nonisolated struct TeachingSettingsSnapshot: Codable, Equatable {
     static let currentSchemaVersion = 2
 
     var schemaVersion: Int
@@ -113,7 +113,7 @@ struct TeachingSettingsSnapshot: Codable, Equatable {
 }
 
 // MARK: - 功能开关 - v1 - 管理关键路径能力灰度与验收开关
-struct TeachingFeatureFlags: Codable, Equatable {
+nonisolated struct TeachingFeatureFlags: Codable, Equatable {
     var enableStudentProvisioning: Bool
     var enableStudentProfileOverride: Bool
     var persistDebugLogs: Bool
@@ -150,7 +150,7 @@ struct TeachingFeatureFlags: Codable, Equatable {
 }
 
 // MARK: - PDF导出设置 - v1 - 统一纸张尺寸、页边距和分页策略
-struct TeachingPDFExportSettings: Codable, Equatable {
+nonisolated struct TeachingPDFExportSettings: Codable, Equatable {
     enum PaperPreset: String, Codable, CaseIterable, Equatable {
         case a4
         case letter
@@ -219,7 +219,7 @@ struct TeachingPDFExportSettings: Codable, Equatable {
 }
 
 // MARK: - 学生系统设置 - v1 - 保存学生模板和上课信息字段映射
-struct TeachingStudentSystemSettings: Codable, Equatable {
+nonisolated struct TeachingStudentSystemSettings: Codable, Equatable {
     var studentInfoTemplateID: String?
     var studentNameKeyID: String?
     var classInfoTemplateID: String?
@@ -322,7 +322,7 @@ struct TeachingStudentSystemSettings: Codable, Equatable {
 }
 
 // MARK: - 教案系统设置 - v1 - 保存教案管理的默认路径与最近打开状态
-struct TeachingLessonPlanSystemSettings: Codable, Equatable {
+nonisolated struct TeachingLessonPlanSystemSettings: Codable, Equatable {
     var rootRelativePath: String?
     var recentLessonPlanFolderIDs: [String]
 
@@ -352,7 +352,7 @@ struct TeachingLessonPlanSystemSettings: Codable, Equatable {
 }
 
 // MARK: - 学生覆盖设置 - v1 - 针对单个学生覆盖模板映射与同步目录
-struct TeachingStudentProfileSettings: Codable, Equatable {
+nonisolated struct TeachingStudentProfileSettings: Codable, Equatable {
     var studentInfoTemplateID: String?
     var studentNameKeyID: String?
     var classInfoTemplateID: String?
@@ -447,7 +447,7 @@ struct TeachingStudentProfileSettings: Codable, Equatable {
 }
 
 // MARK: - 学生课时统计设置 - v1 - 单个学生的机构与两小时价格
-struct TeachingStudentLessonStatisticsSettings: Codable, Equatable {
+nonisolated struct TeachingStudentLessonStatisticsSettings: Codable, Equatable {
     var institutionID: UUID?
     var institutionName: String?
     var priceForTwoHours: Double?
@@ -488,7 +488,7 @@ struct TeachingStudentLessonStatisticsSettings: Codable, Equatable {
     }
 }
 
-private extension String {
+nonisolated private extension String {
     func trimmedNilIfEmpty() -> String? {
         let value = trimmingCharacters(in: .whitespacesAndNewlines)
         return value.isEmpty ? nil : value

@@ -1,7 +1,4 @@
 import SwiftUI
-#if os(macOS)
-import AppKit
-#endif
 
 struct ChecklistDocumentEditorMode: Hashable {
     var hideCompletedItems: Bool
@@ -47,6 +44,7 @@ struct ChecklistDocumentEditorView: View {
     @State private var searchText = ""
     @State private var expandMode: ChecklistPopupExpandMode = .l3
     @State private var expandedL1IDs: Set<String> = []
+    @State private var dropTargetRowID: String?
 
     init(
         fileURL: URL,
@@ -102,27 +100,21 @@ struct ChecklistDocumentEditorView: View {
                 .padding(24)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                List {
-                    ForEach(visibleRowIndices, id: \.self) { index in
-                        ChecklistDocumentRowView(
-                            row: $rows[index],
-                            mode: mode,
-                            showsExpandToggle: shouldShowExpandToggle(for: rows[index]),
-                            isExpanded: expandedL1IDs.contains(rows[index].id),
-                            onExpandToggle: { toggleExpand(for: rows[index].id) },
-                            pickIndex: pickedRowIDs.firstIndex(of: rows[index].id).map { $0 + 1 },
-                            onPickToggle: {
-                                togglePickedRow(id: rows[index].id)
-                            },
-                            onPickAppend: {
-                                appendPickedRowIfNeeded(id: rows[index].id)
-                            }
-                        )
-                            .listRowSeparator(.visible)
+                if mode.isCoursePicking {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 6) {
+                            checklistRows
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
                     }
+                } else {
+                    List {
+                        checklistRows
+                    }
+                    .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
                 }
-                .listStyle(.plain)
-                .scrollContentBackground(.hidden)
             }
 
             if !statusMessage.isEmpty {
@@ -158,6 +150,7 @@ struct ChecklistDocumentEditorView: View {
             }
         }
         .task {
+            FrequentDocumentUsage.record(fileURL)
             load()
             loadExpandMode()
         }
@@ -171,6 +164,71 @@ struct ChecklistDocumentEditorView: View {
             autoSaveTask?.cancel()
             save()
         }
+    }
+
+    @ViewBuilder
+    private var checklistRows: some View {
+        ForEach(visibleRowIDs, id: \.self) { rowID in
+            if let index = rows.firstIndex(where: { $0.id == rowID }) {
+                checklistRow(at: index)
+                    .id(rowID)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func checklistRow(at index: Int) -> some View {
+        let targetID = rows[index].id
+        let row = ChecklistDocumentRowView(
+            row: $rows[index],
+            mode: mode,
+            showsExpandToggle: shouldShowExpandToggle(for: rows[index]),
+            isExpanded: expandedL1IDs.contains(rows[index].id),
+            onExpandToggle: { toggleExpand(for: rows[index].id) },
+            onCourseHierarchyActivate: { activateCourseH1(at: index) },
+            pickIndex: pickedRowIDs.firstIndex(of: rows[index].id).map { $0 + 1 },
+            onPickToggle: { togglePickedRow(id: rows[index].id) }
+        )
+        .listRowSeparator(.visible)
+
+        if mode.isCoursePicking, rows[index].isCoursePickable {
+            row
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(dropTargetRowID == targetID ? Color.accentColor.opacity(0.18) : Color.clear)
+                )
+                .draggable(targetID)
+                .dropDestination(for: String.self) { draggedIDs, _ in
+                    guard let draggedID = draggedIDs.first else { return false }
+                    return reorderCourseRow(id: draggedID, relativeTo: targetID)
+                } isTargeted: { isTargeted in
+                    dropTargetRowID = isTargeted ? targetID : nil
+                }
+        } else {
+            row
+        }
+    }
+
+    private func reorderCourseRow(id sourceID: String, relativeTo targetID: String) -> Bool {
+        guard mode.isCoursePicking,
+              let sourceIndex = rows.firstIndex(where: { $0.id == sourceID }),
+              let originalTargetIndex = rows.firstIndex(where: { $0.id == targetID }),
+              sourceIndex != originalTargetIndex,
+              rows[sourceIndex].isCoursePickable,
+              rows[originalTargetIndex].isCoursePickable else { return false }
+
+        withAnimation(.easeOut(duration: 0.12)) {
+            let moved = rows.remove(at: sourceIndex)
+            let destination = rows.firstIndex(where: { $0.id == targetID })
+                .map { min($0 + 1, rows.endIndex) } ?? rows.endIndex
+            rows.insert(moved, at: destination)
+        }
+        dropTargetRowID = nil
+        let selectedIDs = Set(pickedRowIDs)
+        pickedRowIDs = rows.map(\.id).filter { selectedIDs.contains($0) }
+        save()
+        statusMessage = "已调整教案词条顺序"
+        return true
     }
 
     private func load() {
@@ -213,6 +271,11 @@ struct ChecklistDocumentEditorView: View {
             guard mode.hideCompletedItems else { return true }
             guard rows[index].status == 0 else { return false }
             let row = rows[index]
+            if mode.isCoursePicking,
+               row.level == 2,
+               row.task.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "node" {
+                return false
+            }
             if !searchQuery.isEmpty {
                 return row.task.localizedCaseInsensitiveContains(searchQuery)
             }
@@ -229,6 +292,10 @@ struct ChecklistDocumentEditorView: View {
                 return expandedL1IDs.contains(parent)
             }
         }
+    }
+
+    private var visibleRowIDs: [String] {
+        visibleRowIndices.map { rows[$0].id }
     }
 
     private var searchQuery: String {
@@ -267,6 +334,36 @@ struct ChecklistDocumentEditorView: View {
         }
     }
 
+    private func activateCourseH1(at index: Int) {
+        guard mode.isCoursePicking,
+              rows.indices.contains(index),
+              rows[index].level == 1 else { return }
+        let h1ID = rows[index].id
+        expandedL1IDs.insert(h1ID)
+
+        let sectionEnd = rows[(index + 1)...].firstIndex(where: { $0.level == 1 }) ?? rows.endIndex
+        let orderedH3IDs = rows[(index + 1)..<sectionEnd]
+            .filter { $0.level == 3 && $0.isCoursePickable }
+            .map(\.id)
+        guard !orderedH3IDs.isEmpty else {
+            statusMessage = "本章没有可插入的未完成H3包。"
+            return
+        }
+
+        let sectionIDs = Set(orderedH3IDs)
+        pickedRowIDs.removeAll { sectionIDs.contains($0) }
+        pickedRowIDs.append(contentsOf: orderedH3IDs)
+        statusMessage = "已按顺序选中本章 \(orderedH3IDs.count) 个H3包。"
+        let selectedRows = orderedH3IDs.compactMap { rowID in
+            rows.first(where: { $0.id == rowID })
+        }
+        TeachingCourseDiagnostic116.record(
+            "H1批量选择 h1Index=\(index) h1ID=\(String(h1ID.prefix(8))) "
+                + TeachingCourseDiagnostic116.rowSummary(selectedRows)
+                + " totalPicked=\(pickedRowIDs.count)"
+        )
+    }
+
     private func loadExpandMode() {
         guard mode.isCoursePicking else { return }
         guard let settings = try? TeachingStudentSettingsStore.loadStudentSystemSettings() else { return }
@@ -290,27 +387,32 @@ struct ChecklistDocumentEditorView: View {
         }
     }
 
-    private func appendPickedRowIfNeeded(id: String) {
-        guard mode.isCoursePicking else { return }
-        guard let row = rows.first(where: { $0.id == id }), row.isCoursePickable else { return }
-        guard !pickedRowIDs.contains(id) else { return }
-        pickedRowIDs.append(id)
-    }
-
     private func commitCoursePicking() {
         guard mode.isCoursePicking else { return }
+        TeachingCourseDiagnostic116.record(
+            "点击插入前 pickedIDs=\(pickedRowIDs.count) documentRows=\(rows.count)"
+        )
         let ordered = pickedRowIDs.compactMap { rowID in
             rows.first(where: { $0.id == rowID })
         }.filter { row in
             row.isCoursePickable
         }
+        TeachingCourseDiagnostic116.record(
+            "清单提交过滤后 " + TeachingCourseDiagnostic116.rowSummary(ordered)
+        )
         guard !ordered.isEmpty else {
             pickedRowIDs.removeAll()
             statusMessage = "没有可插入的未完成H3包。"
+            TeachingCourseDiagnostic116.record("清单提交终止 reason=ordered为空")
             return
         }
+        let markStart = TeachingCourseDiagnostic116.now()
         markPickedRowsDoneBeforeInsert(ordered)
+        TeachingCourseDiagnostic116.record(
+            "清单预标完成 duration=\(String(format: "%.2f", TeachingCourseDiagnostic116.elapsedMilliseconds(since: markStart)))ms callback即将执行 rows=\(ordered.count)"
+        )
         onCoursePick?(ordered)
+        TeachingCourseDiagnostic116.record("清单callback返回，准备dismiss")
         dismiss()
     }
 
@@ -349,9 +451,9 @@ private struct ChecklistDocumentRowView: View {
     let showsExpandToggle: Bool
     let isExpanded: Bool
     let onExpandToggle: () -> Void
+    let onCourseHierarchyActivate: () -> Void
     let pickIndex: Int?
     let onPickToggle: () -> Void
-    let onPickAppend: () -> Void
 
     var body: some View {
         HStack(spacing: 8) {
@@ -362,25 +464,24 @@ private struct ChecklistDocumentRowView: View {
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(.secondary)
-                        .frame(width: 14, height: 14)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .help(isExpanded ? "收起本章" : "展开本章")
             } else {
                 Color.clear
-                    .frame(width: 14, height: 14)
+                    .frame(width: 28, height: 28)
             }
-            if mode.isCoursePicking && !canToggle {
-                Color.clear
-                    .frame(width: 18, height: 18)
-            } else {
+            if mode.isCoursePicking {
                 Button {
-                    if mode.isCoursePicking {
+                    if row.level == 1 {
+                        onCourseHierarchyActivate()
+                    } else if canToggle {
                         onPickToggle()
-                    } else {
-                        row.status = row.status == 0 ? 1 : 0
                     }
                 } label: {
-                    if mode.isCoursePicking {
+                    HStack(spacing: 8) {
                         if let pickIndex {
                             if pickIndex <= 50 {
                                 Image(systemName: "\(pickIndex).circle.fill")
@@ -392,11 +493,29 @@ private struct ChecklistDocumentRowView: View {
                                     .font(.system(size: 16, weight: .medium))
                             }
                         } else {
-                            Image(systemName: "circle")
-                                .foregroundStyle(Color.secondary)
-                                .font(.system(size: 16, weight: .medium))
+                            if canToggle {
+                                Image(systemName: "circle")
+                                    .foregroundStyle(Color.secondary)
+                                    .font(.system(size: 16, weight: .medium))
+                            } else {
+                                Color.clear
+                                    .frame(width: 18, height: 18)
+                            }
                         }
-                    } else {
+                        Text(row.task)
+                            .strikethrough(false)
+                            .foregroundStyle(.primary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(row.level != 1 && !canToggle)
+            } else {
+                Button {
+                    row.status = row.status == 0 ? 1 : 0
+                } label: {
+                    Group {
                         Image(systemName: row.status == 0 ? "circle" : "checkmark.circle.fill")
                             .foregroundStyle(row.status == 0 ? Color.secondary : Color.green)
                             .font(.system(size: 16, weight: .medium))
@@ -404,14 +523,6 @@ private struct ChecklistDocumentRowView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(!canToggle)
-            }
-
-            if mode.isCoursePicking {
-                Text(row.task)
-                    .strikethrough(false)
-                    .foregroundStyle(.primary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
                 TextField("任务", text: $row.task)
                     .textFieldStyle(.plain)
                     .strikethrough(row.status == 1)
@@ -419,23 +530,6 @@ private struct ChecklistDocumentRowView: View {
                     .disabled(!canEditText)
             }
         }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            guard mode.isCoursePicking, canToggle else { return }
-            onPickToggle()
-        }
-#if os(macOS)
-        .onContinuousHover { phase in
-            guard mode.isCoursePicking, canToggle else { return }
-            guard (NSEvent.pressedMouseButtons & 1) == 1 else { return }
-            switch phase {
-            case .active:
-                onPickAppend()
-            case .ended:
-                break
-            }
-        }
-#endif
         .padding(.leading, CGFloat(max(0, row.level - 1)) * 20)
         .padding(.vertical, 4)
     }

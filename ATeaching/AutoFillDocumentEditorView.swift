@@ -54,6 +54,7 @@ struct AutoFillDocumentEditorView: View {
             }
         }
         .task {
+            FrequentDocumentUsage.record(fileURL)
             load()
         }
         .onChange(of: rows) { _, _ in

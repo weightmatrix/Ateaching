@@ -1,6 +1,6 @@
 import Foundation
 
-struct TeachingCoursePackageSyncConflictRecord: Hashable {
+nonisolated struct TeachingCoursePackageSyncConflictRecord: Hashable {
     var timestamp: String
     var studentID: String
     var studentName: String
@@ -23,8 +23,8 @@ struct TeachingCoursePackageSyncExecutionResult {
     var packageResults: [TeachingCourseSyncPackageResult]
 }
 
-enum TeachingCoursePackageSyncEngine {
-    static func execute(
+nonisolated enum TeachingCoursePackageSyncEngine {
+    nonisolated static func execute(
         student: TeachingStudentItem,
         notebookDocument: NodeMarkdownDocument,
         placementTarget: TeachingCourseUpdatePlacementTarget?,
@@ -225,7 +225,7 @@ enum TeachingCoursePackageSyncEngine {
         )
     }
 
-    private static func syncBaselineKey(sourceFile: String, sourceID: String) -> String {
+    private nonisolated static func syncBaselineKey(sourceFile: String, sourceID: String) -> String {
         "\(sourceFile)#\(sourceID)"
     }
 

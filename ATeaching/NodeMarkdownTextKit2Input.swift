@@ -16,7 +16,17 @@ extension NodeMarkdownTextKit2TextView {
     }
 
     override func doCommand(by selector: Selector) {
+        let diagnostic117OperationID = selector == #selector(NSResponder.deleteBackward(_:))
+            ? beginDiagnostic117BackspaceIfNeeded()
+            : nil
         if handleNodeMarkdownCommand(selector) {
+            if let diagnostic117OperationID {
+                NodeMarkdownDiagnostic117.record(
+                    operationID: diagnostic117OperationID,
+                    "doCommand已消费Backspace selection=\(NSStringFromRange(selectedRange())) source=\(NodeMarkdownDiagnostic117.textSummary(documentString()))"
+                )
+                recordDiagnostic117Deferred(operationID: diagnostic117OperationID)
+            }
             return
         }
         super.doCommand(by: selector)
@@ -74,6 +84,7 @@ extension NodeMarkdownTextKit2TextView {
               NodeMarkdownImageAssetService.hasPastedImage() else {
             return false
         }
+        guard self.window?.firstResponder === self else { return false }
         onRequestInsertImage?()
         return true
     }

@@ -2,18 +2,14 @@ import Foundation
 
 enum AppDisplayTitle {
     static let appName = "李知本授课管理"
-    static let mainWindowBaseTitle = appName
+    static let mainWindowBaseTitle = "主窗口"
 
     static var defaultMainWindowTitle: String {
-        mainWindowTitle(forPage: "授课")
+        "🏠·主窗口·\(shortVersion)"
     }
 
     static func mainWindowTitle(forPage pageTitle: String) -> String {
-        #if os(macOS)
-        return "\(pageTitle)·\(appName)·V\(shortVersion)"
-        #else
-        return "\(pageTitle)·\(appName)"
-        #endif
+        "\(pageTitle == "教学" ? "授课" : pageTitle)·李知本授课系统"
     }
 
     private static var shortVersion: String {

@@ -7,7 +7,7 @@ enum ScreenCastReceiverWindowCoordinator {
 
     static func enterExclusiveReceiving() {
         hiddenWindows = NSApplication.shared.windows.filter { window in
-            window.isVisible && (window.title.hasPrefix("Markdown-") || window.title.hasPrefix("Node-"))
+            window.isVisible && (window.title.hasPrefix("📝·Markdown") || window.title.hasPrefix("🧑‍🏫·上课中") || window.title.hasPrefix("🧩·NodeMarkdown") || window.title.hasPrefix("📚·教案"))
         }
         hiddenWindows.forEach { $0.orderOut(nil) }
     }

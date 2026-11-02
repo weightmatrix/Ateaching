@@ -2,7 +2,7 @@ import Foundation
 
 /// TextKit用U+FFFC表示内存附件锚点。这个字符绝不能进入NodeMarkdown源码。
 /// 历史版本若已泄漏锚点，只根据可验证的Markdown边界恢复，不猜测公式内容。
-enum NodeMarkdownLegacyAttachmentSourceRepair {
+nonisolated enum NodeMarkdownLegacyAttachmentSourceRepair {
     nonisolated private static let marker = "\u{FFFC}"
 
     nonisolated static func repair(_ source: String) -> String {

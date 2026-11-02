@@ -4,14 +4,15 @@ import AppKit
 #endif
 
 // MARK: - NodeMarkdown渲染契约 - v1 - 统一编辑器与导出使用的行级视觉参数
-struct NodeMarkdownRenderContract: Hashable {
+nonisolated struct NodeMarkdownRenderContract: Hashable {
     /// 背景条在编辑器、HTML 和 PDF 中共用的唯一饱和度规则。
     /// 这里表示在层级文字颜色上增加 10%，导出器不得再二次增强。
     static let backgroundSaturationMultiplier: CGFloat = 1.1
 
     struct Layout: Hashable {
         var leadingPadding: CGFloat = 16
-        var levelIndentStep: CGFloat = 18
+        var levelIndentStep: CGFloat = 24
+        var bodyIndentStep: CGFloat = 48
         var markerWidth: CGFloat = 16
         var markerGap: CGFloat = 6
         var backgroundCornerRadius: CGFloat = 8
@@ -27,8 +28,18 @@ struct NodeMarkdownRenderContract: Hashable {
         }
 
         func markerX(for level: Int) -> CGFloat {
-            leadingPadding
-                + CGFloat(max(0, min(12, level) - 1)) * levelIndentStep
+            leadingPadding + indentOffset(for: level)
+        }
+
+        /// L1-L6 每级 24pt；L6 到 L7 为 96pt；L7 之后每级 48pt。
+        func indentOffset(for level: Int) -> CGFloat {
+            let normalizedLevel = max(1, min(12, level))
+            let headingSteps = min(normalizedLevel - 1, 5)
+            let bodyBoundary = normalizedLevel >= 7 ? bodyIndentStep * 2 : 0
+            let laterBodySteps = max(0, normalizedLevel - 7)
+            return CGFloat(headingSteps) * levelIndentStep
+                + bodyBoundary
+                + CGFloat(laterBodySteps) * bodyIndentStep
         }
 
         func lockedPrefixBoundaryX() -> CGFloat {

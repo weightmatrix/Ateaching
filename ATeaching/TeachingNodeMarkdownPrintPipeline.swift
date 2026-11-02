@@ -1,25 +1,25 @@
 // PIPELINE MARKER: NodeMarkdown legacy pipeline (TeachingPrint/WebKit export router).
 import Foundation
 
-enum TeachingNodeMarkdownPrintMode: String, Sendable {
+nonisolated enum TeachingNodeMarkdownPrintMode: String, Sendable {
     case auto
     case coreText
     case richWebKit
 }
 
-enum TeachingNodeMarkdownPipelineGeneration: String, Sendable {
+nonisolated enum TeachingNodeMarkdownPipelineGeneration: String, Sendable {
     case legacy
     case platformV1
 }
 
-struct TeachingNodeMarkdownPrintJob: Sendable {
+nonisolated struct TeachingNodeMarkdownPrintJob: Sendable {
     var sourceFileURL: URL
     var destinationURL: URL
     var mode: TeachingNodeMarkdownPrintMode
     var retryCount: Int
 }
 
-struct TeachingNodeMarkdownPrintPreparedPayload {
+nonisolated struct TeachingNodeMarkdownPrintPreparedPayload {
     var document: NodeMarkdownDocument
     var renderingDocument: TeachingRenderingDocument
     var style: NodeMarkdownDocumentStyle
@@ -32,7 +32,7 @@ struct TeachingNodeMarkdownPrintPreparedPayload {
     var pipelineGeneration: TeachingNodeMarkdownPipelineGeneration
 }
 
-enum TeachingNodeMarkdownPrintPipeline {
+nonisolated enum TeachingNodeMarkdownPrintPipeline {
     static func prepare(
         sourceFileURL: URL,
         preferredMode: TeachingNodeMarkdownPrintMode = .auto
@@ -77,7 +77,7 @@ enum TeachingNodeMarkdownPrintPipeline {
         )
     }
 
-    static func execute(job: TeachingNodeMarkdownPrintJob) throws {
+    nonisolated static func execute(job: TeachingNodeMarkdownPrintJob) throws {
         let prepared = try prepare(sourceFileURL: job.sourceFileURL, preferredMode: job.mode)
         let unresolvedImageCount = prepared.imageLayoutInfos.filter { $0.resolvedURL == nil }.count
         TeachingDebugLogStore.append(
@@ -121,7 +121,7 @@ enum TeachingNodeMarkdownPrintPipeline {
     }
 }
 
-private extension Double {
+nonisolated private extension Double {
     func clamped(to range: ClosedRange<Double>) -> Double {
         min(range.upperBound, max(range.lowerBound, self))
     }

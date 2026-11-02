@@ -267,11 +267,6 @@ class MTAtomTokenizer {
         let text = atom.nucleus
         guard text.count > 1 else { return [] }
 
-        let debugTokenization = false  // Enable to debug text tokenization
-        if debugTokenization {
-            print("\n=== Tokenizing multi-char text: '\(text)' ===")
-        }
-
         var charElements: [MTBreakableElement] = []
         let characters = Array(text)
 
@@ -315,10 +310,6 @@ class MTAtomTokenizer {
                 backgroundColor: nil,
                 indivisible: false
             )
-
-            if debugTokenization {
-                print("  [\(charIndex)] '\(charString)' breakBefore=\(isBreakBefore) breakAfter=\(isBreakAfter) penaltyBefore=\(penaltyBefore) penaltyAfter=\(penaltyAfter) width=\(width)")
-            }
 
             charElements.append(element)
         }

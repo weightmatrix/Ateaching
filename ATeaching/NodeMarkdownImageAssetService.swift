@@ -54,11 +54,11 @@ private struct NodeMarkdownUndoImageStashRecord: Codable, Hashable {
     let stashedAt: Date
 }
 
-private struct NodeMarkdownUndoImageStashManifest: Codable, Hashable {
+nonisolated private struct NodeMarkdownUndoImageStashManifest: Codable, Hashable {
     var records: [String: NodeMarkdownUndoImageStashRecord]
 }
 
-enum NodeMarkdownImageResourceManager {
+nonisolated enum NodeMarkdownImageResourceManager {
     static let picDirectoryName = "Pic"
     static let defaultDisplayWidth = 600
     static let maxImportedPixel: CGFloat = 1024
@@ -146,7 +146,7 @@ enum NodeMarkdownImageResourceManager {
         return notebookFileURL.deletingLastPathComponent().appendingPathComponent(trimmed)
     }
 
-    static func markdownImageToken(
+    nonisolated static func markdownImageToken(
         relativePath: String,
         altText: String = "image",
         width: Int = defaultDisplayWidth
@@ -157,15 +157,15 @@ enum NodeMarkdownImageResourceManager {
         return "![\(safeAlt)](\(relativePath)){width=\(max(1, width))}"
     }
 
-    static func parseImageTokens(in text: String) -> [NodeMarkdownImageToken] {
+    nonisolated static func parseImageTokens(in text: String) -> [NodeMarkdownImageToken] {
         parseMarkdownImageTokens(in: text) + parseHTMLImageTokens(in: text)
     }
 
-    static func referencedRelativePaths(in text: String) -> Set<String> {
+    nonisolated static func referencedRelativePaths(in text: String) -> Set<String> {
         Set(parseImageTokens(in: text).map(\.relativePath))
     }
 
-    static func resolvedImageURL(relativePath: String, notebookFileURL: URL) -> URL? {
+    nonisolated static func resolvedImageURL(relativePath: String, notebookFileURL: URL) -> URL? {
         let trimmed = relativePath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         if let url = URL(string: trimmed), url.isFileURL {
@@ -177,7 +177,7 @@ enum NodeMarkdownImageResourceManager {
         return notebookFileURL.deletingLastPathComponent().appendingPathComponent(trimmed)
     }
 
-    static func relativePathString(from baseDir: URL, to fileURL: URL) -> String {
+    nonisolated static func relativePathString(from baseDir: URL, to fileURL: URL) -> String {
         let baseComponents = baseDir.standardizedFileURL.pathComponents
         let targetComponents = fileURL.standardizedFileURL.pathComponents
         var index = 0
@@ -190,7 +190,7 @@ enum NodeMarkdownImageResourceManager {
         return (up + down).joined(separator: "/")
     }
 
-    static func referencedImageFilePaths(in document: NodeMarkdownDocument, notebookFileURL: URL) -> Set<String> {
+    nonisolated static func referencedImageFilePaths(in document: NodeMarkdownDocument, notebookFileURL: URL) -> Set<String> {
         var results: Set<String> = []
         for node in document.nodes {
             for token in parseImageTokens(in: node.text) {
@@ -205,7 +205,7 @@ enum NodeMarkdownImageResourceManager {
 
     /// Removes only managed images whose physical paths are not referenced by any
     /// NodeMarkdown or Markdown document in the workspace.
-    static func removeUnreferencedManagedImagesInWorkspace() throws -> NodeMarkdownImageCleanupResult {
+    nonisolated static func removeUnreferencedManagedImagesInWorkspace() throws -> NodeMarkdownImageCleanupResult {
         let workspaceRoot = try ArchiveStorage.ensureWorkspace().standardizedFileURL
         let fileManager = FileManager.default
         guard let enumerator = fileManager.enumerator(
@@ -271,7 +271,7 @@ enum NodeMarkdownImageResourceManager {
     }
 
     @discardableResult
-    static func restoreReferencedStashedImages(
+    nonisolated static func restoreReferencedStashedImages(
         currentDocument: NodeMarkdownDocument,
         notebookFileURL: URL
     ) -> Int {
@@ -333,7 +333,7 @@ enum NodeMarkdownImageResourceManager {
         return containsTemporaryRoot(in: components)
     }
 
-    static func migrateTemporaryImageTokens(
+    nonisolated static func migrateTemporaryImageTokens(
         in packageNodes: [NodeMarkdownNode],
         temporaryPackageID: String,
         formalSourceFileURL: URL,
@@ -394,7 +394,7 @@ enum NodeMarkdownImageResourceManager {
         return (result, migratedCount)
     }
 
-    private static func resolvedImageURL(relativePath: String, baseDirectoryURL: URL) -> URL? {
+    private nonisolated static func resolvedImageURL(relativePath: String, baseDirectoryURL: URL) -> URL? {
         let trimmed = relativePath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         if let url = URL(string: trimmed), url.isFileURL {

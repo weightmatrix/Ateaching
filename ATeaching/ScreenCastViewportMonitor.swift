@@ -40,8 +40,8 @@ enum ScreenCastViewportMonitor {
     }
 
     private static func contentKind(for window: NSWindow) -> ScreenCastContentKind? {
-        if window.title.hasPrefix("Markdown-") { return .markdown }
-        if window.title.hasPrefix("Node-") || TeachingClassSessionCenter.shared.session != nil { return .teaching }
+        if window.title.hasPrefix("📝·Markdown") { return .markdown }
+        if window.title.hasPrefix("🧑‍🏫·上课中") || window.title.hasPrefix("🧩·NodeMarkdown") || window.title.hasPrefix("📚·教案") || TeachingClassSessionCenter.shared.session != nil { return .teaching }
         return nil
     }
 
