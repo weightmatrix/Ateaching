@@ -338,6 +338,7 @@ struct MarkdownRoleStyle: Hashable {
 // MARK: - 文档样式配置 - v5 - 聚合H1-H6正文注释并应用43号源码模式统一规则基线
 struct MarkdownDocumentStyle: Hashable {
     var progressivelyIndentHeadings = false
+    var progressiveIndentStep: Double = 24
     var h1 = MarkdownRoleStyle(fontName: appleSystemMonospacedFontName, fontSize: 30, color: markdownHexColor(0x26619C), semanticColor: nil)
     var h2 = MarkdownRoleStyle(fontName: appleSystemMonospacedFontName, fontSize: 26, color: markdownHexColor(0x1C39BB), semanticColor: nil)
     var h3 = MarkdownRoleStyle(fontName: appleSystemMonospacedFontName, fontSize: 22, color: markdownHexColor(0x50C878), semanticColor: nil)
@@ -496,6 +497,7 @@ struct MarkdownRoleStyleRecord: Codable, Hashable {
 // MARK: - 文档样式存储模型 - v1 - 定义Markdown文档样式配置文件格式
 struct MarkdownDocumentStyleRecord: Codable, Hashable {
     var progressivelyIndentHeadings: Bool?
+    var progressiveIndentStep: Double?
     var h1: MarkdownRoleStyleRecord
     var h2: MarkdownRoleStyleRecord
     var h3: MarkdownRoleStyleRecord
@@ -507,6 +509,7 @@ struct MarkdownDocumentStyleRecord: Codable, Hashable {
 
     init(style: MarkdownDocumentStyle) {
         progressivelyIndentHeadings = style.progressivelyIndentHeadings
+        progressiveIndentStep = style.progressiveIndentStep
         h1 = MarkdownRoleStyleRecord(style: style.h1)
         h2 = MarkdownRoleStyleRecord(style: style.h2)
         h3 = MarkdownRoleStyleRecord(style: style.h3)
@@ -520,6 +523,7 @@ struct MarkdownDocumentStyleRecord: Codable, Hashable {
     var style: MarkdownDocumentStyle {
         var value = MarkdownDocumentStyle()
         value.progressivelyIndentHeadings = progressivelyIndentHeadings ?? false
+        value.progressiveIndentStep = min(50, max(5, progressiveIndentStep ?? 24))
         value.h1 = h1.style
         value.h2 = h2.style
         value.h3 = h3.style
@@ -1646,7 +1650,13 @@ struct MarkdownStyleSettingsView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
                     Toggle("依次后错", isOn: $documentStyle.progressivelyIndentHeadings)
-                    Text("开启后，H1–H6 每增加一级向后错 24 pt。")
+                    HStack {
+                        Text("后错步长")
+                        Slider(value: $documentStyle.progressiveIndentStep, in: 5...50, step: 1)
+                        Text("\(Int(documentStyle.progressiveIndentStep)) pt").monospacedDigit()
+                    }
+                    .disabled(!documentStyle.progressivelyIndentHeadings)
+                    Text("开启后，H1–H6及正文依次后错；正文起始位置在H6后再错一级。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                     Divider()
@@ -2865,9 +2875,10 @@ private func markdownHangingPrefix(in line: String) -> String? {
     markdownSourceHangingPrefix(in: line)
 }
 
-private func markdownHeadingIndent(in line: String, enabled: Bool) -> CGFloat {
-    guard enabled, let level = parseHeadingLevelForStyling(in: line) else { return 0 }
-    return CGFloat(max(0, level - 1)) * 24
+private func markdownHeadingIndent(in line: String, enabled: Bool, step: Double = 24) -> CGFloat {
+    guard enabled else { return 0 }
+    let level = parseHeadingLevelForStyling(in: line) ?? 7
+    return CGFloat(max(0, level - 1)) * CGFloat(step)
 }
 
 private func markdownHangingParagraphStyle(prefix: String, font: NSFont, baseIndent: CGFloat = 0) -> NSParagraphStyle {
@@ -3334,7 +3345,8 @@ struct MarkdownIOSStyledTextEditor: UIViewRepresentable {
             textView.typingAttributes = markdownIOSTextAttributes(
                 for: style,
                 line: line,
-                progressivelyIndentHeadings: documentStyle.progressivelyIndentHeadings
+                progressivelyIndentHeadings: documentStyle.progressivelyIndentHeadings,
+                progressiveIndentStep: documentStyle.progressiveIndentStep
             )
         }
 
@@ -3464,7 +3476,8 @@ private func markdownIOSStyledAttributedString(from source: String, style: Markd
             markdownIOSTextAttributes(
                 for: roleStyle,
                 line: rawLine,
-                progressivelyIndentHeadings: style.progressivelyIndentHeadings
+                progressivelyIndentHeadings: style.progressivelyIndentHeadings,
+                progressiveIndentStep: style.progressiveIndentStep
             ),
             range: lineRange
         )
@@ -3521,14 +3534,14 @@ private func markdownIOSLineText(at location: Int, in source: String) -> String 
     return nsText.substring(with: lineRange).trimmingCharacters(in: .newlines)
 }
 
-private func markdownIOSTextAttributes(for style: MarkdownRoleStyle, line: String? = nil, progressivelyIndentHeadings: Bool = false) -> [NSAttributedString.Key: Any] {
+private func markdownIOSTextAttributes(for style: MarkdownRoleStyle, line: String? = nil, progressivelyIndentHeadings: Bool = false, progressiveIndentStep: Double = 24) -> [NSAttributedString.Key: Any] {
     let font = markdownIOSResolvedFont(name: style.fontName, size: style.fontSize)
     let paragraph = NSMutableParagraphStyle()
     paragraph.lineBreakMode = .byWordWrapping
     if let line {
-        let headingLevel = markdownIOSHeadingLevel(in: line) ?? 1
+        let headingLevel = markdownIOSHeadingLevel(in: line) ?? 7
         let baseIndent = progressivelyIndentHeadings
-            ? CGFloat(max(0, headingLevel - 1)) * 24
+            ? CGFloat(max(0, headingLevel - 1)) * CGFloat(progressiveIndentStep)
             : 0
         paragraph.firstLineHeadIndent = baseIndent
         paragraph.headIndent = baseIndent
@@ -3864,8 +3877,8 @@ func markdownWebBootstrapHTML(style: MarkdownDocumentStyle, preferredScheme: Col
     let h6Color = markdownWebRoleColor(style.h6, preferredScheme: preferredScheme)
     let codeBackground = preferredScheme == .dark ? "#232323" : "#F4F4F4"
     let codeColor = preferredScheme == .dark ? "#F3F3F3" : "#222222"
-    let headingIndent: (Int) -> Int = { level in
-        style.progressivelyIndentHeadings ? max(0, level - 1) * 24 : 0
+    let headingIndent: (Int) -> Double = { level in
+        style.progressivelyIndentHeadings ? Double(max(0, level - 1)) * style.progressiveIndentStep : 0
     }
 
     return """
@@ -3917,6 +3930,13 @@ func markdownWebBootstrapHTML(style: MarkdownDocumentStyle, preferredScheme: Col
         font-size: 1em;
       }
       #md-root img { max-width: 100%; height: auto; }
+      #md-root > section > p,
+      #md-root > section > ul,
+      #md-root > section > ol,
+      #md-root > section > pre,
+      #md-root > section > table,
+      #md-root > section > blockquote,
+      #md-root .md-preserved-numbered { margin-left: \(headingIndent(7))px; }
       #md-root .md-preserved-numbered {
         margin: 0.25em 0;
         white-space: normal;
@@ -3952,6 +3972,7 @@ func markdownWebBootstrapHTML(style: MarkdownDocumentStyle, preferredScheme: Col
 func markdownWebStyleSignature(_ style: MarkdownDocumentStyle) -> String {
     [
         "progressivelyIndentHeadings=\(style.progressivelyIndentHeadings)",
+        "progressiveIndentStep=\(style.progressiveIndentStep)",
         style.h1.fontName, "\(style.h1.fontSize)", markdownWebRoleColorSignature(style.h1),
         style.h2.fontName, "\(style.h2.fontSize)", markdownWebRoleColorSignature(style.h2),
         style.h3.fontName, "\(style.h3.fontSize)", markdownWebRoleColorSignature(style.h3),
@@ -5544,7 +5565,8 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
             [.paragraphStyle: textKit2ParagraphStyle(
                 rawLine: rawLine,
                 roleStyle: roleStyle,
-                progressivelyIndentHeadings: style.progressivelyIndentHeadings
+                progressivelyIndentHeadings: style.progressivelyIndentHeadings,
+                progressiveIndentStep: style.progressiveIndentStep
             )],
             range: lineRange
         )
@@ -5775,13 +5797,14 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     private func textKit2ParagraphStyle(
         rawLine: String,
         roleStyle: MarkdownRoleStyle,
-        progressivelyIndentHeadings: Bool = false
+        progressivelyIndentHeadings: Bool = false,
+        progressiveIndentStep: Double = 24
     ) -> NSParagraphStyle {
         let font = markdownResolvedFont(name: roleStyle.fontName, size: roleStyle.fontSize)
         return textKit2ParagraphStyle(
             rawLine: rawLine,
             font: font,
-            baseIndent: markdownHeadingIndent(in: rawLine, enabled: progressivelyIndentHeadings)
+            baseIndent: markdownHeadingIndent(in: rawLine, enabled: progressivelyIndentHeadings, step: progressiveIndentStep)
         )
     }
 
@@ -6408,7 +6431,8 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         return textKit2ParagraphStyle(
             rawLine: rawLine,
             roleStyle: lineStyle,
-            progressivelyIndentHeadings: style.progressivelyIndentHeadings
+            progressivelyIndentHeadings: style.progressivelyIndentHeadings,
+            progressiveIndentStep: style.progressiveIndentStep
         )
     }
 
@@ -7851,7 +7875,7 @@ final class MarkdownTextView: NSTextView {
                 to: textStorage,
                 rawLine: rawLine,
                 range: lineRange,
-                baseIndent: markdownHeadingIndent(in: rawLine, enabled: style.progressivelyIndentHeadings)
+                baseIndent: markdownHeadingIndent(in: rawLine, enabled: style.progressivelyIndentHeadings, step: style.progressiveIndentStep)
             )
 
             for codeRange in parseInlineCodeRanges(in: rawLine, base: lineRange.location) {
@@ -7942,7 +7966,7 @@ final class MarkdownTextView: NSTextView {
         return markdownHangingParagraphStyle(
             for: rawLine,
             font: font,
-            baseIndent: markdownHeadingIndent(in: rawLine, enabled: style.progressivelyIndentHeadings)
+            baseIndent: markdownHeadingIndent(in: rawLine, enabled: style.progressivelyIndentHeadings, step: style.progressiveIndentStep)
         )
     }
 
