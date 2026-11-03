@@ -1842,12 +1842,13 @@ struct NodeMarkdownEditorView: View {
     }
 
     private var classSessionToolbar: some View {
-        HStack(spacing: 24) {
-            HStack(spacing: 12) {
+        HStack(spacing: 4) {
+            HStack(spacing: 8) {
             Button {
                 loadLessonCompletionFiles()
             } label: {
                 Label("随堂", systemImage: "book.closed")
+                    .frame(width: 28, height: 28)
             }
             .buttonStyle(.plain)
             .focusable(false)
@@ -1862,6 +1863,7 @@ struct NodeMarkdownEditorView: View {
                 requestClassUpdatePreview()
             } label: {
                 Label("更新", systemImage: "arrow.clockwise")
+                    .frame(width: 28, height: 28)
                     .overlay(alignment: .topTrailing) {
                         if hasPendingCutPackage {
                             Circle()
@@ -1873,8 +1875,6 @@ struct NodeMarkdownEditorView: View {
                     }
             }
             .buttonStyle(.plain)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(pendingClassUpdateCount > 0 ? appHighlightBlue : .clear)
@@ -1886,6 +1886,7 @@ struct NodeMarkdownEditorView: View {
                     openReflectionInNode()
                 } label: {
                     Label("课反", systemImage: "square.and.pencil")
+                        .frame(width: 28, height: 28)
                 }
                 .buttonStyle(.plain)
             }
@@ -1895,6 +1896,7 @@ struct NodeMarkdownEditorView: View {
                     closeClassSessionAfterSync(finishClass: true)
                 } label: {
                     Label("下课", systemImage: "stop.fill")
+                        .frame(width: 28, height: 28)
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.red)
@@ -1904,13 +1906,18 @@ struct NodeMarkdownEditorView: View {
                 closeReadOnlyClassSessionIfNeeded()
             } label: {
                 Label("关闭", systemImage: "xmark")
+                    .frame(width: 28, height: 28)
             }
             .buttonStyle(.plain)
 
             }
-            .padding(.horizontal, 10)
+            .labelStyle(.iconOnly)
+            .padding(.horizontal, 6)
             .padding(.vertical, 6)
             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 9))
+
+            Divider()
+                .frame(height: 24)
 
             HStack(spacing: 12) {
                 TeachingAnnotationToolbarControl(
