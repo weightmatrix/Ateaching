@@ -25,6 +25,7 @@ final class TeachingAnnotationController: ObservableObject {
     @Published var isActive = false
     @Published var tool: TeachingAnnotationTool = .pen
     @Published var strokeCount = 0
+    var followsDocument = true
     private(set) var clearToken = 0
 
     func handlePenTap() {
@@ -80,7 +81,7 @@ struct TeachingAnnotationToolbarControl: View {
         Button {
             controller.clearAll()
         } label: {
-            Label("清除", systemImage: "trash")
+            Label("全删除", systemImage: "trash")
         }
         .buttonStyle(.plain)
         .disabled(controller.strokeCount == 0)
@@ -104,10 +105,53 @@ struct TeachingAnnotationCanvasHost: View {
         #if os(macOS)
         AnnotationCanvasRepresentable(controller: controller)
         #else
-        EmptyView()
+        TeachingMobileAnnotationCanvas(controller: controller)
         #endif
     }
 }
+
+#if os(iOS)
+private struct TeachingMobileAnnotationCanvas: View {
+    @ObservedObject var controller: TeachingAnnotationController
+    @State private var strokes: [[CGPoint]] = []
+    @State private var isDrawing = false
+
+    var body: some View {
+        Canvas { context, _ in
+            for points in strokes {
+                guard let first = points.first else { continue }
+                var path = Path()
+                path.move(to: first)
+                if points.count == 1 {
+                    path.addLine(to: CGPoint(x: first.x + 0.1, y: first.y))
+                } else {
+                    for point in points.dropFirst() { path.addLine(to: point) }
+                }
+                context.stroke(path, with: .color(.red), style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+            }
+        }
+        .contentShape(Rectangle())
+        .gesture(DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                guard controller.isActive else { return }
+                if controller.tool == .eraser {
+                    strokes.removeAll { points in
+                        points.contains { hypot($0.x - value.location.x, $0.y - value.location.y) < 14 }
+                    }
+                } else {
+                    if !isDrawing { strokes.append([]); isDrawing = true }
+                    strokes[strokes.count - 1].append(value.location)
+                }
+                controller.handleStrokesDidChange(strokes.count)
+            }
+            .onEnded { _ in isDrawing = false })
+        .onChange(of: controller.clearToken) { _, _ in
+            strokes.removeAll()
+            isDrawing = false
+        }
+    }
+}
+#endif
 
 #if os(macOS)
 private struct AnnotationCanvasRepresentable: NSViewRepresentable {
@@ -179,6 +223,7 @@ final class TeachingAnnotationCanvasView: NSView {
     }
 
     private func ensureScrollViewAttached() {
+        guard controller?.followsDocument != false else { return }
         guard let window else { return }
         let foundScrollView: NSScrollView
         if let scrollView {
@@ -246,6 +291,7 @@ final class TeachingAnnotationCanvasView: NSView {
     // MARK: 滚动事件转发 - 批注激活时仍可滚动页面
 
     override func scrollWheel(with event: NSEvent) {
+        guard controller?.followsDocument != false else { return }
         ensureScrollViewAttached()
         if let scrollView {
             scrollView.scrollWheel(with: event)
@@ -255,6 +301,7 @@ final class TeachingAnnotationCanvasView: NSView {
     }
 
     override func magnify(with event: NSEvent) {
+        guard controller?.followsDocument != false else { return }
         ensureScrollViewAttached()
         if let scrollView {
             scrollView.magnify(with: event)

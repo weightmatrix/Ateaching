@@ -127,6 +127,8 @@ struct NodeMarkdownEditorView: View {
     @State private var legacyDraftCommitController = NodeMarkdownLegacyDraftCommitController()
     @State private var hasUncommittedLegacyDraft = false
     @StateObject private var annotationController = TeachingAnnotationController()
+    @StateObject private var whiteboardController = TeachingAnnotationController()
+    @State private var isWhiteboardPresented = false
     @ObservedObject private var screenCastAnnotationHub = ScreenCastAnnotationHub.shared
     private let editorInstanceID = UUID().uuidString
 
@@ -154,7 +156,15 @@ struct NodeMarkdownEditorView: View {
             TeachingAnnotationCanvasHost(controller: annotationController)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .contentShape(Rectangle())
-                .allowsHitTesting(annotationController.isActive)
+                .allowsHitTesting(annotationController.isActive && !isWhiteboardPresented)
+            if isWhiteboardPresented {
+                editorBackgroundColor
+                    .contentShape(Rectangle())
+                    .onTapGesture { }
+                TeachingAnnotationCanvasHost(controller: whiteboardController)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
+            }
             ScreenCastStrokeOverlay(strokes: screenCastAnnotationHub.strokes)
         }
         .navigationTitle(nodeWindowTitle)
@@ -1832,7 +1842,8 @@ struct NodeMarkdownEditorView: View {
     }
 
     private var classSessionToolbar: some View {
-        Group {
+        HStack(spacing: 24) {
+            HStack(spacing: 12) {
             Button {
                 loadLessonCompletionFiles()
             } label: {
@@ -1892,11 +1903,47 @@ struct NodeMarkdownEditorView: View {
             Button {
                 closeReadOnlyClassSessionIfNeeded()
             } label: {
-                Label("退出", systemImage: "xmark")
+                Label("关闭", systemImage: "xmark")
             }
             .buttonStyle(.plain)
 
-            TeachingAnnotationToolbarControl(controller: annotationController)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 9))
+
+            HStack(spacing: 12) {
+                TeachingAnnotationToolbarControl(
+                    controller: isWhiteboardPresented ? whiteboardController : annotationController
+                )
+                if NodeMarkdownFeatureFlags.textKit2EditorEnabled {
+                    Button {
+                        toggleWhiteboard()
+                    } label: {
+                        Label(isWhiteboardPresented ? "清空白板" : "白板", systemImage: "rectangle.and.pencil.and.ellipsis")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(isWhiteboardPresented ? appHighlightBlue : .primary)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 9))
+        }
+    }
+
+    private func toggleWhiteboard() {
+        whiteboardController.clearAll()
+        if isWhiteboardPresented {
+            isWhiteboardPresented = false
+        } else {
+            #if os(macOS)
+            NSApp.keyWindow?.makeFirstResponder(nil)
+            #endif
+            whiteboardController.followsDocument = false
+            whiteboardController.tool = .pen
+            whiteboardController.isActive = true
+            isWhiteboardPresented = true
         }
     }
 
