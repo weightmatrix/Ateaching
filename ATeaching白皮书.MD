@@ -1,5 +1,7 @@
 # ATeaching白皮书
 
+当前维护版本：V1.2611031138（北京时间2026-11-03 11:38），包含普通Markdown正文后错、可调步长及常用栏设置统一布局。
+
 ## 常用栏设置页面视觉统一
 
 项目设置与常用栏统一使用AppSettingsPage、AppSettingsCard和AppSettingsNavigationRow，避免裸List/Form采用平台默认紧缩布局；页面填满可用空间，内容沿用820pt上限及统一背景。常用入口具备图标、说明、箭头和整行点击区域。
