@@ -93,8 +93,17 @@ private struct FrequentDocumentDestination: View {
 
 struct ProjectUsageSettingsView: View {
     var body: some View {
-        List { NavigationLink("常用栏") { FrequentTabSettingsView() } }
-            .navigationTitle("项目设置")
+        AppSettingsPage(title: "项目设置", subtitle: "管理主界面项目的显示与使用方式") {
+            AppSettingsCard(title: "导航栏", systemImage: "square.grid.2x2") {
+                AppSettingsNavigationRow(
+                    title: "常用栏",
+                    subtitle: "设置常用入口的显示和文档数量",
+                    systemImage: "star.fill"
+                ) {
+                    FrequentTabSettingsView()
+                }
+            }
+        }
     }
 }
 
@@ -102,12 +111,33 @@ private struct FrequentTabSettingsView: View {
     @AppStorage("frequentTabEnabled") private var enabled = true
     @AppStorage("frequentItemCount") private var limit = 20
     var body: some View {
-        Form {
-            Toggle("显示常用栏", isOn: $enabled)
-            Picker("常用项目个数", selection: $limit) {
-                ForEach(10...50, id: \.self) { Text("\($0)").tag($0) }
-            }.pickerStyle(.menu)
-        }.navigationTitle("常用栏")
+        AppSettingsPage(title: "常用栏", subtitle: "自动汇总常用文档，方便快速打开") {
+            AppSettingsCard(title: "显示设置", systemImage: "star.fill") {
+                Toggle(isOn: $enabled) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("显示常用栏").font(.headline)
+                        Text("在主导航中显示常用入口")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .toggleStyle(.switch)
+                .padding(.vertical, 8)
+                Divider()
+                Picker(selection: $limit) {
+                    ForEach(10...50, id: \.self) { Text("\($0) 个").tag($0) }
+                } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("常用项目个数").font(.headline)
+                        Text("选择常用列表最多显示的文档数量")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .pickerStyle(.menu)
+                .padding(.vertical, 8)
+            }
+        }
     }
 }
 

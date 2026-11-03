@@ -1,5 +1,9 @@
 # ATeaching白皮书
 
+## 常用栏设置页面视觉统一
+
+项目设置与常用栏统一使用AppSettingsPage、AppSettingsCard和AppSettingsNavigationRow，避免裸List/Form采用平台默认紧缩布局；页面填满可用空间，内容沿用820pt上限及统一背景。常用入口具备图标、说明、箭头和整行点击区域。
+
 ## #116 普通Markdown正文后错与可调步长
 
 `MarkdownDocumentStyle.progressiveIndentStep`统一控制标题与正文的后错步长，滑杆范围5–50pt、步进1pt，默认24pt；持久化记录使用可选字段兼容旧配置，读取时限制范围。开启依次后错时，H1–H6使用0–5倍步长，非标题正文使用6倍步长作为起点，列表和编号的悬挂缩进在该起点上累加。macOS、iOS及网页预览共享这一规则，网页样式签名包含步长以触发刷新。
