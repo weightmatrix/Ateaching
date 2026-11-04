@@ -309,9 +309,9 @@ extension NodeMarkdownTextKit2TextView {
                 overflowText = String(format: "%.1f", caretRect.maxY - viewport.maxY)
             }
         }
-        var farBounds = viewport
-        farBounds.origin.y = CGFloat.greatestFiniteMagnitude / 4
-        let maximumOriginY = clipView.constrainBoundsRect(farBounds).origin.y
+        // Diagnostics must not probe AppKit with near-infinite bounds during input.
+        let documentBounds = scrollView.documentView?.bounds ?? bounds
+        let maximumOriginY = max(documentBounds.minY, documentBounds.maxY - viewport.height)
         NodeMarkdownDiagnostic122.record(
             operationID: operationID,
             "reason=\(reason) stage=\(stage) selection=\(NSStringFromRange(selection)) "
@@ -361,32 +361,47 @@ final class NodeMarkdownStabilityLog {
     private var previousDelta: CGFloat = 0
     private var reversals = 0
     private var maxJump: CGFloat = 0
+    private var invalidGeometryCount = 0
 
     func sample(stage: String, textView: NodeMarkdownTextKit2TextView, duration: Double = 0) {
         guard TeachingDebugLogStore.isLayoutJitterLogsEnabled() else { return }
         counts[stage, default: 0] += 1
-        maxDuration = max(maxDuration, duration)
+        if duration.isFinite, duration >= 0 { maxDuration = max(maxDuration, duration) }
         let rect = textView.visibleRect
-        if let previousY {
+        let validGeometry = [rect.origin.x, rect.origin.y, rect.width, rect.height].allSatisfy {
+            $0.isFinite && abs($0) < 1_000_000_000_000
+        }
+        if !validGeometry {
+            if invalidGeometryCount == 0 {
+                TeachingDebugLogStore.append(
+                    "view=\(id) stage=\(stage) invalidViewport=\(rect) previousY=\(String(describing: previousY)) frame=\(textView.frame) bounds=\(textView.bounds) clip=\(String(describing: textView.enclosingScrollView?.contentView.bounds)) selection=\(NSStringFromRange(textView.selectedRange())) marked=\(textView.hasMarkedText())",
+                    category: "NodeMarkdown.Stability"
+                )
+            }
+            invalidGeometryCount += 1
+            previousY = nil
+            previousDelta = 0
+        } else if let previousY {
             let delta = rect.minY - previousY
             maxJump = max(maxJump, abs(delta))
             if abs(delta) > 2 {
-                if delta * previousDelta < 0 { reversals += 1 }
+                if previousDelta != 0, (delta < 0) != (previousDelta < 0) { reversals += 1 }
                 previousDelta = delta
             }
         }
-        previousY = rect.minY
+        if validGeometry { previousY = rect.minY }
         let now = ProcessInfo.processInfo.systemUptime
         guard now - started >= 5 else { return }
         let events = counts.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")
         TeachingDebugLogStore.append(
-            "view=\(id) window=\(textView.window?.windowNumber ?? -1) seconds=\(String(format: "%.1f", now - started)) events=[\(events)] maxLayoutMs=\(String(format: "%.1f", maxDuration * 1000)) maxJump=\(Int(maxJump)) reversals=\(reversals) viewport=\(rect) frame=\(textView.frame.size) chars=\(textView.nodeTextStorage.length) marked=\(textView.hasMarkedText())",
+            "view=\(id) window=\(textView.window?.windowNumber ?? -1) seconds=\(String(format: "%.1f", now - started)) events=[\(events)] maxLayoutMs=\(String(format: "%.1f", maxDuration * 1000)) maxJump=\(String(format: "%.1f", Double(maxJump))) invalidGeometry=\(invalidGeometryCount) reversals=\(reversals) viewport=\(rect) frame=\(textView.frame.size) chars=\(textView.nodeTextStorage.length) marked=\(textView.hasMarkedText())",
             category: "NodeMarkdown.Stability"
         )
         counts.removeAll(keepingCapacity: true)
         maxDuration = 0
         maxJump = 0
         reversals = 0
+        invalidGeometryCount = 0
         started = now
     }
 }
