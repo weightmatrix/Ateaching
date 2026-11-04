@@ -1125,10 +1125,10 @@ nonisolated enum TeachingCourseWorkflowService {
         if let syncBasePath = effective.syncBaseFolderPath?.trimmingCharacters(in: .whitespacesAndNewlines), !syncBasePath.isEmpty {
             let syncBaseURL = URL(fileURLWithPath: syncBasePath, isDirectory: true)
             let pdfFolderURL: URL = {
-                if syncBaseURL.lastPathComponent == "1-教案PDF" {
+                if syncBaseURL.lastPathComponent == "1·教案" {
                     return syncBaseURL
                 }
-                return syncBaseURL.appendingPathComponent("1-教案PDF", isDirectory: true)
+                return syncBaseURL.appendingPathComponent("1·教案", isDirectory: true)
             }()
             if !fileManager.fileExists(atPath: pdfFolderURL.path) {
                 issues.append(
@@ -3095,7 +3095,7 @@ nonisolated enum TeachingCourseWorkflowService {
         }
 
         let style = NodeMarkdownSettingsStore.loadDocumentStyle() ?? NodeMarkdownDocumentStyle()
-        let baseName = "随堂笔记_\(student.name)"
+        let baseName = "随堂笔记·\(student.name)"
         let exportData = try await MainActor.run {
             let pdfData = try NodeMarkdownPDFExporter.renderData(
                 sourceFileURL: notebookURL,
@@ -3133,10 +3133,10 @@ nonisolated enum TeachingCourseWorkflowService {
             allowInteractiveRecovery: true
         ) { writableBaseURL in
             let pdfFolderURL: URL
-            if writableBaseURL.lastPathComponent == "1-教案PDF" {
+            if writableBaseURL.lastPathComponent == "1·教案" {
                 pdfFolderURL = writableBaseURL
             } else {
-                pdfFolderURL = writableBaseURL.appendingPathComponent("1-教案PDF", isDirectory: true)
+                pdfFolderURL = writableBaseURL.appendingPathComponent("1·教案", isDirectory: true)
             }
             let pdfTargetURL = pdfFolderURL.appendingPathComponent("\(baseName).PDF", isDirectory: false)
             try TeachingCoursePDFExporter.writeNotebookPDFData(
@@ -3148,7 +3148,7 @@ nonisolated enum TeachingCourseWorkflowService {
             if FileManager.default.fileExists(atPath: obsoleteH1PDFURL.path) {
                 try FileManager.default.removeItem(at: obsoleteH1PDFURL)
             }
-            let splitPDFDirectoryURL = pdfFolderURL.appendingPathComponent("\(baseName)_分文件", isDirectory: true)
+            let splitPDFDirectoryURL = pdfFolderURL.appendingPathComponent("\(baseName)·笔记按天切分内容相同", isDirectory: true)
             try replaceSplitPDFDirectory(
                 at: splitPDFDirectoryURL,
                 files: exportData.splitPDFs
@@ -3488,10 +3488,10 @@ nonisolated enum TeachingCourseWorkflowService {
                         if let syncBasePath = effective.syncBaseFolderPath?.trimmingCharacters(in: .whitespacesAndNewlines), !syncBasePath.isEmpty {
                             let baseURL = URL(fileURLWithPath: syncBasePath, isDirectory: true)
                             let pdfFolderURL: URL = {
-                                if baseURL.lastPathComponent == "1-教案PDF" {
+                                if baseURL.lastPathComponent == "1·教案" {
                                     return baseURL
                                 }
-                                return baseURL.appendingPathComponent("1-教案PDF", isDirectory: true)
+                                return baseURL.appendingPathComponent("1·教案", isDirectory: true)
                             }()
                             paths.insert(pdfFolderURL.path)
                         }

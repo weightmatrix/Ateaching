@@ -334,10 +334,10 @@ enum TeachingStudentRenameService {
             let resolvedNewFolder = writableParentURL
                 .appendingPathComponent("\(prefix)-\(newName)", isDirectory: true)
             let exactFileNames: [String: String] = [
-                "问题-\(oldName).pdf": "问题-\(newName).pdf",
-                "试卷-\(oldName).pdf": "试卷-\(newName).pdf",
-                "随堂笔记_\(oldName).pdf": "随堂笔记_\(newName).pdf",
-                "随堂笔记_\(oldName).html": "随堂笔记_\(newName).html"
+                "问题·\(oldName).pdf": "问题·\(newName).pdf",
+                "试卷·\(oldName).pdf": "试卷·\(newName).pdf",
+                "随堂笔记·\(oldName).pdf": "随堂笔记·\(newName).pdf",
+                "随堂笔记·\(oldName).html": "随堂笔记·\(newName).html"
             ]
             if let enumerator = fileManager.enumerator(
                 at: resolvedOldFolder,

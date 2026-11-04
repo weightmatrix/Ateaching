@@ -290,7 +290,7 @@ struct TeachingAddStudentSheet: View {
                     }
                 }
             }
-            Text("创建时会在该目录下生成“5位序号-学生名”，并自动创建 1-教案PDF / 2-问题PDF / 3-卷子PDF。")
+            Text("创建时会在该目录下生成“5位序号-学生名”，并自动创建 1·教案 / 2·问题 / 3·试卷。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }

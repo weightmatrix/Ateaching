@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 enum TeachingStudentSyncFolderService {
     static func ensureStructure(syncRootPath: String, studentName: String, fileManager: FileManager = .default) throws {
@@ -8,15 +9,17 @@ enum TeachingStudentSyncFolderService {
             let rootURL = normalizeSyncRootURL(writableURL)
             try ensureDirectory(rootURL, fileManager: fileManager)
 
-            let lessonPDF = rootURL.appendingPathComponent("1-教案PDF", isDirectory: true)
-            let questionPDF = rootURL.appendingPathComponent("2-问题PDF", isDirectory: true)
-            let paperPDF = rootURL.appendingPathComponent("3-卷子PDF", isDirectory: true)
+            let lessonPDF = rootURL.appendingPathComponent("1·教案", isDirectory: true)
+            let questionPDF = rootURL.appendingPathComponent("2·问题", isDirectory: true)
+            let paperPDF = rootURL.appendingPathComponent("3·试卷", isDirectory: true)
             try ensureDirectory(lessonPDF, fileManager: fileManager)
             try ensureDirectory(questionPDF, fileManager: fileManager)
             try ensureDirectory(paperPDF, fileManager: fileManager)
+            let manual = "\"1·教案\"内是上课的教案，与上课电子教案完全同步，\"随堂笔记·\(studentName).PDF\"和\"随堂笔记·\(studentName).HTML\"是上课完整笔记，内容是一样的。\"随堂笔记·\(studentName)·笔记按天切分内容相同\"内是按照上课日期切分后的每天的教案，内容上和完整PDF是一样的。\n\"2·问题\"是学生的问题汇集的PDF。\n\"3·试卷\"是学生历史考卷；后两个刚开始是没有内容的。\n"
+            try Data(manual.utf8).write(to: rootURL.appendingPathComponent("同步文件夹使用手册.txt"), options: .atomic)
 
-            let questionFile = questionPDF.appendingPathComponent("问题-\(studentName).pdf", isDirectory: false)
-            let paperFile = paperPDF.appendingPathComponent("试卷-\(studentName).pdf", isDirectory: false)
+            let questionFile = questionPDF.appendingPathComponent("问题·\(studentName).pdf", isDirectory: false)
+            let paperFile = paperPDF.appendingPathComponent("试卷·\(studentName).pdf", isDirectory: false)
             if !fileManager.fileExists(atPath: questionFile.path) {
                 try minimalPDFData().write(to: questionFile, options: .atomic)
             }
@@ -28,7 +31,7 @@ enum TeachingStudentSyncFolderService {
 
     private static func normalizeSyncRootURL(_ url: URL) -> URL {
         let name = url.lastPathComponent
-        if name == "1-教案PDF" || name == "2-问题PDF" || name == "3-卷子PDF" {
+        if name == "1·教案" || name == "2·问题" || name == "3·试卷" {
             return url.deletingLastPathComponent()
         }
         return url
@@ -48,36 +51,15 @@ enum TeachingStudentSyncFolderService {
     }
 
     static func minimalPDFData() throws -> Data {
-        let content = """
-        %PDF-1.3
-        1 0 obj
-        << /Type /Catalog /Pages 2 0 R >>
-        endobj
-        2 0 obj
-        << /Type /Pages /Kids [3 0 R] /Count 1 >>
-        endobj
-        3 0 obj
-        << /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>
-        endobj
-        xref
-        0 4
-        0000000000 65535 f
-        0000000010 00000 n
-        0000000060 00000 n
-        0000000117 00000 n
-        trailer
-        << /Size 4 /Root 1 0 R >>
-        startxref
-        186
-        %%EOF
-        """
-        guard let data = content.data(using: .utf8) else {
-            throw NSError(
-                domain: "TeachingStudentSyncFolderService",
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "空PDF模板生成失败"]
-            )
+        let data = NSMutableData()
+        var box = CGRect(x: 0, y: 0, width: 595, height: 842)
+        guard let consumer = CGDataConsumer(data: data),
+              let context = CGContext(consumer: consumer, mediaBox: &box, nil) else {
+            throw NSError(domain: "TeachingStudentSyncFolderService", code: 1)
         }
-        return data
+        context.beginPDFPage(nil)
+        context.endPDFPage()
+        context.closePDF()
+        return data as Data
     }
 }
