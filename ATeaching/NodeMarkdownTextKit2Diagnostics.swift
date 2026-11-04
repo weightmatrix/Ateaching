@@ -271,21 +271,7 @@ extension NodeMarkdownTextKit2TextView {
     func recordCaretViewportDiagnostics(
         reason: String
     ) {
-        let operationID = String(UUID().uuidString.prefix(8))
-        NodeMarkdownDiagnostic122.record(
-            operationID: operationID,
-            "reason=\(reason) stage=已收到输入回调"
-        )
-        for (delay, stage) in [(0.0, "立即"), (0.01, "下一轮"), (0.05, "50ms"), (0.20, "200ms")] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                guard let self else { return }
-                self.recordCaretViewportSample(
-                    operationID: operationID,
-                    reason: reason,
-                    stage: stage
-                )
-            }
-        }
+        stabilityLog.sample(stage: "input", textView: self)
     }
 
     private func recordCaretViewportSample(
@@ -362,20 +348,29 @@ final class NodeMarkdownStabilityLog {
     private var reversals = 0
     private var maxJump: CGFloat = 0
     private var invalidGeometryCount = 0
+    private var lastSampleAt = -Double.infinity
+    private var recentSamples: [String] = []
 
     func sample(stage: String, textView: NodeMarkdownTextKit2TextView, duration: Double = 0) {
-        guard TeachingDebugLogStore.isLayoutJitterLogsEnabled() else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        // No timer or deferred work: at most four passive geometry reads per second.
+        guard now - lastSampleAt >= 0.25 else { return }
+        lastSampleAt = now
         counts[stage, default: 0] += 1
         if duration.isFinite, duration >= 0 { maxDuration = max(maxDuration, duration) }
         let rect = textView.visibleRect
+        if recentSamples.isEmpty {
+            TeachingDebugLogStore.append("view=\(id) monitoringStarted interval=0.25s summary=60s", category: "NodeMarkdown.Stability", force: true)
+        }
         let validGeometry = [rect.origin.x, rect.origin.y, rect.width, rect.height].allSatisfy {
             $0.isFinite && abs($0) < 1_000_000_000_000
         }
         if !validGeometry {
             if invalidGeometryCount == 0 {
+                TeachingDebugLogStore.append("view=\(id) recent=\(recentSamples.joined(separator: " | "))", category: "NodeMarkdown.Stability", force: true)
                 TeachingDebugLogStore.append(
                     "view=\(id) stage=\(stage) invalidViewport=\(rect) previousY=\(String(describing: previousY)) frame=\(textView.frame) bounds=\(textView.bounds) clip=\(String(describing: textView.enclosingScrollView?.contentView.bounds)) selection=\(NSStringFromRange(textView.selectedRange())) marked=\(textView.hasMarkedText())",
-                    category: "NodeMarkdown.Stability"
+                    category: "NodeMarkdown.Stability", force: true
                 )
             }
             invalidGeometryCount += 1
@@ -390,12 +385,14 @@ final class NodeMarkdownStabilityLog {
             }
         }
         if validGeometry { previousY = rect.minY }
-        let now = ProcessInfo.processInfo.systemUptime
-        guard now - started >= 5 else { return }
+        // A fixed-size trail for anomaly context; no document content is retained.
+        recentSamples.append("t=\(String(format: "%.2f", now)) stage=\(stage) y=\(rect.origin.y) h=\(rect.height) chars=\(textView.nodeTextStorage.length)")
+        if recentSamples.count > 8 { recentSamples.removeFirst() }
+        guard now - started >= 60 else { return }
         let events = counts.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")
         TeachingDebugLogStore.append(
             "view=\(id) window=\(textView.window?.windowNumber ?? -1) seconds=\(String(format: "%.1f", now - started)) events=[\(events)] maxLayoutMs=\(String(format: "%.1f", maxDuration * 1000)) maxJump=\(String(format: "%.1f", Double(maxJump))) invalidGeometry=\(invalidGeometryCount) reversals=\(reversals) viewport=\(rect) frame=\(textView.frame.size) chars=\(textView.nodeTextStorage.length) marked=\(textView.hasMarkedText())",
-            category: "NodeMarkdown.Stability"
+            category: "NodeMarkdown.Stability", force: true
         )
         counts.removeAll(keepingCapacity: true)
         maxDuration = 0

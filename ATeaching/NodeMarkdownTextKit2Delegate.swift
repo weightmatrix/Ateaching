@@ -63,6 +63,7 @@ extension NodeMarkdownTextKit2Coordinator {
               let textView = notification.object as? NodeMarkdownTextKit2TextView else { return }
         guard !textView.isEnforcingInputMethodAttributes else { return }
         guard !textView.isApplyingQuickInputReplacement else { return }
+        textView.recordCaretViewportDiagnostics(reason: "textDidChange")
         let diagnostic41 = diagnostic41TextTransaction ?? beginDiagnostic41("无前置事务的textDidChange", in: textView)
         let diagnosticStart = NodeMarkdownDiagnostic35.now()
         defer { recordDiagnostic35Duration("textDidChange总计", since: diagnosticStart) }
