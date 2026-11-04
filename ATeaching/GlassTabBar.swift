@@ -1,8 +1,19 @@
 import SwiftUI
+import UniformTypeIdentifiers
+
+fileprivate struct FrequentDocumentSnapshotItem: Codable, Hashable, Identifiable {
+    let relativePath: String
+    let absolutePath: String
+    let metaType: String?
+
+    var id: String { relativePath }
+    var url: URL { URL(fileURLWithPath: absolutePath) }
+}
 
 enum FrequentDocumentUsage {
     static let prefix = "frequent-document."
     private static let pinnedKey = "frequent-document.pinned-paths"
+    private static let snapshotKey = "frequent-document.snapshot"
 
     static func record(_ url: URL) {
         guard let root = try? ArchiveStorage.ensureWorkspace(),
@@ -21,6 +32,7 @@ enum FrequentDocumentUsage {
         defaults.set(counts, forKey: key)
         cloud.set(counts, forKey: key)
         cloud.synchronize()
+        persistSnapshot(workspaceRoot: root)
     }
 
     static func ranked() -> [(path: String, count: Int)] {
@@ -53,6 +65,25 @@ enum FrequentDocumentUsage {
         UserDefaults.standard.set(paths, forKey: pinnedKey)
     }
 
+    fileprivate static func loadSnapshot() -> [FrequentDocumentSnapshotItem] {
+        guard let data = UserDefaults.standard.data(forKey: snapshotKey) else { return [] }
+        return (try? JSONDecoder().decode([FrequentDocumentSnapshotItem].self, from: data)) ?? []
+    }
+
+    private static func persistSnapshot(workspaceRoot: URL) {
+        let items = ranked().compactMap { rankedItem -> FrequentDocumentSnapshotItem? in
+            let url = workspaceRoot.appendingPathComponent(rankedItem.path)
+            guard isEligible(url, workspaceRoot: workspaceRoot) else { return nil }
+            return FrequentDocumentSnapshotItem(
+                relativePath: rankedItem.path,
+                absolutePath: url.path,
+                metaType: ArchiveStorage.readMetaType(fileURL: url)
+            )
+        }
+        guard let data = try? JSONEncoder().encode(items) else { return }
+        UserDefaults.standard.set(data, forKey: snapshotKey)
+    }
+
     static func isEligible(_ url: URL, workspaceRoot: URL) -> Bool {
         let rootPath = workspaceRoot.standardizedFileURL.path
         let path = url.standardizedFileURL.path
@@ -83,68 +114,66 @@ enum FrequentDocumentUsage {
 
 struct FrequentDocumentsView: View {
     @AppStorage("frequentItemCount") private var limit = 20
-    @State private var revision = 0
+    @State private var snapshot: [FrequentDocumentSnapshotItem] = []
     @State private var pinnedPaths: [String] = []
+    @State private var draggedPinnedPath: String?
     #if os(macOS)
     @Environment(\.openWindow) private var openWindow
     #endif
 
     var body: some View {
         List {
-            if let root = try? ArchiveStorage.ensureWorkspace() {
-                let rankedPaths = FrequentDocumentUsage.ranked().map(\.path)
-                let existingPinned = pinnedPaths.filter { path in
-                    FrequentDocumentUsage.isEligible(root.appendingPathComponent(path), workspaceRoot: root)
-                }
-                let regularPaths = rankedPaths.filter { path in
-                    !existingPinned.contains(path)
-                        && FrequentDocumentUsage.isEligible(root.appendingPathComponent(path), workspaceRoot: root)
-                }
-                let visibleRegularPaths = Array(regularPaths.prefix(max(0, limit - existingPinned.count)))
+            let itemsByPath = Dictionary(uniqueKeysWithValues: snapshot.map { ($0.relativePath, $0) })
+            let existingPinned = pinnedPaths.filter { itemsByPath[$0] != nil }
+            let regularItems = snapshot.filter { !existingPinned.contains($0.relativePath) }
+            let visibleRegularItems = Array(regularItems.prefix(max(0, limit - existingPinned.count)))
 
-                if existingPinned.isEmpty, visibleRegularPaths.isEmpty {
-                    ContentUnavailableView("暂无常用文件", systemImage: "star", description: Text("从档案打开文件后会显示在这里"))
-                }
+            if existingPinned.isEmpty, visibleRegularItems.isEmpty {
+                ContentUnavailableView("暂无常用文件", systemImage: "star", description: Text("从档案打开文件后会显示在这里"))
+            }
 
-                if !existingPinned.isEmpty {
-                    Section("置顶") {
-                        ForEach(existingPinned, id: \.self) { path in
-                            documentRow(path: path, root: root, isPinned: true)
-                        }
-                        .onMove { source, destination in
-                            movePinned(from: source, to: destination, visiblePaths: existingPinned)
+            if !existingPinned.isEmpty {
+                Section("置顶") {
+                    ForEach(existingPinned, id: \.self) { path in
+                        if let item = itemsByPath[path] {
+                            documentRow(item: item, isPinned: true)
+                                .onDrag {
+                                    draggedPinnedPath = path
+                                    return NSItemProvider(object: path as NSString)
+                                }
+                                .onDrop(
+                                    of: [UTType.text],
+                                    delegate: FrequentPinnedDropDelegate(
+                                        targetPath: path,
+                                        pinnedPaths: $pinnedPaths,
+                                        draggedPath: $draggedPinnedPath,
+                                        onDropCompleted: savePins
+                                    )
+                                )
                         }
                     }
                 }
+            }
 
-                if !visibleRegularPaths.isEmpty {
-                    Section(existingPinned.isEmpty ? "文件" : "常用") {
-                        ForEach(visibleRegularPaths, id: \.self) { path in
-                            documentRow(path: path, root: root, isPinned: false)
-                        }
+            if !visibleRegularItems.isEmpty {
+                Section(existingPinned.isEmpty ? "文件" : "常用") {
+                    ForEach(visibleRegularItems) { item in
+                        documentRow(item: item, isPinned: false)
                     }
                 }
             }
         }
         .listStyle(.plain)
-        .id(revision)
-        #if os(iOS)
-        .toolbar {
-            if pinnedPaths.count > 1 { EditButton() }
-        }
-        #endif
         .onAppear {
+            snapshot = FrequentDocumentUsage.loadSnapshot()
             pinnedPaths = FrequentDocumentUsage.pinnedPaths()
-            NSUbiquitousKeyValueStore.default.synchronize()
-            revision += 1
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSUbiquitousKeyValueStore.didChangeExternallyNotification)) { _ in revision += 1 }
     }
 
     @ViewBuilder
-    private func documentRow(path: String, root: URL, isPinned: Bool) -> some View {
-        let url = root.appendingPathComponent(path)
-        let entry = ArchiveEntry(url: url, isDirectory: false, metaType: ArchiveStorage.readMetaType(fileURL: url))
+    private func documentRow(item: FrequentDocumentSnapshotItem, isPinned: Bool) -> some View {
+        let url = item.url
+        let entry = ArchiveEntry(url: url, isDirectory: false, metaType: item.metaType)
 
         Group {
             #if os(macOS)
@@ -160,9 +189,9 @@ struct FrequentDocumentsView: View {
         }
         .contextMenu {
             if isPinned {
-                Button("取消置顶", systemImage: "pin.slash") { unpin(path) }
+                Button("取消置顶", systemImage: "pin.slash") { unpin(item.relativePath) }
             } else {
-                Button("置顶", systemImage: "pin") { pin(path) }
+                Button("置顶", systemImage: "pin") { pin(item.relativePath) }
             }
         }
     }
@@ -195,16 +224,8 @@ struct FrequentDocumentsView: View {
         savePins()
     }
 
-    private func movePinned(from source: IndexSet, to destination: Int, visiblePaths: [String]) {
-        var reordered = visiblePaths
-        reordered.move(fromOffsets: source, toOffset: destination)
-        pinnedPaths = reordered
-        savePins()
-    }
-
     private func savePins() {
         FrequentDocumentUsage.setPinnedPaths(pinnedPaths)
-        revision += 1
     }
 
     #if os(macOS)
@@ -225,6 +246,32 @@ struct FrequentDocumentsView: View {
         }
     }
     #endif
+}
+
+private struct FrequentPinnedDropDelegate: DropDelegate {
+    let targetPath: String
+    @Binding var pinnedPaths: [String]
+    @Binding var draggedPath: String?
+    let onDropCompleted: () -> Void
+
+    func dropEntered(info: DropInfo) {
+        guard let draggedPath,
+              draggedPath != targetPath,
+              let sourceIndex = pinnedPaths.firstIndex(of: draggedPath),
+              let targetIndex = pinnedPaths.firstIndex(of: targetPath) else { return }
+        withAnimation {
+            pinnedPaths.move(
+                fromOffsets: IndexSet(integer: sourceIndex),
+                toOffset: targetIndex > sourceIndex ? targetIndex + 1 : targetIndex
+            )
+        }
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        draggedPath = nil
+        onDropCompleted()
+        return true
+    }
 }
 
 private struct FrequentDocumentDestination: View {

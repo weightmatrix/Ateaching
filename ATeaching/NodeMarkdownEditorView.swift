@@ -196,7 +196,6 @@ struct NodeMarkdownEditorView: View {
             }
         }
         .task {
-            FrequentDocumentUsage.record(fileURL)
             TeachingDebugLogStore.append("open file=\(fileURL.lastPathComponent) pipeline=\(TeachingDebugLogStore.nodeMarkdownEditorPipeline().rawValue)", category: "NodeMarkdown.Lifecycle")
             tocExpandMode = NodeMarkdownTOCExpandMode(rawValue: NodeMarkdownSettingsStore.loadTOCExpandModeRawValue()) ?? .l3
             loadFromDiskIfNeeded()

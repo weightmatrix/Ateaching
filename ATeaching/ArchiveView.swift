@@ -1113,6 +1113,8 @@ struct ArchiveView: View {
             return
         }
 
+        FrequentDocumentUsage.record(entry.url)
+
         let fileExtension = entry.url.pathExtension.lowercased()
         let metaType = (ArchiveStorage.readMetaType(fileURL: entry.url) ?? "").lowercased()
         if fileExtension == "md" {

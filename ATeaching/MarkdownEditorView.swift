@@ -929,7 +929,7 @@ struct MarkdownEditorView: View {
             }
         }
         .preferredColorScheme(preferredScheme)
-        .task { FrequentDocumentUsage.record(fileURL); loadFile() }
+        .task { loadFile() }
         .task { fontCatalog.prewarmIfNeeded() }
         .onDisappear {
             pendingScreenCastPublishTask?.cancel()

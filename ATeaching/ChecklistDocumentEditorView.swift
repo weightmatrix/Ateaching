@@ -150,7 +150,6 @@ struct ChecklistDocumentEditorView: View {
             }
         }
         .task {
-            FrequentDocumentUsage.record(fileURL)
             load()
             loadExpandMode()
         }

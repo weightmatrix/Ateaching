@@ -256,7 +256,7 @@ struct SingleListDocumentEditorView: View {
                 }
             }
         }
-        .task { FrequentDocumentUsage.record(fileURL); load() }
+        .task { load() }
         .onChange(of: fileURL) { _, newURL in
             guard newURL.standardizedFileURL != currentFileURL.standardizedFileURL else { return }
             switchToFile(newURL)
