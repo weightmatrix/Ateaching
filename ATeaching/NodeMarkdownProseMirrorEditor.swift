@@ -1172,6 +1172,8 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             guard let row = state.row(for: nodeID), let node = state.node(at: row), !node.isProtectedH3 else { return false }
             let level = max(1, min(12, node.level + (increaseLevel ? 1 : -1)))
             guard level != node.level else { return true }
+            let diagnosticID = String(UUID().uuidString.prefix(8))
+            recordDiagnostic123(operationID: diagnosticID, stage: "改级前", anchorID: nodeID)
             let transaction = NodeMarkdownTransaction(
                 baseRevision: state.revision,
                 steps: [.setLevel(nodeID: nodeID, level: level)],
@@ -1185,7 +1187,23 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 measure(textView: textView, nodeID: nodeID, row: row)
             }
             publishNow()
+            recordDiagnostic123(operationID: diagnosticID, stage: "改级后", anchorID: nodeID)
+            DispatchQueue.main.async { [weak self] in
+                self?.recordDiagnostic123(operationID: diagnosticID, stage: "下一轮", anchorID: nodeID)
+            }
             return true
+        }
+
+        private func recordDiagnostic123(operationID: String, stage: String, anchorID: UUID) {
+            guard let tableView, let anchorRow = state.row(for: anchorID) else { return }
+            for row in anchorRow...min(anchorRow + 1, state.snapshot.nodes.count - 1) {
+                guard let node = state.node(at: row) else { continue }
+                let expectedInset = localLayout(for: node, row: row).spacingBefore
+                let geometry = exactGeometries[node.id]
+                let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? NodeMarkdownProseMirrorCellView
+                let message = "[诊断·123·背景裁剪] op=\(operationID) stage=\(stage) row=\(row) node=\(node.id) level=\(node.level) expectedInset=\(expectedInset) actualInset=\(String(describing: cell?.diagnosticTopInset)) geometryHeight=\(String(describing: geometry?.height)) visualBounds=\(String(describing: geometry?.visualBounds)) cellFrame=\(String(describing: cell?.frame)) textFrame=\(String(describing: cell?.textView.frame)) textBounds=\(String(describing: cell?.textView.bounds))"
+                TeachingDebugLogStore.append(message, category: "诊断·123·背景裁剪", force: true)
+            }
         }
 
         private func insertImage(at nodeID: UUID, in targetTextView: NodeMarkdownTextKit2TextView) {
@@ -2391,6 +2409,7 @@ private final class NodeMarkdownProseMirrorCellView: NSTableCellView {
     var nodeID: UUID?
     var renderedKey: NodeMarkdownTextKit2RenderCacheKey?
     private var contentTopConstraint: NSLayoutConstraint!
+    var diagnosticTopInset: CGFloat { contentTopConstraint.constant }
 
     init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
