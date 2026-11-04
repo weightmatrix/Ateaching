@@ -1670,6 +1670,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 contentVisualBounds: bounds
             )
             exactGeometries[nodeID] = geometry
+            synchronizeVisibleCellInset(nodeID: nodeID, row: row, inset: layout.spacingBefore)
             if !transient {
                 renderCache.invalidate(nodeID: nodeID)
             }
@@ -2003,12 +2004,27 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             ) else { return }
             let oldHeight = exactGeometries[node.id]?.height
             exactGeometries[node.id] = geometry
+            synchronizeVisibleCellInset(
+                nodeID: node.id,
+                row: row,
+                inset: localLayout(for: node, row: row).spacingBefore
+            )
             renderCache.invalidate(nodeID: node.id)
             if notifyTable,
                row < readyRowCount,
                oldHeight == nil || abs(oldHeight! - geometry.height) > 0.5 {
                 tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integer: row))
             }
+        }
+
+        /// Geometry includes spacingBefore; the existing cell must reserve that
+        /// same amount before its height changes, without replacing its editor.
+        private func synchronizeVisibleCellInset(nodeID: UUID, row: Int, inset: CGFloat) {
+            guard let tableView,
+                  row >= 0, row < tableView.numberOfRows,
+                  let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? NodeMarkdownProseMirrorCellView,
+                  cell.nodeID == nodeID else { return }
+            cell.setContentTopInset(inset)
         }
 
         private func recomputeReadyPrefix() {
@@ -2426,7 +2442,9 @@ private final class NodeMarkdownProseMirrorCellView: NSTableCellView {
     }
 
     func setContentTopInset(_ inset: CGFloat) {
-        contentTopConstraint.constant = max(0, inset)
+        let value = max(0, inset)
+        guard contentTopConstraint.constant != value else { return }
+        contentTopConstraint.constant = value
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
