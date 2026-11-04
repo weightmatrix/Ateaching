@@ -57,7 +57,6 @@ enum NodeMarkdownDiagnostic117 {
 enum NodeMarkdownDiagnostic122 {
     static func record(operationID: String, _ message: @autoclosure () -> String) {
         let line = "[诊断·122·光标视口] op=\(operationID) " + message()
-        NSLog("%@", line)
         TeachingDebugLogStore.append(line, category: "诊断·122·光标视口", force: true)
     }
 }
@@ -346,7 +345,50 @@ enum NodeMarkdownTextKit2Diagnostics {
         bindingText: String? = nil,
         metadataCount: Int? = nil,
         rowLayoutCount: Int? = nil
-    ) {}
+    ) {
+        textView.stabilityLog.sample(stage: stage, textView: textView)
+    }
+}
+
+/// 只采集常数级几何数据；五秒聚合一次，不读取全文或遍历布局片段。
+@MainActor
+final class NodeMarkdownStabilityLog {
+    private let id = String(UUID().uuidString.prefix(8))
+    private var started = ProcessInfo.processInfo.systemUptime
+    private var counts: [String: Int] = [:]
+    private var maxDuration = 0.0
+    private var previousY: CGFloat?
+    private var previousDelta: CGFloat = 0
+    private var reversals = 0
+    private var maxJump: CGFloat = 0
+
+    func sample(stage: String, textView: NodeMarkdownTextKit2TextView, duration: Double = 0) {
+        guard TeachingDebugLogStore.isLayoutJitterLogsEnabled() else { return }
+        counts[stage, default: 0] += 1
+        maxDuration = max(maxDuration, duration)
+        let rect = textView.visibleRect
+        if let previousY {
+            let delta = rect.minY - previousY
+            maxJump = max(maxJump, abs(delta))
+            if abs(delta) > 2 {
+                if delta * previousDelta < 0 { reversals += 1 }
+                previousDelta = delta
+            }
+        }
+        previousY = rect.minY
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - started >= 5 else { return }
+        let events = counts.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")
+        TeachingDebugLogStore.append(
+            "view=\(id) window=\(textView.window?.windowNumber ?? -1) seconds=\(String(format: "%.1f", now - started)) events=[\(events)] maxLayoutMs=\(String(format: "%.1f", maxDuration * 1000)) maxJump=\(Int(maxJump)) reversals=\(reversals) viewport=\(rect) frame=\(textView.frame.size) chars=\(textView.nodeTextStorage.length) marked=\(textView.hasMarkedText())",
+            category: "NodeMarkdown.Stability"
+        )
+        counts.removeAll(keepingCapacity: true)
+        maxDuration = 0
+        maxJump = 0
+        reversals = 0
+        started = now
+    }
 }
 #endif
 

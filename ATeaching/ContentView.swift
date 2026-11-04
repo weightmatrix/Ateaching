@@ -23,7 +23,15 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: appWillTerminate)) { _ in
             screenCastService.stopAll(reason: "应用将终止")
+            TeachingDebugLogStore.append("normal termination", category: "App.Session")
+            TeachingDebugLogStore.flushPending()
         }
+        .onAppear { TeachingDebugLogStore.beginSession() }
+        #if os(iOS)
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+            TeachingDebugLogStore.flushPending()
+        }
+        #endif
         .onChange(of: frequentTabEnabled) { _, enabled in
             if !enabled && selectedTab == .frequent { selectedTab = .teaching }
         }

@@ -197,6 +197,7 @@ struct NodeMarkdownEditorView: View {
         }
         .task {
             FrequentDocumentUsage.record(fileURL)
+            TeachingDebugLogStore.append("open file=\(fileURL.lastPathComponent) pipeline=\(TeachingDebugLogStore.nodeMarkdownEditorPipeline().rawValue)", category: "NodeMarkdown.Lifecycle")
             tocExpandMode = NodeMarkdownTOCExpandMode(rawValue: NodeMarkdownSettingsStore.loadTOCExpandModeRawValue()) ?? .l3
             loadFromDiskIfNeeded()
             refreshPendingClassUpdateCount()
@@ -271,6 +272,7 @@ struct NodeMarkdownEditorView: View {
             scheduleSnapshotRebuild()
         }
         .onDisappear {
+            TeachingDebugLogStore.append("disappear file=\(fileURL.lastPathComponent)", category: "NodeMarkdown.Lifecycle")
             pendingScreenCastPublishTask?.cancel()
             pendingScreenCastPublishTask = nil
             legacyDraftCommitController.commitPendingEditing()

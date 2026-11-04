@@ -15,6 +15,93 @@ nonisolated enum TeachingDebugLogStore {
     private static let textKit2FocusLocationOverlayDefaultsKey = "TeachingDebugLogStore.textKit2FocusLocationOverlayEnabled"
     private static let lessonStatisticsEnabledDefaultsKey = "TeachingDebugLogStore.lessonStatisticsEnabled"
     private static var cachedSettings: DebugSettings?
+    private static let settingsLock = NSRecursiveLock()
+    private static let writer = BufferedWriter()
+
+    private final class BufferedWriter: @unchecked Sendable {
+        let queue = DispatchQueue(label: "ATeaching.debug-log", qos: .utility)
+        let lock = NSLock()
+        var pending: [(Date, String, String)] = []
+        var scheduled = false
+        var dropped = 0
+        let formatter = ISO8601DateFormatter()
+        let session = UUID().uuidString.prefix(8)
+        var heartbeatStarted = false
+
+        func startHeartbeat() {
+            lock.lock()
+            let shouldStart = !heartbeatStarted
+            heartbeatStarted = true
+            lock.unlock()
+            guard shouldStart else { return }
+            scheduleHeartbeat()
+        }
+
+        private func scheduleHeartbeat() {
+            queue.asyncAfter(deadline: .now() + 2) {
+                let sent = ProcessInfo.processInfo.systemUptime
+                DispatchQueue.main.async {
+                    let delay = ProcessInfo.processInfo.systemUptime - sent
+                    if delay >= 0.5 {
+                        TeachingDebugLogStore.append("mainQueueDelayMs=\(Int(delay * 1000))", category: "App.MainThreadDelay")
+                    }
+                    self.scheduleHeartbeat()
+                }
+            }
+        }
+
+        func enqueue(_ message: String, category: String) {
+            lock.lock()
+            if pending.count < 256 {
+                pending.append((Date(), String(category.prefix(80)), String(message.prefix(4096))))
+            } else {
+                dropped += 1
+            }
+            let needsSchedule = !scheduled
+            scheduled = true
+            lock.unlock()
+            if needsSchedule {
+                queue.asyncAfter(deadline: .now() + 1) { self.flush() }
+            }
+        }
+
+        func flush() {
+            lock.lock()
+            let entries = pending
+            let lost = dropped
+            pending.removeAll(keepingCapacity: true)
+            dropped = 0
+            scheduled = false
+            lock.unlock()
+            guard !entries.isEmpty else { return }
+            let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+            var text = entries.map {
+                "[\(formatter.string(from: $0.0))][\($0.1)] [session=\(session) version=\(version) pid=\(ProcessInfo.processInfo.processIdentifier)] \($0.2)\n"
+            }.joined()
+            if lost > 0 { text += "[Log.Throttle] discarded=\(lost)\n" }
+            do {
+                let url = try logFileURL(fileManager: .default)
+                let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                if size >= 4 * 1024 * 1024 {
+                    let previous = url.deletingLastPathComponent().appendingPathComponent("调试日志.previous.log")
+                    if FileManager.default.fileExists(atPath: previous.path) { try FileManager.default.removeItem(at: previous) }
+                    try FileManager.default.moveItem(at: url, to: previous)
+                }
+                if !FileManager.default.fileExists(atPath: url.path) {
+                    try Data().write(to: url, options: .atomic)
+                }
+                let handle = try FileHandle(forWritingTo: url)
+                defer { try? handle.close() }
+                try handle.seekToEnd()
+                try handle.write(contentsOf: Data(text.utf8))
+                DispatchQueue.main.async {
+                    NotificationCenter.default.post(name: didAppendNotification, object: nil)
+                }
+            } catch {
+                NSLog("ATeaching log write failed: %@", error.localizedDescription)
+            }
+        }
+    }
 
     struct DebugSettings: Codable, Equatable {
         var persistLogsEnabled: Bool = false
@@ -57,6 +144,8 @@ nonisolated enum TeachingDebugLogStore {
     }
 
     static func loadSettings(fileManager: FileManager = .default) -> DebugSettings {
+        settingsLock.lock()
+        defer { settingsLock.unlock() }
         if let cachedSettings {
             return cachedSettings
         }
@@ -83,6 +172,8 @@ nonisolated enum TeachingDebugLogStore {
     }
 
     static func saveSettings(_ settings: DebugSettings, fileManager: FileManager = .default) throws {
+        settingsLock.lock()
+        defer { settingsLock.unlock() }
         let url = try settingsFileURL(fileManager: fileManager)
         let data = try encoder.encode(settings)
         try data.write(to: url, options: .atomic)
@@ -94,17 +185,19 @@ nonisolated enum TeachingDebugLogStore {
     }
 
     static func isLayoutJitterLogsEnabled() -> Bool {
-        UserDefaults.standard.bool(forKey: layoutJitterLogEnabledDefaultsKey)
+        settingsLock.lock()
+        defer { settingsLock.unlock() }
+        if let cachedSettings { return cachedSettings.layoutJitterLogsEnabled }
+        return UserDefaults.standard.bool(forKey: layoutJitterLogEnabledDefaultsKey)
     }
 
     static func nodeMarkdownEditorPipeline() -> NodeMarkdownEditorPipeline {
-        if let cachedSettings {
-            return cachedSettings.nodeMarkdownEditorPipeline
-        }
         return loadSettings().nodeMarkdownEditorPipeline
     }
 
     static func isTextKit2FocusLocationOverlayEnabled() -> Bool {
+        settingsLock.lock()
+        defer { settingsLock.unlock() }
         if let cachedSettings {
             return cachedSettings.textKit2FocusLocationOverlayEnabled
         }
@@ -112,6 +205,8 @@ nonisolated enum TeachingDebugLogStore {
     }
 
     static func isLessonStatisticsEnabled() -> Bool {
+        settingsLock.lock()
+        defer { settingsLock.unlock() }
         if let cachedSettings {
             return cachedSettings.lessonStatisticsEnabled
         }
@@ -131,25 +226,11 @@ nonisolated enum TeachingDebugLogStore {
     ) {
         let settings = loadSettings(fileManager: fileManager)
         guard force || settings.persistLogsEnabled else { return }
-        guard let url = try? logFileURL(fileManager: fileManager) else { return }
-        let timestamp = ISO8601DateFormatter().string(from: Date())
-        let line = "[\(timestamp)][\(category)] \(message)\n"
-        guard let data = line.data(using: .utf8) else { return }
-        do {
-            if !fileManager.fileExists(atPath: url.path) {
-                try Data().write(to: url, options: .atomic)
-            }
-            let handle = try FileHandle(forWritingTo: url)
-            defer { try? handle.close() }
-            try handle.seekToEnd()
-            try handle.write(contentsOf: data)
-            NotificationCenter.default.post(name: didAppendNotification, object: nil)
-        } catch {
-            return
-        }
+        writer.enqueue(message, category: category)
     }
 
     static func readLog(fileManager: FileManager = .default) -> String {
+        writer.queue.sync { writer.flush() }
         guard let url = try? logFileURL(fileManager: fileManager),
               fileManager.fileExists(atPath: url.path),
               let content = try? String(contentsOf: url, encoding: .utf8) else {
@@ -159,8 +240,22 @@ nonisolated enum TeachingDebugLogStore {
     }
 
     static func clearLog(fileManager: FileManager = .default) throws {
-        let url = try logFileURL(fileManager: fileManager)
-        try Data().write(to: url, options: .atomic)
+        try writer.queue.sync {
+            writer.lock.lock()
+            writer.pending.removeAll()
+            writer.dropped = 0
+            writer.lock.unlock()
+            let url = try logFileURL(fileManager: fileManager)
+            try Data().write(to: url, options: .atomic)
+        }
+    }
+
+    static func flushPending() { writer.queue.sync { writer.flush() } }
+
+    static func beginSession() {
+        guard loadSettings().persistLogsEnabled else { return }
+        append("start pipeline=\(nodeMarkdownEditorPipeline().rawValue) jitter=\(isLayoutJitterLogsEnabled()) os=\(ProcessInfo.processInfo.operatingSystemVersionString)", category: "App.Session")
+        writer.startHeartbeat()
     }
 
     private static func settingsFileURL(fileManager: FileManager) throws -> URL {

@@ -9,6 +9,8 @@ import SwiftMath
 
 extension NodeMarkdownTextKit2TextView {
     func invalidateNodeMarkdownDecorationsAfterViewportLayout() {
+        let logStart = ProcessInfo.processInfo.systemUptime
+        defer { stabilityLog.sample(stage: "viewportLayout", textView: self, duration: ProcessInfo.processInfo.systemUptime - logStart) }
         let displayRect = visibleRect.isEmpty ? bounds : visibleRect
         guard !displayRect.isEmpty else { return }
         nodeTextLayoutManager.ensureLayout(for: visibleTextContainerRect(in: displayRect))
@@ -18,6 +20,8 @@ extension NodeMarkdownTextKit2TextView {
     /// 行属性事务会使TextKit2旧片段失效。先让当前可见区完成布局，再一次性重画
     /// 背景条、高亮和编号；不能依靠下一次滚动碰巧触发第二次draw。
     func invalidateNodeMarkdownDecorationsAfterRowStyleChange(rows: [Int]) {
+        let logStart = ProcessInfo.processInfo.systemUptime
+        defer { stabilityLog.sample(stage: "rowLayout", textView: self, duration: ProcessInfo.processInfo.systemUptime - logStart) }
         let displayRect = visibleRect.isEmpty ? bounds : visibleRect
         nodeTextLayoutManager.ensureLayout(for: visibleTextContainerRect(in: displayRect))
         setNeedsDisplay(displayRect)
@@ -26,6 +30,8 @@ extension NodeMarkdownTextKit2TextView {
 
     @discardableResult
     func drawNodeMarkdownMarkers(in dirtyRect: NSRect) -> Int {
+        let logStart = ProcessInfo.processInfo.systemUptime
+        defer { stabilityLog.sample(stage: "draw", textView: self, duration: ProcessInfo.processInfo.systemUptime - logStart) }
         guard !nodeMarkdownRowLayouts.isEmpty else { return 0 }
         let documentStart = nodeTextContentStorage.documentRange.location
         var drawnCount = 0

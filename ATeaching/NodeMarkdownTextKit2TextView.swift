@@ -10,6 +10,7 @@ import SwiftMath
 
 #if os(macOS)
 final class NodeMarkdownTextKit2TextView: NSTextView {
+    let stabilityLog = NodeMarkdownStabilityLog()
     struct InputMethodCommit {
         let sourceBefore: String
         let affectedRange: NSRange
