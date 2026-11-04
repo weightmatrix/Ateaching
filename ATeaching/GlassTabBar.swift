@@ -2,9 +2,11 @@ import SwiftUI
 
 enum FrequentDocumentUsage {
     static let prefix = "frequent-document."
+    private static let pinnedKey = "frequent-document.pinned-paths"
+
     static func record(_ url: URL) {
         guard let root = try? ArchiveStorage.ensureWorkspace(),
-              url.path.hasPrefix(root.path + "/") else { return }
+              isEligible(url, workspaceRoot: root) else { return }
         let relative = String(url.path.dropFirst(root.path.count + 1))
         let defaults = UserDefaults.standard
         let device = defaults.string(forKey: "frequentDeviceID") ?? UUID().uuidString
@@ -42,35 +44,187 @@ enum FrequentDocumentUsage {
             $0.count == $1.count ? $0.path < $1.path : $0.count > $1.count
         }
     }
+
+    static func pinnedPaths() -> [String] {
+        UserDefaults.standard.stringArray(forKey: pinnedKey) ?? []
+    }
+
+    static func setPinnedPaths(_ paths: [String]) {
+        UserDefaults.standard.set(paths, forKey: pinnedKey)
+    }
+
+    static func isEligible(_ url: URL, workspaceRoot: URL) -> Bool {
+        let rootPath = workspaceRoot.standardizedFileURL.path
+        let path = url.standardizedFileURL.path
+        guard path.hasPrefix(rootPath + "/") else { return false }
+
+        let relative = String(path.dropFirst(rootPath.count + 1))
+        let components = relative.split(separator: "/").map(String.init)
+        guard components.first == ArchiveStorage.archiveFolderName,
+              components.count >= 2,
+              FileManager.default.fileExists(atPath: path) else { return false }
+
+        let studentNames = Set(((try? TeachingStudentSettingsStore.loadStudents()) ?? []).map(\.name))
+        if components.count >= 3, studentNames.contains(components[1]) { return false }
+
+        let name = url.lastPathComponent
+        let excludedPrefixes = ["随堂笔记_", "学生信息_", "上课信息_"]
+        guard !excludedPrefixes.contains(where: name.hasPrefix),
+              !(name.hasPrefix("教案_") && name.contains("_完成情况_")) else { return false }
+
+        let ext = url.pathExtension.lowercased()
+        let type = (ArchiveStorage.readMetaType(fileURL: url) ?? "").lowercased()
+        return ext == "md"
+            || ext == "nodemarkdown"
+            || ext == "nmd"
+            || (ext == "csv" && ["singlelist", "autosinglelist", "checklist", "nodemarkdown", "nodesmarkdown", "lessonplan"].contains(type))
+    }
 }
 
 struct FrequentDocumentsView: View {
     @AppStorage("frequentItemCount") private var limit = 20
     @State private var revision = 0
+    @State private var pinnedPaths: [String] = []
+    #if os(macOS)
+    @Environment(\.openWindow) private var openWindow
+    #endif
+
     var body: some View {
         List {
             if let root = try? ArchiveStorage.ensureWorkspace() {
-                let items = FrequentDocumentUsage.ranked().filter {
-                    FileManager.default.fileExists(atPath: root.appendingPathComponent($0.path).path)
-                }.prefix(limit)
-                if items.isEmpty { Text("打开文档后，将自动统计常用文档").foregroundStyle(.secondary) }
-                ForEach(Array(items), id: \.path) { item in
-                    let url = root.appendingPathComponent(item.path)
-                    NavigationLink {
-                        FrequentDocumentDestination(url: url)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(url.deletingPathExtension().lastPathComponent)
-                            Text("\(item.path) · 使用 \(item.count) 次").font(.caption).foregroundStyle(.secondary)
+                let rankedPaths = FrequentDocumentUsage.ranked().map(\.path)
+                let existingPinned = pinnedPaths.filter { path in
+                    FrequentDocumentUsage.isEligible(root.appendingPathComponent(path), workspaceRoot: root)
+                }
+                let regularPaths = rankedPaths.filter { path in
+                    !existingPinned.contains(path)
+                        && FrequentDocumentUsage.isEligible(root.appendingPathComponent(path), workspaceRoot: root)
+                }
+                let visibleRegularPaths = Array(regularPaths.prefix(max(0, limit - existingPinned.count)))
+
+                if existingPinned.isEmpty, visibleRegularPaths.isEmpty {
+                    ContentUnavailableView("暂无常用文件", systemImage: "star", description: Text("从档案打开文件后会显示在这里"))
+                }
+
+                if !existingPinned.isEmpty {
+                    Section("置顶") {
+                        ForEach(existingPinned, id: \.self) { path in
+                            documentRow(path: path, root: root, isPinned: true)
+                        }
+                        .onMove { source, destination in
+                            movePinned(from: source, to: destination, visiblePaths: existingPinned)
+                        }
+                    }
+                }
+
+                if !visibleRegularPaths.isEmpty {
+                    Section(existingPinned.isEmpty ? "文件" : "常用") {
+                        ForEach(visibleRegularPaths, id: \.self) { path in
+                            documentRow(path: path, root: root, isPinned: false)
                         }
                     }
                 }
             }
         }
+        .listStyle(.plain)
         .id(revision)
-        .onAppear { NSUbiquitousKeyValueStore.default.synchronize(); revision += 1 }
+        #if os(iOS)
+        .toolbar {
+            if pinnedPaths.count > 1 { EditButton() }
+        }
+        #endif
+        .onAppear {
+            pinnedPaths = FrequentDocumentUsage.pinnedPaths()
+            NSUbiquitousKeyValueStore.default.synchronize()
+            revision += 1
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSUbiquitousKeyValueStore.didChangeExternallyNotification)) { _ in revision += 1 }
     }
+
+    @ViewBuilder
+    private func documentRow(path: String, root: URL, isPinned: Bool) -> some View {
+        let url = root.appendingPathComponent(path)
+        let entry = ArchiveEntry(url: url, isDirectory: false, metaType: ArchiveStorage.readMetaType(fileURL: url))
+
+        Group {
+            #if os(macOS)
+            if opensInSeparateWindow(url) {
+                Button { open(url) } label: { archiveStyleLabel(entry) }
+                    .buttonStyle(.plain)
+            } else {
+                NavigationLink { FrequentDocumentDestination(url: url) } label: { archiveStyleLabel(entry) }
+            }
+            #else
+            NavigationLink { FrequentDocumentDestination(url: url) } label: { archiveStyleLabel(entry) }
+            #endif
+        }
+        .contextMenu {
+            if isPinned {
+                Button("取消置顶", systemImage: "pin.slash") { unpin(path) }
+            } else {
+                Button("置顶", systemImage: "pin") { pin(path) }
+            }
+        }
+    }
+
+    private func archiveStyleLabel(_ entry: ArchiveEntry) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: entry.iconName)
+                .font(.system(size: 28, weight: .semibold))
+                .foregroundStyle(entry.iconColor)
+                .frame(width: 36, height: 36)
+            Text(entry.name)
+                .font(.system(size: 15, weight: .medium, design: .monospaced))
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(minHeight: 44)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+    }
+
+    private func pin(_ path: String) {
+        guard !pinnedPaths.contains(path) else { return }
+        pinnedPaths.append(path)
+        savePins()
+    }
+
+    private func unpin(_ path: String) {
+        pinnedPaths.removeAll { $0 == path }
+        savePins()
+    }
+
+    private func movePinned(from source: IndexSet, to destination: Int, visiblePaths: [String]) {
+        var reordered = visiblePaths
+        reordered.move(fromOffsets: source, toOffset: destination)
+        pinnedPaths = reordered
+        savePins()
+    }
+
+    private func savePins() {
+        FrequentDocumentUsage.setPinnedPaths(pinnedPaths)
+        revision += 1
+    }
+
+    #if os(macOS)
+    private func opensInSeparateWindow(_ url: URL) -> Bool {
+        let ext = url.pathExtension.lowercased()
+        let type = (ArchiveStorage.readMetaType(fileURL: url) ?? "").lowercased()
+        return ext == "md" || ext == "nodemarkdown" || ext == "nmd"
+            || type == "nodemarkdown" || type == "nodesmarkdown" || type == "lessonplan"
+    }
+
+    private func open(_ url: URL) {
+        let ext = url.pathExtension.lowercased()
+        let type = (ArchiveStorage.readMetaType(fileURL: url) ?? "").lowercased()
+        if ext == "md" {
+            openWindow(id: "markdown-editor", value: url.path)
+        } else if ext == "nodemarkdown" || ext == "nmd" || type == "nodemarkdown" || type == "nodesmarkdown" || type == "lessonplan" {
+            openWindow(id: "nodemarkdown-editor", value: url.path)
+        }
+    }
+    #endif
 }
 
 private struct FrequentDocumentDestination: View {
