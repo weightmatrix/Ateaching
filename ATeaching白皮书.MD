@@ -1,5 +1,9 @@
 # ATeaching白皮书
 
+## 普通Markdown性能诊断（V1.2611051156）
+
+普通Markdown专用MarkdownPerformanceDiagnostics接入已有输入、组合态、局部样式、缓存、首次绘制、滚动、搜索、绑定全文快照和外部替换计数／耗时回调；每视图十秒汇总，最多六条慢样本，不打印正文，不逐键写盘。管线检查只读textLayoutManager，不触碰旧layoutManager；创建后、输入前及旧API调用前后记录身份变化，定位兼容模式切换。日志分类Markdown.Pipeline与Markdown.Performance，强制走已有有界后台日志，不依赖Debug开关。
+
 ## #122 macOS显示名称与应用菜单（V1.2611051006）
 
 Info.plist的CFBundleName及CFBundleDisplayName沿用李知本·授课，macOS的WRAPPER_NAME统一为李知本·授课.app，保留ATeaching可执行文件、模块和Bundle Identifier以保持现有数据身份。SwiftUI主场景替换systemServices命令组为空，移除服务入口；新增Settings场景，NavigationStack内直接复用AppSettingsView，字体环境与应用内一致，默认900×720、最小640×560。设置菜单及Command+,由系统Settings场景提供，不复制设置页或新增独立设置存储。

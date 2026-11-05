@@ -4175,6 +4175,68 @@ enum MarkdownHighlightMode: Equatable {
     case instant(MarkdownDocumentStyle)
 }
 
+@MainActor
+private final class MarkdownPerformanceDiagnostics {
+    private let id = String(UUID().uuidString.prefix(8))
+    private var started = ProcessInfo.processInfo.systemUptime
+    private var counts: [String: Int] = [:]
+    private var durations: [String: (count: Int, total: Double, max: Double)] = [:]
+    private var samples: [String] = []
+    private var scheduled = false
+    private var pipeline: Bool?
+
+    func checkPipeline(_ view: NSTextView, stage: String) {
+        // 只读取TextKit2属性；绝不能为诊断访问layoutManager而触发兼容模式。
+        let active = view.textLayoutManager != nil
+        if pipeline != active {
+            TeachingDebugLogStore.append("view=\(id) stage=\(stage) textKit2=\(active) chars=\(view.textStorage?.length ?? 0) window=\(view.window?.windowNumber ?? -1)", category: "Markdown.Pipeline", force: true)
+            pipeline = active
+        }
+    }
+
+    func count(_ name: String, _ amount: Int = 1) {
+        counts[name, default: 0] += amount
+        schedule()
+    }
+
+    func duration(_ name: String, _ ms: Double) {
+        guard ms.isFinite, ms >= 0 else { return }
+        let old = durations[name] ?? (0, 0, 0)
+        durations[name] = (old.0 + 1, old.1 + ms, max(old.2, ms))
+        schedule()
+    }
+
+    func sample(_ value: String) {
+        if samples.count < 6 { samples.append(String(value.prefix(300))) }
+        schedule()
+    }
+
+    private func schedule() {
+        guard !scheduled else { return }
+        scheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in self?.flush() }
+    }
+
+    private func flush() {
+        let elapsed = ProcessInfo.processInfo.systemUptime - started
+        let counters = counts.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")
+        TeachingDebugLogStore.append("view=\(id) seconds=\(String(format: "%.1f", elapsed)) counts=[\(counters)] samples=[\(samples.joined(separator: ";"))]", category: "Markdown.Performance", force: true)
+        let stages = durations.sorted { $0.key < $1.key }
+        // 每条最多8阶段，避免后台日志的单条长度限制截掉后半段。
+        for offset in stride(from: 0, to: stages.count, by: 8) {
+            let text = stages[offset..<min(offset + 8, stages.count)].map {
+                "\($0.key):n=\($0.value.count),total=\(String(format: "%.2f", $0.value.total)),max=\(String(format: "%.2f", $0.value.max))ms"
+            }.joined(separator: ";")
+            TeachingDebugLogStore.append("view=\(id) stages=[\(text)]", category: "Markdown.Performance", force: true)
+        }
+        counts.removeAll(keepingCapacity: true)
+        durations.removeAll(keepingCapacity: true)
+        samples.removeAll(keepingCapacity: true)
+        started = ProcessInfo.processInfo.systemUptime
+        scheduled = false
+    }
+}
+
 // MARK: - TextKit2纯文本编辑器 - v1 - 建立200k文档输入性能基线
 struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
     @Binding var text: String
@@ -4236,9 +4298,10 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
         commitBridge.commitHandler = { [weak coordinator = context.coordinator] in
             coordinator?.commitPendingTextToBinding()
         }
-        textView.onDiagnostic38Duration = nil
-        textView.onDiagnostic38Count = nil
-        textView.onDiagnostic38SlowSample = nil
+        textView.onDiagnostic38Duration = { [weak coordinator = context.coordinator] in coordinator?.recordDiagnostic38Duration($0, milliseconds: $1) }
+        textView.onDiagnostic38Count = { [weak coordinator = context.coordinator] in coordinator?.recordDiagnostic38Count($0, amount: $1) }
+        textView.onDiagnostic38SlowSample = { [weak coordinator = context.coordinator] in coordinator?.recordDiagnostic38SlowSample($0) }
+        textView.performanceDiagnostics.checkPipeline(textView, stage: "创建后")
         context.coordinator.resetClipViewBoundsOrigin(scrollView.contentView.bounds.origin)
         context.coordinator.lastSourceSnapshot = text
         context.coordinator.lastObservedBindingText = text
@@ -4626,17 +4689,25 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
         }
 
         private func beginDiagnostic38Input(in textView: NSTextView, affectedRange: NSRange) {
-            _ = textView
-            _ = affectedRange
+            self.textView?.performanceDiagnostics.count("输入")
+            self.textView?.performanceDiagnostics.checkPipeline(textView, stage: "输入前")
         }
 
-        func recordDiagnostic38Duration(_ stage: String, since start: UInt64) {}
+        func recordDiagnostic38Duration(_ stage: String, since start: UInt64) {
+            recordDiagnostic38Duration(stage, milliseconds: MarkdownTextKit2Diagnostic38.milliseconds(since: start))
+        }
 
-        func recordDiagnostic38Duration(_ stage: String, milliseconds: Double) {}
+        func recordDiagnostic38Duration(_ stage: String, milliseconds: Double) {
+            textView?.performanceDiagnostics.duration(stage, milliseconds)
+        }
 
-        func recordDiagnostic38Count(_ name: String, amount: Int = 1) {}
+        func recordDiagnostic38Count(_ name: String, amount: Int = 1) {
+            textView?.performanceDiagnostics.count(name, amount)
+        }
 
-        func recordDiagnostic38SlowSample(_ sample: String) {}
+        func recordDiagnostic38SlowSample(_ sample: String) {
+            textView?.performanceDiagnostics.sample(sample)
+        }
 
         @objc func clipViewBoundsDidChange(_ notification: Notification) {
             guard let clipView = notification.object as? NSClipView else { return }
@@ -4760,6 +4831,8 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     }
 
     func scrollMarkdownSourceLineToCenter(_ sourceLine: Int, in scrollView: NSScrollView) {
+        performanceDiagnostics.checkPipeline(self, stage: "同步滚动旧API前")
+        defer { performanceDiagnostics.checkPipeline(self, stage: "同步滚动旧API后") }
         let nsText = string as NSString
         guard nsText.length > 0 else { return }
         let lineRange = markdownSourceRange(forLine: max(0, sourceLine), in: nsText)
@@ -4864,6 +4937,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     var onDiagnostic38Count: ((String, Int) -> Void)?
     var onDiagnostic38SlowSample: ((String) -> Void)?
     var diagnosticCachedLineCount: Int { lineRangeCache.count }
+    fileprivate let performanceDiagnostics = MarkdownPerformanceDiagnostics()
 
     override func draw(_ dirtyRect: NSRect) {
         let diagnosticStart = MarkdownTextKit2Diagnostic38.now()
@@ -5395,6 +5469,8 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     }
 
     private func visibleCharacterRange() -> NSRange? {
+        performanceDiagnostics.checkPipeline(self, stage: "可见范围旧API前")
+        defer { performanceDiagnostics.checkPipeline(self, stage: "可见范围旧API后") }
         guard let layoutManager, let textContainer else { return nil }
         let paintRect = visibleRect.insetBy(dx: -16, dy: -240)
         guard !paintRect.isEmpty else { return nil }

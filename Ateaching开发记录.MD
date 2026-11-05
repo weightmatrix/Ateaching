@@ -1,5 +1,11 @@
 # 常用栏设置页面视觉统一
 
+## 普通Markdown性能诊断（V1.2611051156）
+
+验证：macOS Debug构建、git diff HEAD --check及项目文件plutil检查通过。首次编译访问级别错误已修正；真实大文档性能占比及兼容模式切换等待运行日志。
+
+接通普通Markdown原先禁用的性能回调，按视图十秒汇总输入／样式／缓存／首次绘制／滚动／搜索／全文快照耗时和计数，慢样本最多六条。管线身份用textLayoutManager只读检测，记录创建、输入及旧布局API前后变化，不因诊断访问旧接口。阶段分批输出避免4096字符截断。只新增诊断，不改编辑样式或布局行为；尚待用户大文档复现。
+
 ## #122 macOS应用名称与设置菜单（V1.2611051006 / 2611051006）
 
 - 已有CFBundleName及CFBundleDisplayName为李知本·授课，但构建包名仍为ATeaching.app；新增macOS专用WRAPPER_NAME统一应用包名，保持可执行文件、模块和Bundle Identifier不变。
