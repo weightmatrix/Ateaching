@@ -1,7 +1,7 @@
 import Foundation
 
 enum AppDisplayTitle {
-    static let appName = "李知本授课管理"
+    static let appName = "李知本·授课"
     static let mainWindowBaseTitle = "主窗口"
 
     static var defaultMainWindowTitle: String {
