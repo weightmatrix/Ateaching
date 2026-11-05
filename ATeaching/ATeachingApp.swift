@@ -28,9 +28,22 @@ struct ATeachingApp: App {
         #if os(macOS)
         .defaultLaunchBehavior(.suppressed)
         .restorationBehavior(.disabled)
+        .commands {
+            CommandGroup(replacing: .systemServices) { }
+        }
         #endif
 
         #if os(macOS)
+        Settings {
+            NavigationStack {
+                AppSettingsView()
+            }
+            .environment(\.font, .system(size: 14, weight: .regular, design: .monospaced))
+            .monospaced()
+            .frame(minWidth: 640, minHeight: 560)
+        }
+        .defaultSize(width: 900, height: 720)
+
         WindowGroup(id: ATeachingExternalMarkdownWindowID.markdownEditor, for: String.self) { $filePath in
             if let filePath {
                 MarkdownEditorView(fileURL: URL(fileURLWithPath: filePath))

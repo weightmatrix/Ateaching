@@ -1,5 +1,11 @@
 # 常用栏设置页面视觉统一
 
+## #122 macOS应用名称与设置菜单（V1.2611051006 / 2611051006）
+
+- 已有CFBundleName及CFBundleDisplayName为李知本·授课，但构建包名仍为ATeaching.app；新增macOS专用WRAPPER_NAME统一应用包名，保持可执行文件、模块和Bundle Identifier不变。
+- 替换systemServices命令组为空；新增Settings场景，直接复用NavigationStack与AppSettingsView，保持原设置存储及子页面，默认900×720、最小640×560。
+- Debug和Release版本号同步更新。macOS Debug构建和git diff HEAD --check、项目文件plutil检查通过；尚未进行Dock旧固定项及菜单实际点击验证。
+
 ## 背景裁剪修复（V1.2611041154 / 2611041154）
 
 验证：macOS Debug构建、git差异检查、项目文件plutil检查通过；尚待用户原场景交互复测。

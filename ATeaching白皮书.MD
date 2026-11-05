@@ -1,5 +1,9 @@
 # ATeaching白皮书
 
+## #122 macOS显示名称与应用菜单（V1.2611051006）
+
+Info.plist的CFBundleName及CFBundleDisplayName沿用李知本·授课，macOS的WRAPPER_NAME统一为李知本·授课.app，保留ATeaching可执行文件、模块和Bundle Identifier以保持现有数据身份。SwiftUI主场景替换systemServices命令组为空，移除服务入口；新增Settings场景，NavigationStack内直接复用AppSettingsView，字体环境与应用内一致，默认900×720、最小640×560。设置菜单及Command+,由系统Settings场景提供，不复制设置页或新增独立设置存储。
+
 ## 背景裁剪间距同步修复（V1.2611041154）
 
 诊断123实测Tab改级后下一行预期间距20pt、实际约束30pt，外层行高84降为74pt后文字视图被挤为44pt。静态几何安装及活动节点测量均在通知表格行高变化前同步现存单元格顶部约束；检查Node身份，不创建或重载单元格，不替换编辑视图。间距未变时跳过约束写入。保留诊断123用于复测。
