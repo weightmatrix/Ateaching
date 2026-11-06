@@ -2427,3 +2427,14 @@ H3 包的同步方向（脏包回传母本 vs 母本覆盖随堂）通过比较�
 ### 2026-11-06 macOS 图标更新
 
 采用用户确认的蓝白「李知本」图标，更新项目内置 macOS AppIcon 资源及所需尺寸。保留现有功能、应用标识与 iOS 图标。原图标已在本机聊天工作区备份；Xcode 重新构建时使用新资源，而非仅设置 /Applications 副本的 Finder 自定义图标。图标尺寸已按资源清单生成；实际 Dock 显示仍需运行对应新构建确认。
+
+
+## 2026-11-06 · 授课 iOS/macOS 全尺寸图标
+
+- 采用 `图标/李知本·授课.png`（1254×1254），备份至 `Design/BrandIcons/授课-李知本蓝白-20261106.png`。
+- 重建 `ATeaching/Assets.xcassets/AppIcon.appiconset`，补齐 28 个槽位（18 个 iOS/iPadOS/App Store + 10 个 macOS）。
+- iOS 资源移除透明通道并补齐圆角外背景；macOS 资源保留圆角透明边缘。
+- `xcrun actool` 以 iphoneos 17.0 与 macosx 15.6 编译均通过；仅保留 76×76@1x 的既有 Inapplicable Content 提示。
+- macOS Debug 与 iOS Debug 构建均通过。
+- `/Applications/李知本·授课.app` 已更新为本次构建，旧版本备份于 `~/Applications/安装备份-20261106-1602`。
+- 版本更新为 `V1.2611061557`（build 2611061557）。
