@@ -8,6 +8,7 @@ struct AppBackgroundSettings: Codable, Equatable {
         case apple
         case minimal
         case vibrant
+        case victorian
 
         var id: String { rawValue }
 
@@ -16,14 +17,38 @@ struct AppBackgroundSettings: Codable, Equatable {
             case .apple: return "Apple"
             case .minimal: return "极简"
             case .vibrant: return "活力"
+            case .victorian: return "维多利亚"
             }
+        }
+
+        var accent: Color {
+            switch self {
+            case .apple: return .blue
+            case .minimal: return .primary
+            case .vibrant: return .purple
+            case .victorian: return Color(red: 0.65, green: 0.32, blue: 0.30)
+            }
+        }
+
+        var cornerRadius: CGFloat {
+            switch self {
+            case .apple: return 18
+            case .minimal: return 4
+            case .vibrant: return 26
+            case .victorian: return 8
+            }
+        }
+
+        var border: Color {
+            self == .victorian ? Color(red: 0.65, green: 0.49, blue: 0.25) : accent.opacity(0.25)
         }
 
         var subtitle: String {
             switch self {
             case .apple: return "系统蓝、通透材质与柔和圆角"
             case .minimal: return "灰阶、细边框与紧凑布局"
-            case .vibrant: return "鲜明色彩、卡片层次与强调反馈"
+            case .vibrant: return "紫色渐层、大圆角与彩色卡片"
+            case .victorian: return "古典纸色、酒红强调与黄铜双线边框"
             }
         }
     }
@@ -176,7 +201,7 @@ private struct DesignStylePreview: View {
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: style == .minimal ? 6 : 12, style: .continuous)
+            RoundedRectangle(cornerRadius: style.cornerRadius, style: .continuous)
                 .fill(fill)
             HStack(spacing: 3) {
                 ForEach(0..<3, id: \.self) { index in
@@ -188,8 +213,8 @@ private struct DesignStylePreview: View {
         }
         .frame(width: 56, height: 42)
         .overlay(
-            RoundedRectangle(cornerRadius: style == .minimal ? 6 : 12, style: .continuous)
-                .stroke(Color.primary.opacity(0.10), lineWidth: 1)
+            RoundedRectangle(cornerRadius: style.cornerRadius, style: .continuous)
+                .stroke(style.border, lineWidth: style == .victorian ? 2 : 1)
         )
     }
 
@@ -197,17 +222,12 @@ private struct DesignStylePreview: View {
         switch style {
         case .apple: return Color.blue.opacity(0.13)
         case .minimal: return Color.secondary.opacity(0.08)
-        case .vibrant: return Color.purple.opacity(0.18)
+        case .vibrant: return Color.purple.opacity(0.30)
+        case .victorian: return Color(red: 0.91, green: 0.83, blue: 0.66)
         }
     }
 
-    private var accent: Color {
-        switch style {
-        case .apple: return .blue
-        case .minimal: return .primary
-        case .vibrant: return .purple
-        }
-    }
+    private var accent: Color { style.accent }
 }
 
 struct AppBackgroundSettingsView: View {

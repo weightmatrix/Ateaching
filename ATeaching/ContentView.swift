@@ -123,12 +123,12 @@ struct ContentView: View {
                                     .font(.system(size: 14, weight: selectedTab == tab ? .semibold : .regular))
                                 Spacer()
                             }
-                            .foregroundStyle(selectedTab == tab ? Color.accentColor : .primary)
+                            .foregroundStyle(selectedTab == tab ? tab.accentColor : .primary)
                             .padding(.horizontal, 12)
                             .frame(height: 38)
                             .background(
                                 RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                    .fill(selectedTab == tab ? Color.accentColor.opacity(0.14) : .clear)
+                                    .fill(selectedTab == tab ? tab.accentColor.opacity(0.14) : .clear)
                             )
                             .contentShape(Rectangle())
                         }

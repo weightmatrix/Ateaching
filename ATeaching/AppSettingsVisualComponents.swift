@@ -16,12 +16,14 @@ struct AppSettingsPage<Content: View>: View {
         self.content = content()
     }
 
+    private var design: AppBackgroundSettings.DesignStyle { AppBackgroundSettingsStore.load().designStyle }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(title)
-                        .font(.system(size: 30, weight: .bold))
+                        .font(.system(size: 30, weight: .bold, design: design == .victorian ? .serif : .default))
                     if let subtitle, !subtitle.isEmpty {
                         Text(subtitle)
                             .font(.system(size: 14))
@@ -57,30 +59,40 @@ struct AppSettingsCard<Content: View>: View {
         self.content = content()
     }
 
+    private var design: AppBackgroundSettings.DesignStyle { AppBackgroundSettingsStore.load().designStyle }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 10) {
                 if let systemImage {
                     Image(systemName: systemImage)
                         .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(appHighlightBlue)
+                        .foregroundStyle(design.accent)
                         .frame(width: 26)
                 }
                 Text(title)
-                    .font(.system(size: 21, weight: .bold))
+                    .font(.system(size: 21, weight: .bold, design: design == .victorian ? .serif : .default))
             }
             content
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color.secondary.opacity(0.10))
+            RoundedRectangle(cornerRadius: design.cornerRadius, style: .continuous)
+                .fill(design == .apple ? Color.secondary.opacity(0.10) : design.accent.opacity(design == .minimal ? 0.025 : 0.12))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.secondary.opacity(0.16), lineWidth: 1)
+            RoundedRectangle(cornerRadius: design.cornerRadius, style: .continuous)
+                .stroke(design.border, lineWidth: design == .victorian ? 2 : 1)
         )
+        .overlay {
+            if design == .victorian {
+                RoundedRectangle(cornerRadius: 5)
+                    .stroke(design.border.opacity(0.5), lineWidth: 1)
+                    .padding(5)
+                    .allowsHitTesting(false)
+            }
+        }
     }
 }
 

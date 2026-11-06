@@ -1,5 +1,9 @@
 # 常用栏设置页面视觉统一
 
+## 四种设计风格（V1.2611070736 / 2611070736）
+
+新增维多利亚设计风格及预览，拉开四种风格在背景、卡片、按钮和导航强调色上的差异。沿用设置JSON存储与外观刷新通知；Debug/Release版本同步。保留工作区原有图标与部署配置改动，不纳入本次提交。验证：macOS Debug构建通过，项目文件plutil检查与git diff --check通过；尚未进行macOS/iOS实际交互及深浅色视觉验收。
+
 ## iCloud文件夹显示名称（V1.2611061205 / 2611061205）
 
 将Info.plist的NSUbiquitousContainerName由李知本授课系统改为李知本·授课，保持iCloud.Han.ATeaching容器身份及数据路径。Debug和Release同步更新版本；不直接重命名系统容器目录。

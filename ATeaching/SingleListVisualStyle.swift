@@ -20,7 +20,7 @@ enum AppBackgroundVisualStyle {
     }
 
     static func pageBackground(for style: AppBackgroundSettings.BackgroundStyle) -> some View {
-        AppBackgroundView(style: style)
+        AppBackgroundView(style: style, followsDesign: false)
     }
 }
 
@@ -48,9 +48,23 @@ enum SingleListVisualStyle {
 private struct AppBackgroundView: View {
     @Environment(\.colorScheme) private var colorScheme
     let style: AppBackgroundSettings.BackgroundStyle
+    var followsDesign = true
 
     var body: some View {
-        if style == .plain {
+        let design: AppBackgroundSettings.DesignStyle = followsDesign ? AppBackgroundSettingsStore.load().designStyle : .apple
+        if design == .victorian {
+            LinearGradient(
+                colors: colorScheme == .dark
+                    ? [Color(red: 0.18, green: 0.12, blue: 0.10), Color(red: 0.10, green: 0.15, blue: 0.13)]
+                    : [Color(red: 0.96, green: 0.91, blue: 0.79), Color(red: 0.86, green: 0.77, blue: 0.59)],
+                startPoint: .topLeading, endPoint: .bottomTrailing
+            )
+        } else if design == .minimal {
+            plainBackground
+        } else if design == .vibrant {
+            LinearGradient(colors: [Color.purple.opacity(colorScheme == .dark ? 0.32 : 0.18), Color.pink.opacity(0.16), Color.blue.opacity(0.20)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                .background(plainBackground)
+        } else if style == .plain {
             plainBackground
         } else {
             LinearGradient(
