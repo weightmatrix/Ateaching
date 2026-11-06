@@ -1673,3 +1673,7 @@ Node高度由TextKit2真实布局片段测量，不根据行号或字数猜测�
 ## 2026-11-06 · iOS 与 macOS 全尺寸图标更新
 
 授课应用改用用户确认的蓝白显示器图标，顶部为摄像机、屏幕内为「李知本」。源图备份于 `Design/BrandIcons/授课-李知本蓝白-20261106.png`。`ATeaching/Assets.xcassets/AppIcon.appiconset` 已重建并补齐全部 28 个槽位：iOS 侧包含 iPhone/iPad 通知、设置、Spotlight、App、iPad Pro 与 App Store 1024，macOS 侧包含 16/32/128/256/512 点的 1x 与 2x。iOS 资源输出为不透明 RGB，圆角外区域按原背景补齐；macOS 资源保留圆角透明边缘。`actool` 分别以 iphoneos 17.0、macosx 15.6 编译通过，无缺失槽位；仅保留 76×76@1x 的既有 Inapplicable Content 提示。本次仅更新图标、版本号与文档，不涉及业务逻辑、数据或同步身份。
+
+
+2026-11-06：macOS 图标改用蓝色铺满、无透明通道的方形版本，以修正系统套白色底座的问题；文字与主体布局保持原样。构建与实际显示分别验证。
+Debug 构建验证：BUILD SUCCEEDED。
