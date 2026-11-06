@@ -1,5 +1,9 @@
 # 常用栏设置页面视觉统一
 
+## iCloud文件夹显示名称（V1.2611061205 / 2611061205）
+
+将Info.plist的NSUbiquitousContainerName由李知本授课系统改为李知本·授课，保持iCloud.Han.ATeaching容器身份及数据路径。Debug和Release同步更新版本；不直接重命名系统容器目录。
+
 ## 普通Markdown性能诊断（V1.2611051156）
 
 验证：macOS Debug构建、git diff HEAD --check及项目文件plutil检查通过。首次编译访问级别错误已修正；真实大文档性能占比及兼容模式切换等待运行日志。

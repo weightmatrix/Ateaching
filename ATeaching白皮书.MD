@@ -1,5 +1,9 @@
 # ATeaching白皮书
 
+## iCloud容器显示名称（V1.2611061205）
+
+NSUbiquitousContainerName统一为李知本·授课，容器标识iCloud.Han.ATeaching、权限和Documents数据路径保持不变，无需数据迁移。系统文件应用的显示名称可能在安装新版并刷新iCloud元数据后更新。
+
 ## 普通Markdown性能诊断（V1.2611051156）
 
 普通Markdown专用MarkdownPerformanceDiagnostics接入已有输入、组合态、局部样式、缓存、首次绘制、滚动、搜索、绑定全文快照和外部替换计数／耗时回调；每视图十秒汇总，最多六条慢样本，不打印正文，不逐键写盘。管线检查只读textLayoutManager，不触碰旧layoutManager；创建后、输入前及旧API调用前后记录身份变化，定位兼容模式切换。日志分类Markdown.Pipeline与Markdown.Performance，强制走已有有界后台日志，不依赖Debug开关。
