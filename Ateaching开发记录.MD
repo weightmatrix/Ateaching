@@ -1,5 +1,9 @@
 # 常用栏设置页面视觉统一
 
+## iPad图标尺寸修复（V1.2611071536 / 2611071536）
+
+定位到现有图标28个槽位所引用的PNG实际均为1024×1024，与iPad等槽位声明尺寸不符。保留当前图案并按size×scale重采样，修复所有平台图标尺寸。Debug/Release版本同步更新。验证：28个槽位PNG像素尺寸与声明完全匹配且均为无Alpha的RGB；iOS Debug（关闭签名）构建通过，Assets.car包含iPad的76、152、167像素AppIcon，产物Info.plist包含CFBundleIcons~ipad主图标声明。项目文件plutil与git diff --check通过。按用户要求不安装设备，尚未验证iPad桌面实际显示。
+
 ## 四种设计风格（V1.2611070736 / 2611070736）
 
 新增维多利亚设计风格及预览，拉开四种风格在背景、卡片、按钮和导航强调色上的差异。沿用设置JSON存储与外观刷新通知；Debug/Release版本同步。保留工作区原有图标与部署配置改动，不纳入本次提交。验证：macOS Debug构建通过，项目文件plutil检查与git diff --check通过；尚未进行macOS/iOS实际交互及深浅色视觉验收。
