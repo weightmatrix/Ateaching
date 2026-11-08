@@ -1849,7 +1849,7 @@ struct NodeMarkdownEditorView: View {
                 loadLessonCompletionFiles()
             } label: {
                 Label("随堂", systemImage: "book.closed")
-                    .frame(width: 28, height: 28)
+                    .teachingToolbarHitTarget()
             }
             .buttonStyle(.plain)
             .focusable(false)
@@ -1864,7 +1864,7 @@ struct NodeMarkdownEditorView: View {
                 requestClassUpdatePreview()
             } label: {
                 Label("更新", systemImage: "arrow.clockwise")
-                    .frame(width: 28, height: 28)
+                    .teachingToolbarHitTarget()
                     .overlay(alignment: .topTrailing) {
                         if hasPendingCutPackage {
                             Circle()
@@ -1872,6 +1872,7 @@ struct NodeMarkdownEditorView: View {
                                 .frame(width: 8, height: 8)
                                 .offset(x: 4, y: -4)
                                 .accessibilityLabel("剪切包待处理")
+                                .allowsHitTesting(false)
                         }
                     }
             }
@@ -1887,7 +1888,7 @@ struct NodeMarkdownEditorView: View {
                     openReflectionInNode()
                 } label: {
                     Label("课反", systemImage: "square.and.pencil")
-                        .frame(width: 28, height: 28)
+                        .teachingToolbarHitTarget()
                 }
                 .buttonStyle(.plain)
             }
@@ -1897,7 +1898,7 @@ struct NodeMarkdownEditorView: View {
                     closeClassSessionAfterSync(finishClass: true)
                 } label: {
                     Label("下课", systemImage: "stop.fill")
-                        .frame(width: 28, height: 28)
+                        .teachingToolbarHitTarget()
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.red)
@@ -1907,7 +1908,7 @@ struct NodeMarkdownEditorView: View {
                 closeReadOnlyClassSessionIfNeeded()
             } label: {
                 Label("关闭", systemImage: "xmark")
-                    .frame(width: 28, height: 28)
+                    .teachingToolbarHitTarget()
             }
             .buttonStyle(.plain)
 
@@ -1929,6 +1930,7 @@ struct NodeMarkdownEditorView: View {
                         toggleWhiteboard()
                     } label: {
                         Label(isWhiteboardPresented ? "清空白板" : "白板", systemImage: "rectangle.and.pencil.and.ellipsis")
+                            .teachingToolbarHitTarget()
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(isWhiteboardPresented ? appHighlightBlue : .primary)

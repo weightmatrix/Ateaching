@@ -57,6 +57,14 @@ final class TeachingAnnotationController: ObservableObject {
     }
 }
 
+extension View {
+    /// 必须用于Button的label内部，令透明留白也参与命中，而非仅命中图标笔画。
+    func teachingToolbarHitTarget() -> some View {
+        frame(minWidth: 44, minHeight: 44)
+            .contentShape(Rectangle())
+    }
+}
+
 // MARK: - 工具栏按钮群 - 批注（笔）/ 橡皮 / 清除
 struct TeachingAnnotationToolbarControl: View {
     @ObservedObject var controller: TeachingAnnotationController
@@ -66,22 +74,27 @@ struct TeachingAnnotationToolbarControl: View {
             controller.handlePenTap()
         } label: {
             Label("批注", systemImage: "pencil.tip")
+                .teachingToolbarHitTarget()
         }
         .buttonStyle(.plain)
         .foregroundStyle(penHighlighted ? appHighlightBlue : .primary)
+        .help("批注")
 
         Button {
             controller.handleEraserTap()
         } label: {
             Label("橡皮", systemImage: "eraser")
+                .teachingToolbarHitTarget()
         }
         .buttonStyle(.plain)
         .foregroundStyle(eraserHighlighted ? appHighlightBlue : .primary)
+        .help("橡皮")
 
         Button {
             controller.clearAll()
         } label: {
             Label("全删除", systemImage: "trash")
+                .teachingToolbarHitTarget()
         }
         .buttonStyle(.plain)
         .disabled(controller.strokeCount == 0)
