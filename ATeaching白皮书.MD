@@ -1,5 +1,9 @@
 # ATeaching白皮书
 
+## Mac 蓝白授课图标（2026-11-08）
+
+macOS AppIcon 的十个尺寸槽位统一使用用户确认的蓝底浅白演示板与手写笔图案。原图归档于 Design/BrandIcons/授课-蓝底白板-20261108.png；移动端独立 MobileAppIcon 保持现状。此次为图标资源更新，不涉及功能与版本号。
+
 ## 移动端桌面图标资源（V1.2611082228 / 2611082228）
 
 为iPhone/iPad新增独立MobileAppIcon资源集，使用当前图案的不透明1024×1024 PNG及universal/platform=ios单尺寸配置，由Xcode生成移动端图标。Debug/Release通过sdk=iphone*条件选择MobileAppIcon，macOS仍使用原AppIcon，避免移动端依赖旧分尺寸资源集的ios-marketing槽位。移动端资源名称同时更新，最终设备桌面缓存是否刷新仍需安装验证；未确认此次空白的设备端唯一根因。

@@ -1,5 +1,9 @@
 # 常用栏设置页面视觉统一
 
+## Mac 蓝白授课图标（2026-11-08）
+
+根据用户确认的新图更新 macOS AppIcon 十个尺寸资源，并归档生成原图。未修改已有工程配置变更与移动端图标。验证：十个 macOS 槽位尺寸检查、actool 独立图标资源编译、git diff --check 均通过。通过 NSWorkspace.setIcon 将新图应用到 /Applications/李知本·授课.app，系统返回成功，已生成自定义图标资源；保留已安装版本的二进制与签名。完整源码构建主动取消，未宣称全量构建通过，未重新安装应用。
+
 ## 移动端桌面图标资源（V1.2611082228 / 2611082228）
 
 用户确认手机和iPad均为桌面图标空白。复查28个旧图标尺寸正确且原图非空，不能继续归因尺寸错误。新增MobileAppIcon单尺寸iOS资源和两个配置的移动SDK专用选择，旧AppIcon保留给Mac。此为移动图标打包兼容调整，尚未确认设备端唯一根因。Debug/Release版本同步。验证：actool资源编译、项目文件plutil及git diff --check通过；两次scheme级构建停在设备初始化后取消，改用target级iphoneos Debug构建（关闭签名）通过。最终完整应用Info.plist为1.2611082228/2611082228，手机/iPad均声明MobileAppIcon，声明PNG存在且Assets.car含phone/pad各1024像素图标。SwiftMath有已有条件编译警告。未安装设备，桌面恢复仍待验证。
