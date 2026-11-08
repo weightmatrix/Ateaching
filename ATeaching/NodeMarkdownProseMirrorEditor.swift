@@ -72,6 +72,12 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
         private let exactLayoutEngine = NodeMarkdownExactLayoutEngine()
         private var exactGeometries: [UUID: NodeMarkdownExactGeometry] = [:]
         private var readyRowCount = 0
+        // 每次插入最多追踪8个H3及首个后继；两分钟后停止滚动/配置采样。
+        private var diagnostic123Operation = "-"
+        private var diagnostic123Token = UUID()
+        private var diagnostic123IDs: [UUID] = []
+        private var diagnostic123Until: TimeInterval = 0
+        private var diagnostic123Counts: [String: Int] = [:]
         private var exactLayoutTask: Task<Void, Never>?
         private var exactLayoutGeneration: UInt64 = 0
         private var exactLayoutWidth: CGFloat = 0
@@ -250,6 +256,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             guard let node = state.node(at: row),
                   let geometry = exactGeometries[node.id],
                   geometry.key == exactLayoutKey(for: node.id, width: width) else {
+                diagnostic123Event(nodeID: state.node(at: row)?.id, stage: "行高缓存未命中")
                 requestExactLayoutRecovery()
                 return 0
             }
@@ -267,6 +274,10 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 ?? NodeMarkdownProseMirrorCellView(identifier: rowIdentifier)
             configure(cell: cell, node: node, row: row, width: viewportLayoutWidth())
             return cell
+        }
+
+        func tableView(_ tableView: NSTableView, didAdd rowView: NSTableRowView, forRow row: Int) {
+            diagnostic123Event(nodeID: state.node(at: row)?.id, stage: "行视图加入表格")
         }
 
         private var showsBottomPageMargin: Bool {
@@ -525,6 +536,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
         }
 
         private func configure(cell: NodeMarkdownProseMirrorCellView, node: NodeMarkdownTextKit2Node, row: Int, width: CGFloat) {
+            defer { diagnostic123Event(nodeID: node.id, stage: "Cell配置结束") }
             let diagnosticStart = NodeMarkdownDiagnostic114.now()
             defer {
                 diagnostic114.recordDuration(
@@ -553,6 +565,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 cell.nodeID = nil
                 cell.renderedKey = nil
                 cell.isHidden = true
+                diagnostic123Event(nodeID: node.id, stage: "Cell缺失渲染记录被隐藏")
                 requestExactLayoutRecovery()
                 return
             }
@@ -1344,6 +1357,18 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 "op=\(diagnosticID) TextKit2结构差分 current=\(current.count) target=\(targetNodes.count) prefix=\(prefix) suffix=\(suffix) removed=\(removed.count) inserted=\(inserted.count) ready=\(readyRowCount)"
             )
 
+            beginDiagnostic123(inserted: inserted, operation: diagnosticID)
+            diagnostic123Snapshot(stage: "结构事务前")
+            defer {
+                diagnostic123Snapshot(stage: "结构事务返回")
+                let token = diagnostic123Token
+                for delay in [0.0, 0.3, 1.0] {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                        guard let self, self.diagnostic123Token == token else { return }
+                        self.diagnostic123Snapshot(stage: "延迟\(delay)秒")
+                    }
+                }
+            }
             let removedIDs = Set(removed.map(\.id))
             let insertedIDs = Set(inserted.map(\.id))
             let survivingIDs = Set(current.map(\.id)).subtracting(removedIDs)
@@ -1463,6 +1488,55 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 self.restoreStructuralViewport()
                 self.structuralEditInProgress = false
                 self.structuralViewportOrigin = nil
+            }
+        }
+
+        private func beginDiagnostic123(inserted: [NodeMarkdownTextKit2Node], operation: String) {
+            diagnostic123Operation = operation
+            diagnostic123Token = UUID()
+            diagnostic123Counts.removeAll(keepingCapacity: true)
+            diagnostic123IDs = []
+            let headings = inserted.enumerated().filter { $0.element.level == 3 }
+            for (offset, node) in headings.prefix(8) {
+                diagnostic123IDs.append(node.id)
+                if offset + 1 < inserted.count { diagnostic123IDs.append(inserted[offset + 1].id) }
+            }
+            diagnostic123Until = ProcessInfo.processInfo.systemUptime + 120
+            TeachingH3InsertDiagnostic123.record("op=\(operation) stage=同步目标 inserted=\(inserted.count) H3=\(headings.count) tracked=\(diagnostic123IDs.count) limitH3=8")
+            for node in inserted.lazy.filter({ $0.level == 3 }).prefix(8) {
+                TeachingH3InsertDiagnostic123.record("op=\(operation) stage=目标H3 node=\(node.id) sourceID=\(node.sourceID) level=\(node.level) chars=\(node.content.utf16.count)")
+            }
+        }
+
+        private func diagnostic123Event(nodeID: UUID?, stage: String) {
+            guard let nodeID, diagnostic123IDs.contains(nodeID),
+                  ProcessInfo.processInfo.systemUptime < diagnostic123Until else { return }
+            let key = "\(stage)/\(nodeID)"
+            let count = diagnostic123Counts[key, default: 0]
+            guard count < 2 else { return }
+            diagnostic123Counts[key] = count + 1
+            diagnostic123Snapshot(stage: stage, only: nodeID)
+        }
+
+        /// 只观察已有缓存与已有Cell；不创建Cell、不触发测量或布局、不移动视口。
+        private func diagnostic123Snapshot(stage: String, only: UUID? = nil) {
+            guard !diagnostic123IDs.isEmpty else { return }
+            let width = viewportLayoutWidth()
+            for id in diagnostic123IDs where only == nil || only == id {
+                guard let row = state.row(for: id), let node = state.node(at: row) else {
+                    TeachingH3InsertDiagnostic123.record("op=\(diagnostic123Operation) stage=\(stage) node=\(id) stateMissing=true")
+                    continue
+                }
+                let geometry = exactGeometries[id]
+                let valid = geometry?.key == exactLayoutKey(for: id, width: width)
+                let tableRows = tableView?.numberOfRows ?? 0
+                let cell = row < tableRows
+                    ? tableView?.view(atColumn: 0, row: row, makeIfNecessary: false) as? NodeMarkdownProseMirrorCellView : nil
+                let rowRect = row < tableRows ? tableView?.rect(ofRow: row) : nil
+                let visible = rowRect.map { tableView?.visibleRect.intersects($0) == true } ?? false
+                TeachingH3InsertDiagnostic123.record(
+                    "op=\(diagnostic123Operation) stage=\(stage) node=\(id) row=\(row) level=\(node.level) chars=\(node.content.utf16.count) stateNodes=\(state.snapshot.nodes.count) ready=\(readyRowCount) tableRows=\(tableRows) cacheValid=\(valid) cachedHeight=\(String(describing: geometry?.height)) rowRect=\(String(describing: rowRect)) visible=\(visible) cell=\(cell != nil) cellNode=\(String(describing: cell?.nodeID)) hidden=\(String(describing: cell?.isHidden)) cellFrame=\(String(describing: cell?.frame)) textFrame=\(String(describing: cell?.textView.frame)) inset=\(String(describing: cell?.diagnosticTopInset)) renderedChars=\(String(describing: cell?.textView.string.utf16.count))"
+                )
             }
         }
 

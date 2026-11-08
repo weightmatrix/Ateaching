@@ -2110,6 +2110,9 @@ struct NodeMarkdownEditorView: View {
         }
         _ = newDocument.ensureTrailingBlankLine(defaultLevel: 1)
 
+        for node in summary.insertedNodes.lazy.filter({ $0.level == 3 }).prefix(8) {
+            TeachingH3InsertDiagnostic123.record("op=\(diagnosticID) stage=父页面回放H3 node=\(node.id) level=\(node.level) chars=\(node.text.utf16.count)")
+        }
         document = newDocument
         synchronizeDocumentIndex(
             previousDocument: previousDocument,

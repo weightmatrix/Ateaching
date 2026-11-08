@@ -1,5 +1,12 @@
 import Foundation
 
+/// #123：只记录身份与几何，不记录正文，沿用有界后台日志队列。
+nonisolated enum TeachingH3InsertDiagnostic123 {
+    static func record(_ message: String) {
+        TeachingDebugLogStore.append(message, category: "诊断·123·H3插入显示", force: true)
+    }
+}
+
 nonisolated enum TeachingCourseDiagnostic116 {
     static func now() -> UInt64 {
         DispatchTime.now().uptimeNanoseconds
@@ -791,8 +798,12 @@ nonisolated enum TeachingCourseWorkflowService {
             TeachingCourseDiagnostic116.record(
                 "op=\(diagnosticID) 内存插入完成 firstRow=\(firstInsertedRowIndex) beforeNodes=\(beforeInsertNodeCount) afterNodes=\(notebookPayload.0.nodes.count) packages=\(packagesToInsert.count)"
             )
+            for (offset, node) in packagesToInsert.joined().enumerated().filter({ $0.element.level == 3 }).prefix(8) {
+                TeachingH3InsertDiagnostic123.record("op=\(diagnosticID) stage=写盘前H3 node=\(node.id) sourceID=\(node.sourceID) row=\(firstInsertedRowIndex + offset) level=\(node.level) chars=\(node.text.utf16.count)")
+            }
             let writeStart = TeachingCourseDiagnostic116.now()
             try NodeMarkdownFileManager.write(document: notebookPayload.0, meta: notebookPayload.1, to: notebookURL)
+            TeachingH3InsertDiagnostic123.record("op=\(diagnosticID) stage=写盘成功 packages=\(packagesToInsert.count) nodes=\(notebookPayload.0.nodes.count)")
             TeachingCourseDiagnostic116.record(
                 "op=\(diagnosticID) 随堂写盘完成 duration=\(String(format: "%.2f", TeachingCourseDiagnostic116.elapsedMilliseconds(since: writeStart)))ms file=\(notebookURL.lastPathComponent)"
             )
