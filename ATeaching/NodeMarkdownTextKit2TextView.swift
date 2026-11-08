@@ -11,6 +11,8 @@ import SwiftMath
 #if os(macOS)
 final class NodeMarkdownTextKit2TextView: NSTextView {
     let stabilityLog = NodeMarkdownStabilityLog()
+    var onDiagnosticFontDraw: (() -> Void)?
+    var diagnosticFontLastDrawSample: TimeInterval = 0
     struct InputMethodCommit {
         let sourceBefore: String
         let affectedRange: NSRange
@@ -132,6 +134,11 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
         _ = drawNodeMarkdownBackgroundBars(in: dirtyRect)
         super.draw(dirtyRect)
         _ = drawNodeMarkdownMarkers(in: dirtyRect)
+        let now = ProcessInfo.processInfo.systemUptime
+        if now - diagnosticFontLastDrawSample >= 1 {
+            diagnosticFontLastDrawSample = now
+            onDiagnosticFontDraw?()
+        }
     }
 
     override func mouseDown(with event: NSEvent) {

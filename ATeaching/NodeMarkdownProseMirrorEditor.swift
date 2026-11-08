@@ -74,6 +74,9 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
         private var exactGeometries: [UUID: NodeMarkdownExactGeometry] = [:]
         private var readyRowCount = 0
         // 每次插入最多追踪8个H3及首个后继；两分钟后停止滚动/配置采样。
+        private var fontDiagnosticWindow: TimeInterval = 0
+        private var fontDiagnosticCount = 0
+        private var fontDiagnosticLast: [UUID: (String, TimeInterval)] = [:]
         private var crashDiagnosticLast: [String: TimeInterval] = [:]
         private var crashDiagnosticSequence: UInt64 = 0
         private var crashDiagnosticSuppressed = 0
@@ -372,6 +375,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                   let row = state.row(for: nodeID),
                   let oldNode = state.node(at: row) else { return }
             guard !textView.isApplyingQuickInputReplacement else { return }
+            recordFontDiagnostic(textView, nodeID: nodeID, stage: "输入后")
             let isHistoryReplay = editorUndoManager.isUndoing || editorUndoManager.isRedoing
             defer {
                 if isHistoryReplay {
@@ -458,6 +462,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             guard let textView = notification.object as? NodeMarkdownTextKit2TextView,
                   let nodeID = nodeIDByTextView[ObjectIdentifier(textView)],
                   let row = state.row(for: nodeID) else { return }
+            recordFontDiagnostic(textView, nodeID: nodeID, stage: "选择变化")
             reportFocus(textView: textView, row: row)
         }
 
@@ -546,7 +551,14 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
         }
 
         private func configure(cell: NodeMarkdownProseMirrorCellView, node: NodeMarkdownTextKit2Node, row: Int, width: CGFloat) {
-            defer { diagnostic123Event(nodeID: node.id, stage: "Cell配置结束") }
+            defer {
+                diagnostic123Event(nodeID: node.id, stage: "Cell配置结束")
+                recordFontDiagnostic(cell.textView, nodeID: node.id, stage: "Cell配置结束")
+            }
+            cell.textView.onDiagnosticFontDraw = { [weak self, weak textView = cell.textView] in
+                guard let self, let textView else { return }
+                self.recordFontDiagnostic(textView, nodeID: node.id, stage: "绘制后")
+            }
             let diagnosticStart = NodeMarkdownDiagnostic114.now()
             defer {
                 diagnostic114.recordDuration(
@@ -757,6 +769,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 textView.setSelectedRange(selection)
             }
             _ = textView.exactNodeMarkdownVisualBounds()
+            recordFontDiagnostic(textView, nodeID: node.id, stage: "样式安装后")
             isApplyingModel = false
         }
 
@@ -777,6 +790,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 owner.onInputSessionStateChange?(true)
                 owner.onActiveRowChange?(row)
             }
+            recordFontDiagnostic(textView, nodeID: node.id, stage: "激活后")
             textView.suppressesAutomaticSelectionScrolling = false
             reportFocus(textView: textView, row: row)
             _ = origin
@@ -1499,6 +1513,54 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 self.structuralEditInProgress = false
                 self.structuralViewportOrigin = nil
             }
+        }
+
+        /// 有界属性采样；字体差异可能来自合法行内样式，只作为线索，不自动纠正。
+        private func recordFontDiagnostic(_ view: NodeMarkdownTextKit2TextView, nodeID: UUID, stage: String) {
+            let now = ProcessInfo.processInfo.systemUptime
+            if now - fontDiagnosticWindow >= 60 {
+                fontDiagnosticWindow = now
+                fontDiagnosticCount = 0
+            }
+            guard fontDiagnosticCount < 32,
+                  let row = state.row(for: nodeID), let node = state.node(at: row) else { return }
+            let layout = localLayout(for: node, row: row)
+            let expected = view.typingAttributes(for: layout, documentStyle: owner.documentStyle)[.font] as? NSFont
+            func font(_ value: NSFont?) -> String {
+                value.map { "\($0.fontName)@\($0.pointSize)" } ?? "nil"
+            }
+            let storage = view.nodeTextStorage
+            var samples: [String] = []
+            var mismatch = false
+            // 首部/中部/尾部/光标附近，每段最多512 UTF16、最多四个属性run。
+            let caret = min(max(0, view.selectedRange().location), max(0, storage.length - 1))
+            let offsets = Set([0, storage.length / 2, max(0, storage.length - 512), caret]).sorted()
+            for offset in offsets where offset < storage.length {
+                var runs = 0
+                storage.enumerateAttributes(in: NSRange(location: offset, length: min(512, storage.length - offset))) { attributes, range, stop in
+                    let actual = attributes[.font] as? NSFont
+                    let attachment = attributes[.attachment] != nil
+                    if !attachment && (actual?.fontName != expected?.fontName || actual?.pointSize != expected?.pointSize) { mismatch = true }
+                    samples.append("\(range.location):\(range.length)=\(font(actual)),attachment=\(attachment),baseline=\(String(describing: attributes[.baselineOffset]))")
+                    runs += 1
+                    if runs >= 4 { stop.pointee = true }
+                }
+            }
+            let typing = view.typingAttributes[.font] as? NSFont
+            let canonical = view.nodeMarkdownTypingAttributes[.font] as? NSFont
+            let binding = nodeIDByTextView[ObjectIdentifier(view)]
+            let signature = "configured=\(layout.lineStyle.roleStyle.fontName)@\(layout.lineStyle.roleStyle.fontSize) bold=\(layout.lineStyle.roleStyle.isBold) expected=\(font(expected)) typing=\(font(typing)) canonical=\(font(canonical)) viewFont=\(font(view.font)) bound=\(String(describing: binding)) runs=[\(samples.joined(separator: ";"))]"
+            let suspicious = mismatch || typing?.fontName != expected?.fontName || typing?.pointSize != expected?.pointSize || binding != nodeID
+            // 少量正常基线；异常不变时五秒一条，避免绘制/输入刷屏。
+            guard suspicious || fontDiagnosticCount < 4 else { return }
+            if let last = fontDiagnosticLast[nodeID], last.0 == signature, now - last.1 < 5 { return }
+            if fontDiagnosticLast.count >= 128 { fontDiagnosticLast.removeAll(keepingCapacity: true) }
+            fontDiagnosticLast[nodeID] = (signature, now)
+            fontDiagnosticCount += 1
+            TeachingDebugLogStore.append(
+                "editor=\(sessionID) stage=\(stage) node=\(nodeID) row=\(row) level=\(node.level) suspicious=\(suspicious) active=\(activeNodeID == nodeID) responder=\(view.window?.firstResponder === view) marked=\(view.hasMarkedText()) chars=\(storage.length) styleRevision=\(documentStyleRevision) view=\(ObjectIdentifier(view)) frame=\(view.frame) bounds=\(view.bounds) \(signature)",
+                category: "NodeMarkdown.FontMismatch", force: true
+            )
         }
 
         func recordLayoutCrashContext(_ stage: String, details: String = "", stack: Bool = false) {
