@@ -1842,6 +1842,14 @@ struct NodeMarkdownEditorView: View {
         }
     }
 
+    private var classSessionToolbarVerticalPadding: CGFloat {
+        #if os(macOS)
+        2
+        #else
+        6
+        #endif
+    }
+
     private var classSessionToolbar: some View {
         HStack(spacing: 4) {
             HStack(spacing: 8) {
@@ -1915,7 +1923,7 @@ struct NodeMarkdownEditorView: View {
             }
             .labelStyle(.iconOnly)
             .padding(.horizontal, 6)
-            .padding(.vertical, 6)
+            .padding(.vertical, classSessionToolbarVerticalPadding)
             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 9))
 
             Divider()
@@ -1937,7 +1945,7 @@ struct NodeMarkdownEditorView: View {
                 }
             }
             .padding(.horizontal, 10)
-            .padding(.vertical, 6)
+            .padding(.vertical, classSessionToolbarVerticalPadding)
             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 9))
         }
     }

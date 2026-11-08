@@ -60,8 +60,13 @@ final class TeachingAnnotationController: ObservableObject {
 extension View {
     /// 必须用于Button的label内部，令透明留白也参与命中，而非仅命中图标笔画。
     func teachingToolbarHitTarget() -> some View {
+        #if os(macOS)
+        frame(minWidth: 32, minHeight: 28)
+            .contentShape(Rectangle())
+        #else
         frame(minWidth: 44, minHeight: 44)
             .contentShape(Rectangle())
+        #endif
     }
 }
 
