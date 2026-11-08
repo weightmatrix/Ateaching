@@ -45,9 +45,6 @@ struct TeachingHomeView: View {
     @State private var syncAuditToken = 0
     @State private var syncStressToken = 0
     @State private var syncCancelToken = 0
-    #if os(macOS)
-    @Environment(\.openWindow) private var openWindow
-    #endif
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     #endif
@@ -97,9 +94,6 @@ struct TeachingHomeView: View {
         }
         .sheet(isPresented: $showDiagnosticsSheet) {
             TeachingSystemDiagnosticsView()
-        }
-        .coursePagePresentation(student: $selectedCourseStudent) { student in
-            coursePage(for: student)
         }
         .sheet(isPresented: $showStudentBackupSheet) {
             TeachingStudentBackupSheet(students: students) { selectedIDs in
@@ -260,7 +254,12 @@ struct TeachingHomeView: View {
     private var panelContent: some View {
         switch selectedPage {
         case .teaching:
-            teachingMainPanel
+            if let student = selectedCourseStudent {
+                coursePage(for: student)
+                    .id(student.id)
+            } else {
+                teachingMainPanel
+            }
         case .lessonPlan:
             LessonPlanManagementView(
                 showRootBackButton: false,
@@ -332,13 +331,8 @@ struct TeachingHomeView: View {
                         ForEach(students) { student in
                             Button {
                                 let needsInitialize = pendingInitializationStudentIDs.contains(student.id) || !isStudentInitialized(student)
-                                #if os(macOS)
-                                let modeRaw = needsInitialize ? TeachingCoursePageView.CourseMode.initialize.rawValue : TeachingCoursePageView.CourseMode.teaching.rawValue
-                                openWindow(id: "teaching-course-page", value: "\(student.id.uuidString)|\(modeRaw)")
-                                #else
                                 selectedCourseInitialMode = needsInitialize ? .initialize : .teaching
                                 selectedCourseStudent = student
-                                #endif
                             } label: {
                                 HStack(spacing: 14) {
                                     Image(systemName: student.iconName)
@@ -422,7 +416,12 @@ struct TeachingHomeView: View {
     }
 
     private func coursePage(for student: TeachingStudentItem) -> some View {
-        TeachingCoursePageView(student: student, initialMode: selectedCourseInitialMode) { studentID, newName in
+        TeachingCoursePageView(
+            student: student,
+            initialMode: selectedCourseInitialMode,
+            isEmbedded: true,
+            onClose: { selectedCourseStudent = nil }
+        ) { studentID, newName in
             guard let index = students.firstIndex(where: { $0.id == studentID }) else { return }
             var updated = students[index]
             updated.name = newName
@@ -772,24 +771,6 @@ private struct TeachingHomeStudentDocument: Identifiable {
     let id = UUID()
     let title: String
     let fileURL: URL
-}
-
-private extension View {
-    @ViewBuilder
-    func coursePagePresentation<Content: View>(
-        student: Binding<TeachingStudentItem?>,
-        @ViewBuilder content: @escaping (TeachingStudentItem) -> Content
-    ) -> some View {
-        #if os(iOS)
-        fullScreenCover(item: student) { selectedStudent in
-            content(selectedStudent)
-        }
-        #else
-        sheet(item: student) { selectedStudent in
-            content(selectedStudent)
-        }
-        #endif
-    }
 }
 
 nonisolated struct TeachingStudentItem: Identifiable, Equatable, Codable {

@@ -71,6 +71,8 @@ struct TeachingCoursePageView: View {
 
     let student: TeachingStudentItem
     var initialMode: CourseMode = .teaching
+    var isEmbedded = false
+    var onClose: (() -> Void)? = nil
     var onStudentRenamed: ((UUID, String) -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
@@ -132,19 +134,35 @@ struct TeachingCoursePageView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 12) {
+                if isEmbedded {
+                    HStack {
+                        Button {
+                            onClose?()
+                        } label: {
+                            Label("返回学生列表", systemImage: "chevron.left")
+                        }
+                        .appGlassButtonStyle()
+                        Text(student.name).font(.headline)
+                        Spacer()
+                    }
+                }
                 modeBar
                 modeContent
                 Spacer(minLength: 0)
             }
             .padding(16)
-            .navigationTitle(coursePageWindowTitle)
+            .navigationTitle(isEmbedded ? "授课" : coursePageWindowTitle)
             #if os(macOS)
-            .background(WindowTitleSetter(title: coursePageWindowTitle).frame(width: 0, height: 0))
+            .background {
+                if !isEmbedded {
+                    WindowTitleSetter(title: coursePageWindowTitle).frame(width: 0, height: 0)
+                }
+            }
             #endif
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("返回") {
-                        dismiss()
+                if !isEmbedded {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("返回") { dismiss() }
                     }
                 }
             }
@@ -1372,7 +1390,7 @@ struct TeachingCoursePageView: View {
                     modeStatusMessage = "改名完成：\(student.name) → \(nextName)"
                     onStudentRenamed?(student.id, nextName)
                     NotificationCenter.default.post(name: .teachingStudentsDidChange, object: student.id)
-                    dismiss()
+                    if !isEmbedded { dismiss() }
                 }
             } catch {
                 await MainActor.run {
@@ -1468,7 +1486,7 @@ struct TeachingCoursePageView: View {
                     isNotesSessionActive = false
                 }
                 TeachingClassSessionCenter.shared.end()
-                dismiss()
+                if !isEmbedded { dismiss() }
             }
         )
     }
@@ -1597,7 +1615,7 @@ struct TeachingCoursePageView: View {
                     } else {
                         modeStatusMessage = "下课完成：清理空节点\(summary.removedEmptyNodeCount) 回传\(summary.syncSummary.updatedSourcePackageCount) 收集\(summary.syncSummary.collectedNewPackageCount) 冲突\(summary.syncSummary.conflictPackageCount)"
                     }
-                    dismiss()
+                    if !isEmbedded { dismiss() }
                 }
             } catch {
                 await MainActor.run {
