@@ -30,6 +30,10 @@ struct AppSettingsPage<Content: View>: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                if design == .victorian {
+                    VictorianDivider()
+                        .frame(maxWidth: .infinity)
+                }
                 content
             }
             .frame(maxWidth: 820, alignment: .leading)
@@ -73,10 +77,18 @@ struct AppSettingsCard<Content: View>: View {
                 Text(title)
                     .font(.system(size: 21, weight: .bold, design: design == .victorian ? .serif : .default))
             }
+            if design == .victorian {
+                VictorianDivider()
+            }
             content
         }
-        .padding(18)
+        .padding(design == .victorian ? 40 : 18)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            if design == .victorian {
+                RoundedRectangle(cornerRadius: 8).fill(.background.opacity(0.88))
+            }
+        }
         .background(
             RoundedRectangle(cornerRadius: design.cornerRadius, style: .continuous)
                 .fill(design == .apple ? Color.secondary.opacity(0.10) : design.accent.opacity(design == .minimal ? 0.025 : 0.12))
@@ -87,10 +99,7 @@ struct AppSettingsCard<Content: View>: View {
         )
         .overlay {
             if design == .victorian {
-                RoundedRectangle(cornerRadius: 5)
-                    .stroke(design.border.opacity(0.5), lineWidth: 1)
-                    .padding(5)
-                    .allowsHitTesting(false)
+                VictorianOrnateFrame()
             }
         }
     }

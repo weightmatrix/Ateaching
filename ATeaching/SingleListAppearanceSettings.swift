@@ -48,7 +48,7 @@ struct AppBackgroundSettings: Codable, Equatable {
             case .apple: return "系统蓝、通透材质与柔和圆角"
             case .minimal: return "灰阶、细边框与紧凑布局"
             case .vibrant: return "紫色渐层、大圆角与彩色卡片"
-            case .victorian: return "古典纸色、酒红强调与黄铜双线边框"
+            case .victorian: return "卷草墙纸、繁复角花与古典雕花边框"
             }
         }
     }
@@ -203,11 +203,17 @@ private struct DesignStylePreview: View {
         ZStack {
             RoundedRectangle(cornerRadius: style.cornerRadius, style: .continuous)
                 .fill(fill)
-            HStack(spacing: 3) {
-                ForEach(0..<3, id: \.self) { index in
-                    Capsule()
-                        .fill(index == 0 ? accent : Color.primary.opacity(0.13))
-                        .frame(width: index == 0 ? 13 : 7, height: 7)
+            if style == .victorian {
+                VictorianFlourish()
+                    .stroke(style.border, lineWidth: 1)
+                    .padding(7)
+            } else {
+                HStack(spacing: 3) {
+                    ForEach(0..<3, id: \.self) { index in
+                        Capsule()
+                            .fill(index == 0 ? accent : Color.primary.opacity(0.13))
+                            .frame(width: index == 0 ? 13 : 7, height: 7)
+                    }
                 }
             }
         }

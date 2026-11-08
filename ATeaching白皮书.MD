@@ -1,5 +1,9 @@
 # ATeaching白皮书
 
+## 维多利亚繁复装饰（V1.2611081320 / 2611081320）
+
+维多利亚主题新增原生SwiftUI矢量装饰：VictorianFlourish以镜像贝塞尔曲线绘制卷草与叶饰，VictorianWallpaper按可视尺寸平铺双向卷草纹；VictorianOrnateFrame提供三层边线及四角旋转角花，VictorianDivider提供对称花饰分隔线。应用于全局主题背景、设置页面标题、设置卡片和统一按钮，风格预览同步显示卷草。卡片增加内边距及近不透明阅读底板，装饰均禁用命中并从辅助功能隐藏，不改变数据或投屏协议。
+
 ## iPad图标尺寸修复（V1.2611071536 / 2611071536）
 
 修复AppIcon资源槽位与实际像素尺寸不一致：原28张PNG均为1024×1024，现按Contents.json的size×scale生成对应尺寸，保持现有图案与不透明RGB格式。iPad桌面图标分别为76、152、167像素，iPhone、通知、设置、Spotlight及macOS图标同步匹配各自槽位。继续使用AppIcon资源目录，不改Bundle Identifier。

@@ -23,11 +23,16 @@ struct AppGlassButtonStyle: ButtonStyle {
         configuration.label
             .font(.system(size: 13, weight: designStyle == .minimal ? .medium : .semibold))
             .fontDesign(designStyle == .victorian ? .serif : .default)
-            .padding(.horizontal, designStyle == .minimal ? 10 : 12)
+            .padding(.horizontal, designStyle == .victorian ? 24 : (designStyle == .minimal ? 10 : 12))
             .padding(.vertical, designStyle == .minimal ? 7 : 8)
             .frame(minHeight: 36)
             .foregroundStyle(foregroundColor)
             .background(buttonBackground(isPressed: configuration.isPressed))
+            .overlay {
+                if designStyle == .victorian {
+                    VictorianOrnateFrame(compact: true)
+                }
+            }
             .clipShape(shape)
             .contentShape(shape)
             .scaleEffect(configuration.isPressed ? 0.97 : 1.0)

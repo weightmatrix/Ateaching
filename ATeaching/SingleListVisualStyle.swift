@@ -59,6 +59,7 @@ private struct AppBackgroundView: View {
                     : [Color(red: 0.96, green: 0.91, blue: 0.79), Color(red: 0.86, green: 0.77, blue: 0.59)],
                 startPoint: .topLeading, endPoint: .bottomTrailing
             )
+            .overlay { VictorianWallpaper() }
         } else if design == .minimal {
             plainBackground
         } else if design == .vibrant {
