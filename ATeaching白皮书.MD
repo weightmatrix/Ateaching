@@ -1,5 +1,9 @@
 # ATeaching白皮书
 
+## 移动端桌面图标资源（V1.2611082228 / 2611082228）
+
+为iPhone/iPad新增独立MobileAppIcon资源集，使用当前图案的不透明1024×1024 PNG及universal/platform=ios单尺寸配置，由Xcode生成移动端图标。Debug/Release通过sdk=iphone*条件选择MobileAppIcon，macOS仍使用原AppIcon，避免移动端依赖旧分尺寸资源集的ios-marketing槽位。移动端资源名称同时更新，最终设备桌面缓存是否刷新仍需安装验证；未确认此次空白的设备端唯一根因。
+
 ## 授课面板嵌入学生课程（V1.2611082215 / 2611082215）
 
 TeachingHomeView授课面板依据selectedCourseStudent在学生网格与嵌入课程页之间切换，macOS不再从该学生卡片入口openWindow，iOS不再使用fullScreenCover。六项顶部栏目位于课程页之外，切换栏目保留所选学生，显式返回清空选择。TeachingCoursePageView新增isEmbedded/onClose，嵌入时显示返回学生列表及学生名，隐藏独立页返回工具栏及窗口标题设置；改名、下课、退出课堂在嵌入模式下保留课程页，独立窗口入口维持原关闭行为。学生首次初始化模式及改名回写保留。

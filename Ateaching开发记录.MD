@@ -1,5 +1,9 @@
 # 常用栏设置页面视觉统一
 
+## 移动端桌面图标资源（V1.2611082228 / 2611082228）
+
+用户确认手机和iPad均为桌面图标空白。复查28个旧图标尺寸正确且原图非空，不能继续归因尺寸错误。新增MobileAppIcon单尺寸iOS资源和两个配置的移动SDK专用选择，旧AppIcon保留给Mac。此为移动图标打包兼容调整，尚未确认设备端唯一根因。Debug/Release版本同步。验证：actool资源编译、项目文件plutil及git diff --check通过；两次scheme级构建停在设备初始化后取消，改用target级iphoneos Debug构建（关闭签名）通过。最终完整应用Info.plist为1.2611082228/2611082228，手机/iPad均声明MobileAppIcon，声明PNG存在且Assets.car含phone/pad各1024像素图标。SwiftMath有已有条件编译警告。未安装设备，桌面恢复仍待验证。
+
 ## 授课面板嵌入学生课程（V1.2611082215 / 2611082215）
 
 将授课页学生卡片的课程入口由Mac新窗口/iOS全屏呈现改为主页面板内替换，新增显式回退并按学生ID隔离课程页状态。顶部栏目保持，选择保留到回退；嵌入场景关闭操作不再dismiss主页。Debug/Release版本同步。验证：macOS Debug构建、git diff --check与项目文件plutil检查通过；尚待Mac/iPad实际点击、栏目切换、初始化与回退交互复测，未重启当前应用或安装设备。
