@@ -49,6 +49,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ containerView: NodeMarkdownProseMirrorContainerView, coordinator: Coordinator) {
+        coordinator.recordLayoutCrashContext("编辑器关闭")
         coordinator.commitActiveNode(reason: "关闭编辑器")
         coordinator.cancelPendingPublish()
         coordinator.cancelRuntimeTasks()
@@ -73,6 +74,9 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
         private var exactGeometries: [UUID: NodeMarkdownExactGeometry] = [:]
         private var readyRowCount = 0
         // 每次插入最多追踪8个H3及首个后继；两分钟后停止滚动/配置采样。
+        private var crashDiagnosticLast: [String: TimeInterval] = [:]
+        private var crashDiagnosticSequence: UInt64 = 0
+        private var crashDiagnosticSuppressed = 0
         private var diagnostic123Operation = "-"
         private var diagnostic123Token = UUID()
         private var diagnostic123IDs: [UUID] = []
@@ -133,6 +137,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
         }
 
         func makeView() -> NodeMarkdownProseMirrorContainerView {
+            recordLayoutCrashContext("编辑器建立")
             let diagnosticStart = NodeMarkdownDiagnostic114.now()
             let table = NodeMarkdownProseMirrorTableView()
             table.headerView = nil
@@ -194,6 +199,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             let previousStyle = self.owner.documentStyle.renderIdentity
             let visualState = VisualState(owner: owner)
             self.owner = owner
+            recordLayoutCrashContext("SwiftUI更新")
             installDraftController(owner.draftCommitController)
             if let request = owner.inPlaceEditRequest,
                request.id != appliedInPlaceEditRequestID {
@@ -253,14 +259,18 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 return bottomPageMarginHeight
             }
             let width = viewportLayoutWidth()
-            guard let node = state.node(at: row),
-                  let geometry = exactGeometries[node.id],
-                  geometry.key == exactLayoutKey(for: node.id, width: width) else {
-                diagnostic123Event(nodeID: state.node(at: row)?.id, stage: "行高缓存未命中")
-                requestExactLayoutRecovery()
-                return 0
+            let node = state.node(at: row)
+            let geometry = node.flatMap { exactGeometries[$0.id] }
+            let keyMatches = node.map { geometry?.key == exactLayoutKey(for: $0.id, width: width) } ?? false
+            if keyMatches, let height = geometry?.height, height.isFinite, height > 0 {
+                return height
             }
-            return geometry.height
+            let fallback = NodeMarkdownSafeRowHeight.resolve(cached: geometry?.height, defaultHeight: tableView.rowHeight)
+            recordLayoutCrashContext("行高保护", details: "row=\(row) node=\(String(describing: node?.id)) level=\(String(describing: node?.level)) cachedHeight=\(String(describing: geometry?.height)) cacheKey=\(String(describing: geometry?.key)) keyMatches=\(keyMatches) fallback=\(fallback)", stack: true)
+            diagnostic123Event(nodeID: node?.id, stage: "行高缓存未命中")
+            // 回调内不重入布局；恢复任务将刷新表格并发布新的精确高度。
+            requestExactLayoutRecovery()
+            return fallback
         }
 
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -1491,6 +1501,24 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             }
         }
 
+        func recordLayoutCrashContext(_ stage: String, details: String = "", stack: Bool = false) {
+            let now = ProcessInfo.processInfo.systemUptime
+            if let last = crashDiagnosticLast[stage], now - last < 1 {
+                crashDiagnosticSuppressed += 1
+                return
+            }
+            crashDiagnosticLast[stage] = now
+            crashDiagnosticSequence &+= 1
+            let scroll = tableView?.enclosingScrollView
+            let window = tableView?.window
+            let line = "editor=\(sessionID) seq=\(crashDiagnosticSequence) stage=\(stage) suppressed=\(crashDiagnosticSuppressed) generation=\(exactLayoutGeneration) structural=\(structuralEditInProgress) recovery=\(exactLayoutRecoveryScheduled) nodes=\(state.snapshot.nodes.count) ready=\(readyRowCount) tableRows=\(tableView?.numberOfRows ?? 0) layoutWidth=\(exactLayoutWidth) liveWidth=\(viewportLayoutWidth()) layoutScale=\(exactLayoutScale) liveScale=\(actualBackingScale()) window=\(window?.windowNumber ?? -1) screen=\(String(describing: window?.screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")])) viewport=\(String(describing: scroll?.contentView.bounds)) tableFrame=\(String(describing: tableView?.frame)) \(details)"
+            crashDiagnosticSuppressed = 0
+            TeachingDebugLogStore.append(line, category: "NodeMarkdown.LayoutCrash", force: true)
+            if stack {
+                TeachingDebugLogStore.append("editor=\(sessionID) seq=\(crashDiagnosticSequence) stack=\(Thread.callStackSymbols.prefix(10).joined(separator: " | "))", category: "NodeMarkdown.LayoutCrash", force: true)
+            }
+        }
+
         private func beginDiagnostic123(inserted: [NodeMarkdownTextKit2Node], operation: String) {
             diagnostic123Operation = operation
             diagnostic123Token = UUID()
@@ -1886,6 +1914,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             guard oldPixels != newPixels || oldScaleMilli != newScaleMilli else { return }
             diagnostic114.recordCount("宽度全文重排次数")
 
+            recordLayoutCrashContext("宽度变化", details: "requestedWidth=\(width)")
             captureViewportAnchor()
             cancelExactLayout()
             exactLayoutWidth = width
@@ -1922,12 +1951,14 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             guard !exactLayoutRecoveryScheduled else { return }
             diagnostic114.recordCount("布局恢复次数")
             exactLayoutRecoveryScheduled = true
+            recordLayoutCrashContext("恢复已排队")
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.exactLayoutRecoveryScheduled = false
                 guard let tableView = self.tableView else { return }
                 let width = self.viewportLayoutWidth()
                 guard width > 0 else { return }
+                self.recordLayoutCrashContext("恢复开始")
                 self.cancelExactLayout()
                 self.exactLayoutWidth = width
                 self.exactLayoutScale = self.actualBackingScale()
@@ -1938,6 +1969,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 self.viewportWidthTransitionPending = false
                 tableView.reloadData()
                 self.scheduleExactLayout()
+                self.recordLayoutCrashContext("恢复返回")
             }
         }
 
@@ -2180,10 +2212,12 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                     let publishStart = NodeMarkdownDiagnostic114.now()
                     readyRowCount = row
                     initialViewportIsReady = true
+                    recordLayoutCrashContext("布局发布前", details: "taskGeneration=\(generation) measuredRow=\(row)")
                     tableView.noteNumberOfRowsChanged()
                     restorePendingViewportAnchorIfPossible()
                     fulfillPendingNavigationIfPossible()
                     fulfillPendingFocusIfPossible()
+                    recordLayoutCrashContext("布局发布后", details: "taskGeneration=\(generation) measuredRow=\(row)")
                     unpublishedStart = row
                     diagnostic114.recordDuration("布局批次发布", since: publishStart)
                     diagnostic114.recordCount("布局批次数")
@@ -2199,10 +2233,12 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 if readyRowCount < row {
                     readyRowCount = row
                     initialViewportIsReady = true
+                    recordLayoutCrashContext("布局发布前", details: "taskGeneration=\(generation) measuredRow=\(row)")
                     tableView.noteNumberOfRowsChanged()
                     restorePendingViewportAnchorIfPossible()
                     fulfillPendingNavigationIfPossible()
                     fulfillPendingFocusIfPossible()
+                    recordLayoutCrashContext("布局发布后", details: "taskGeneration=\(generation) measuredRow=\(row)")
                 }
                 exactLayoutTask = nil
                 diagnostic114.flushIfNeeded(reason: "布局任务结束", readyRows: readyRowCount, force: true)

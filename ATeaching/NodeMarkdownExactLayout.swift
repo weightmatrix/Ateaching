@@ -1,6 +1,15 @@
 // PIPELINE MARKER: NodeMarkdown exact block layout.
 import Foundation
 
+/// AppKit要求所有已发布行的高度为有限正数；缓存失效时临时沿用旧高度。
+enum NodeMarkdownSafeRowHeight {
+    static func resolve(cached: CGFloat?, defaultHeight: CGFloat) -> CGFloat {
+        if let cached, cached.isFinite, cached > 0 { return cached }
+        if defaultHeight.isFinite, defaultHeight > 0 { return defaultHeight }
+        return 1
+    }
+}
+
 #if os(macOS)
 import AppKit
 
