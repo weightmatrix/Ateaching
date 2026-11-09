@@ -232,21 +232,27 @@ nonisolated enum TeachingLessonWashService {
 
         let writeTargets = [sourceURL] + notebookWrites.map(\.url)
         let originals = try Dictionary(uniqueKeysWithValues: writeTargets.map { url in
-            (url.standardizedFileURL.path, try Data(contentsOf: url))
+            (url.standardizedFileURL.path, try TeachingCloudFileAccess.read(url))
         })
-        var writtenURLs: [URL] = []
+        var writtenURLs: [(url: URL, digest: String)] = []
         do {
-            writtenURLs.append(sourceURL)
             try NodeMarkdownFileManager.write(document: sourceDocument, meta: sourcePayload.1, to: sourceURL)
+            writtenURLs.append((sourceURL, TeachingCloudFileAccess.digest(Data(NodeMarkdownFileManager.serialize(document: sourceDocument, meta: sourcePayload.1).utf8))))
             for write in notebookWrites {
-                writtenURLs.append(write.url)
                 try NodeMarkdownFileManager.write(document: write.document, meta: write.meta, to: write.url)
+                writtenURLs.append((write.url, TeachingCloudFileAccess.digest(Data(NodeMarkdownFileManager.serialize(document: write.document, meta: write.meta).utf8))))
             }
         } catch {
-            for url in writtenURLs.reversed() {
-                if let original = originals[url.standardizedFileURL.path] {
-                    try? original.write(to: url, options: .atomic)
+            var rollbackErrors: [String] = []
+            for item in writtenURLs.reversed() {
+                if let original = originals[item.url.standardizedFileURL.path] {
+                    do { try TeachingCloudFileAccess.write(original, to: item.url, expectedDigest: item.digest) }
+                    catch { rollbackErrors.append(error.localizedDescription) }
                 }
+            }
+            if !rollbackErrors.isEmpty {
+                throw NSError(domain: "TeachingCloud", code: 8, userInfo: [NSLocalizedDescriptionKey:
+                    "操作失败：\(error.localizedDescription)；部分回滚已停止以保护外部修改：\(rollbackErrors.joined(separator: "；"))"])
             }
             throw error
         }

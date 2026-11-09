@@ -731,6 +731,8 @@ nonisolated enum TeachingCourseWorkflowService {
                         sourceID: row.sourceID
                     )
                     sourceDocument = migration.sourceDocument
+                    // Identity migration may have rewritten this notebook as well.
+                    notebookPayload = try NodeMarkdownFileManager.read(fileURL: notebookURL)
                     sourceCache[sourceURL.path] = sourceDocument
                     package = migration.package
                     migratedIdentityPackageCount += 1
@@ -960,10 +962,13 @@ nonisolated enum TeachingCourseWorkflowService {
                     userInfo: [NSLocalizedDescriptionKey: "撤销快照不是有效的UTF-8 NodeMarkdown文件。"]
                 )
             }
-            let snapshotPayload = NodeMarkdownFileManager.read(
+            var snapshotPayload = NodeMarkdownFileManager.read(
                 rawText: snapshotText,
                 fileTitleFallback: notebookURL.deletingPathExtension().lastPathComponent
             )
+            let currentMeta = try NodeMarkdownFileManager.read(fileURL: notebookURL).1
+            snapshotPayload.1.diskDigest = currentMeta.diskDigest
+            snapshotPayload.1.diskPath = currentMeta.diskPath
             try NodeMarkdownFileManager.write(
                 document: snapshotPayload.0,
                 meta: snapshotPayload.1,
@@ -1775,11 +1780,11 @@ nonisolated enum TeachingCourseWorkflowService {
             }
         }
 
-        var written: [(url: URL, oldData: Data)] = []
+        var written: [(url: URL, oldData: Data, digest: String)] = []
         do {
             for write in writes {
                 try NodeMarkdownFileManager.write(document: write.document, meta: write.meta, to: write.url)
-                written.append((write.url, write.oldData))
+                written.append((write.url, write.oldData, TeachingCloudFileAccess.digest(Data(NodeMarkdownFileManager.serialize(document: write.document, meta: write.meta).utf8))))
                 NotificationCenter.default.post(
                     name: .teachingNotebookDidPersistChange,
                     object: nil,
@@ -1787,8 +1792,14 @@ nonisolated enum TeachingCourseWorkflowService {
                 )
             }
         } catch {
+            var rollbackErrors: [String] = []
             for item in written.reversed() {
-                try? item.oldData.write(to: item.url, options: .atomic)
+                do { try TeachingCloudFileAccess.write(item.oldData, to: item.url, expectedDigest: item.digest) }
+                catch { rollbackErrors.append(error.localizedDescription) }
+            }
+            if !rollbackErrors.isEmpty {
+                throw NSError(domain: "TeachingCloud", code: 9, userInfo: [NSLocalizedDescriptionKey:
+                    "操作失败：\(error.localizedDescription)；部分回滚已停止以保护外部修改：\(rollbackErrors.joined(separator: "；"))"])
             }
             throw error
         }

@@ -11,6 +11,12 @@ nonisolated struct TeachingInstitutionRecord: Codable, Identifiable, Equatable, 
     var note: String
     var iconName: String?
 
+    var diskDigest: String? = nil
+    var diskPath: String? = nil
+    private enum CodingKeys: String, CodingKey {
+        case id, name, colorHex, defaultPriceForTwoHours, note, iconName
+    }
+
     nonisolated init(
         id: UUID = UUID(),
         name: String,
@@ -49,6 +55,12 @@ nonisolated struct TeachingLessonRecord: Codable, Identifiable, Equatable, Hasha
     var priceForTwoHours: Double?
     var institutionColorHex: String?
     var institutionIconName: String?
+
+    var diskDigest: String? = nil
+    var diskPath: String? = nil
+    private enum CodingKeys: String, CodingKey {
+        case id, startAt, endAt, studentID, studentName, gradeCode, institutionID, institutionName, priceForTwoHours, institutionColorHex, institutionIconName
+    }
 
     nonisolated init(
         id: UUID = UUID(),
@@ -117,35 +129,43 @@ nonisolated enum TeachingLessonStatisticsStore {
     static func loadInstitutions(fileManager: FileManager = .default) throws -> [TeachingInstitutionRecord] {
         let url = try institutionSettingsFileURL(fileManager: fileManager)
         guard fileManager.fileExists(atPath: url.path) else { return [] }
-        let data = try Data(contentsOf: url)
-        return try decoder.decode([TeachingInstitutionRecord].self, from: data)
+        let data = try TeachingCloudFileAccess.read(url)
+        return try decoder.decode([TeachingInstitutionRecord].self, from: data).map { var value = $0; value.diskDigest = TeachingCloudFileAccess.digest(data); value.diskPath = url.standardizedFileURL.path; return value }
     }
 
+    @discardableResult
     static func saveInstitutions(
         _ institutions: [TeachingInstitutionRecord],
+        expectedDigest: String? = nil,
         fileManager: FileManager = .default
-    ) throws {
+    ) throws -> String {
         try validateInstitutionNames(institutions)
         let url = try institutionSettingsFileURL(fileManager: fileManager)
         let data = try encoder.encode(institutions.map(normalizedInstitution))
-        try data.write(to: url, options: .atomic)
+        let baseline = expectedDigest ?? institutions.filter { $0.diskPath == url.standardizedFileURL.path }.compactMap(\.diskDigest).first
+        try TeachingCloudFileAccess.write(data, to: url, expectedDigest: baseline, allowReplacingEmptyArray: true)
+        return TeachingCloudFileAccess.digest(data)
     }
 
     static func loadLessonRecords(fileManager: FileManager = .default) throws -> [TeachingLessonRecord] {
         let url = try lessonRecordsFileURL(fileManager: fileManager)
         guard fileManager.fileExists(atPath: url.path) else { return [] }
-        let data = try Data(contentsOf: url)
-        return try decoder.decode([TeachingLessonRecord].self, from: data)
+        let data = try TeachingCloudFileAccess.read(url)
+        return try decoder.decode([TeachingLessonRecord].self, from: data).map { var value = $0; value.diskDigest = TeachingCloudFileAccess.digest(data); value.diskPath = url.standardizedFileURL.path; return value }
     }
 
+    @discardableResult
     static func saveLessonRecords(
         _ records: [TeachingLessonRecord],
+        expectedDigest: String? = nil,
         fileManager: FileManager = .default
-    ) throws {
+    ) throws -> String {
         try records.forEach(validateLessonTime)
         let url = try lessonRecordsFileURL(fileManager: fileManager)
         let data = try encoder.encode(records.map(normalizedLessonRecord))
-        try data.write(to: url, options: .atomic)
+        let baseline = expectedDigest ?? records.filter { $0.diskPath == url.standardizedFileURL.path }.compactMap(\.diskDigest).first
+        try TeachingCloudFileAccess.write(data, to: url, expectedDigest: baseline, allowReplacingEmptyArray: true)
+        return TeachingCloudFileAccess.digest(data)
     }
 
     static func appendLessonRecord(

@@ -791,6 +791,8 @@ struct MarkdownEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var markdownText = ""
     @State private var lastSavedText = ""
+    @State private var markdownDiskDigest: String?
+    @State private var cloudFileError = ""
     @State private var saveState: MarkdownSaveState = .clean
     @State private var pendingAutoSaveWorkItem: DispatchWorkItem?
     @State private var lastKnownFileModificationDate: Date?
@@ -1010,6 +1012,17 @@ struct MarkdownEditorView: View {
             Button("取消", role: .cancel) {}
         } message: {
             Text("当前格式：\(pendingExportFormat.rawValue)")
+        }
+        .safeAreaInset(edge: .bottom) {
+            if !cloudFileError.isEmpty {
+                Text(cloudFileError).font(.footnote).foregroundStyle(.red).textSelection(.enabled).padding(8)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .teachingCloudFileChanged)) { notification in
+            guard let path = notification.userInfo?["filePath"] as? String,
+                  path == fileURL.standardizedFileURL.path else { return }
+            if hasUnsavedChanges { cloudFileError = "iCloud 文件已变化，保留当前编辑；保存前将核对版本。" }
+            else { loadFile() }
         }
         .alert("文件已在外部修改", isPresented: $showExternalChangeDialog) {
             Button("重新载入") {
@@ -1268,8 +1281,12 @@ struct MarkdownEditorView: View {
         let profileStart = MarkdownEditorPerformanceProbe.start()
         do {
             let text = try withFileAccess {
-                try String(contentsOf: fileURL, encoding: .utf8)
+                let data = try TeachingCloudFileAccess.read(fileURL)
+                guard let text = String(data: data, encoding: .utf8) else { throw CocoaError(.fileReadInapplicableStringEncoding) }
+                markdownDiskDigest = TeachingCloudFileAccess.digest(data)
+                return text
             }
+            cloudFileError = ""
             markdownText = text
             lastSavedText = text
             textKit2CommitBridge.reset()
@@ -1282,8 +1299,7 @@ struct MarkdownEditorView: View {
                 details: MarkdownEditorPerformanceProbe.textDetails(text)
             )
         } catch {
-            markdownText = ""
-            lastSavedText = ""
+            cloudFileError = error.localizedDescription
             saveState = .failed
             MarkdownEditorPerformanceProbe.end(
                 "MarkdownEditorView.loadFile.failed",
@@ -1326,9 +1342,13 @@ struct MarkdownEditorView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2, execute: workItem)
     }
 
-    private func writeCurrentMarkdownText() throws {
+    private func writeCurrentMarkdownText(allowExternalOverwrite: Bool) throws {
         try withFileAccess {
-            try markdownText.write(to: fileURL, atomically: true, encoding: .utf8)
+            let expected = allowExternalOverwrite
+                ? TeachingCloudFileAccess.digest(try TeachingCloudFileAccess.read(fileURL)) : markdownDiskDigest
+            let data = Data(markdownText.utf8)
+            try TeachingCloudFileAccess.write(data, to: fileURL, expectedDigest: expected)
+            markdownDiskDigest = TeachingCloudFileAccess.digest(data)
         }
     }
 
@@ -1347,11 +1367,13 @@ struct MarkdownEditorView: View {
         }
         saveState = .saving
         do {
-            try writeCurrentMarkdownText()
+            try writeCurrentMarkdownText(allowExternalOverwrite: allowExternalOverwrite)
+            cloudFileError = ""
             lastSavedText = markdownText
             lastKnownFileModificationDate = fileModificationDate()
             saveState = .clean
         } catch {
+            cloudFileError = error.localizedDescription
             saveState = .failed
         }
     }

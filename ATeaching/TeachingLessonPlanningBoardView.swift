@@ -77,6 +77,8 @@ private struct TeachingLessonPlanningBoardView: View {
     let onLessonHistoryChanged: () -> Void
 
     @State private var records: [TeachingLessonRecord] = []
+    @State private var recordsDiskDigest: String?
+    @State private var recordsAreDirty = false
     @State private var displayedMonth = Date()
     @State private var selectedStudentID: UUID?
     @State private var editingRecord: TeachingLessonRecord?
@@ -105,6 +107,17 @@ private struct TeachingLessonPlanningBoardView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .task {
+            load()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .teachingCloudFileChanged)) { notification in
+            guard let path = notification.userInfo?["filePath"] as? String,
+                  URL(fileURLWithPath: path).lastPathComponent == kind.storeKind.fileName else { return }
+            guard !recordsAreDirty, editingRecord == nil, !showInsertWeeklyConfirmation else {
+                statusMessage = "iCloud 排课文件已变化，当前编辑未自动替换。"
+                return
+            }
+            undoStack = []
+            redoStack = []
             load()
         }
         .sheet(item: $editingRecord) { record in
@@ -683,6 +696,7 @@ private struct TeachingLessonPlanningBoardView: View {
                 }
             }
             records = try TeachingLessonPlanningStore.load(kind.storeKind)
+            recordsDiskDigest = records.first?.diskDigest
             selectedStudentID = selectedStudentID ?? studentOptions.first?.id
             statusMessage = ""
         } catch {
@@ -691,8 +705,12 @@ private struct TeachingLessonPlanningBoardView: View {
     }
 
     private func save() {
+        recordsAreDirty = true
         do {
-            try TeachingLessonPlanningStore.save(records, kind: kind.storeKind)
+            try TeachingLessonPlanningStore.save(records, kind: kind.storeKind, expectedDigest: recordsDiskDigest)
+            records = try TeachingLessonPlanningStore.load(kind.storeKind)
+            recordsDiskDigest = records.first?.diskDigest
+            recordsAreDirty = false
             statusMessage = "\(kind.title)已保存。"
         } catch {
             statusMessage = "\(kind.title)保存失败：\(error.localizedDescription)"

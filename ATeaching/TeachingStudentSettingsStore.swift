@@ -77,12 +77,17 @@ nonisolated enum TeachingStudentSettingsStore {
         }
     }
 
-    static func saveStudents(_ students: [TeachingStudentItem], fileManager: FileManager = .default) throws {
-        try mutateSnapshot(fileManager: fileManager) { snapshot in
-            snapshot.students = students
-            let validIDs = Set(students.map { $0.id.uuidString })
-            snapshot.studentProfiles = snapshot.studentProfiles.filter { validIDs.contains($0.key) }
+    static func saveStudents(_ students: [TeachingStudentItem], expectedStudents: [TeachingStudentItem], fileManager: FileManager = .default) throws {
+        var snapshot = try loadSnapshot(fileManager: fileManager)
+        guard snapshot.students == expectedStudents || snapshot.students == students else {
+            let data = try JSONEncoder().encode(students)
+            try TeachingCloudFileAccess.preserve(data, original: settingsFileURL(fileManager: fileManager), kind: "pending")
+            throw TeachingCloudFileAccess.AccessError.changed("学生列表")
         }
+        snapshot.students = students
+        let validIDs = Set(students.map { $0.id.uuidString })
+        snapshot.studentProfiles = snapshot.studentProfiles.filter { validIDs.contains($0.key) }
+        try saveSnapshot(snapshot, fileManager: fileManager)
     }
 
     static func loadStudentProfile(
@@ -155,10 +160,11 @@ nonisolated enum TeachingStudentSettingsStore {
         }
 
         try ensureCurrentUbiquitousItem(at: url, fileManager: fileManager)
-        let data = try coordinatedRead(from: url)
+        let data = try TeachingCloudFileAccess.read(url)
 
         if let snapshot = try? decoder.decode(TeachingSettingsSnapshot.self, from: data) {
-            let normalized = normalize(snapshot)
+            var normalized = normalize(snapshot)
+            normalized.diskDigest = TeachingCloudFileAccess.digest(data)
             let issues = normalized.validationIssues()
             if !issues.isEmpty {
                 throw StoreError.invalidData
@@ -167,21 +173,24 @@ nonisolated enum TeachingStudentSettingsStore {
         }
 
         if let legacyStudents = try? decoder.decode([TeachingStudentItem].self, from: data) {
-            let migrated = TeachingSettingsSnapshot.initial(students: legacyStudents)
-            try saveSnapshot(migrated, fileManager: fileManager)
+            var migrated = TeachingSettingsSnapshot.initial(students: legacyStudents)
+            migrated.diskDigest = TeachingCloudFileAccess.digest(data)
+            migrated.diskDigest = try saveSnapshot(migrated, fileManager: fileManager)
             return migrated
         }
 
         throw StoreError.invalidData
     }
 
-    static func saveSnapshot(_ snapshot: TeachingSettingsSnapshot, fileManager: FileManager = .default) throws {
+    @discardableResult
+    static func saveSnapshot(_ snapshot: TeachingSettingsSnapshot, fileManager: FileManager = .default) throws -> String {
         let url = try settingsFileURL(fileManager: fileManager)
         var normalized = normalize(snapshot)
         normalized.schemaVersion = TeachingSettingsSnapshot.currentSchemaVersion
         normalized.savedAt = ISO8601DateFormatter().string(from: Date())
         let data = try encoder.encode(normalized)
-        try coordinatedWrite(data, to: url)
+        try TeachingCloudFileAccess.write(data, to: url, expectedDigest: snapshot.diskDigest)
+        return TeachingCloudFileAccess.digest(data)
     }
 
     private static func ensureCurrentUbiquitousItem(at url: URL, fileManager: FileManager) throws {
@@ -194,33 +203,6 @@ nonisolated enum TeachingStudentSettingsStore {
             try? fileManager.startDownloadingUbiquitousItem(at: url)
             throw StoreError.synchronizationPending
         }
-    }
-
-    private static func coordinatedRead(from url: URL) throws -> Data {
-        let coordinator = NSFileCoordinator()
-        var coordinationError: NSError?
-        var result: Result<Data, Error>?
-        coordinator.coordinate(readingItemAt: url, options: [], error: &coordinationError) { coordinatedURL in
-            result = Result { try Data(contentsOf: coordinatedURL) }
-        }
-        if let coordinationError { throw coordinationError }
-        guard let result else { throw StoreError.synchronizationPending }
-        return try result.get()
-    }
-
-    private static func coordinatedWrite(_ data: Data, to url: URL) throws {
-        let coordinator = NSFileCoordinator()
-        var coordinationError: NSError?
-        var writeError: Error?
-        coordinator.coordinate(writingItemAt: url, options: .forReplacing, error: &coordinationError) { coordinatedURL in
-            do {
-                try data.write(to: coordinatedURL, options: .atomic)
-            } catch {
-                writeError = error
-            }
-        }
-        if let coordinationError { throw coordinationError }
-        if let writeError { throw writeError }
     }
 
     private static func settingsFileURL(fileManager: FileManager = .default) throws -> URL {

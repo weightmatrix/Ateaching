@@ -167,23 +167,28 @@ enum TeachingStudentRenameService {
         let newWeeklyRecords = renamedRecords(oldWeeklyRecords, studentID: studentID, newName: newName)
 
         var completedMoves: [FileMove] = []
+        var completedRewrites: [FileRewrite] = []
+        var writtenDigests: [String: String] = [:]
         do {
             for rewrite in rewrites.values {
-                try rewrite.updatedData.write(to: rewrite.url, options: .atomic)
+                try TeachingCloudFileAccess.write(rewrite.updatedData, to: rewrite.url,
+                    expectedDigest: TeachingCloudFileAccess.digest(rewrite.originalData))
+                completedRewrites.append(rewrite)
             }
             for move in moves {
                 let completedMove = try performMove(move, fileManager: fileManager)
                 completedMoves.append(completedMove)
             }
-            try TeachingLessonStatisticsStore.saveLessonRecords(newLessonRecords, fileManager: fileManager)
-            try TeachingLessonPlanningStore.save(newPlanningRecords, kind: .planning, fileManager: fileManager)
-            try TeachingLessonPlanningStore.save(newWeeklyRecords, kind: .weekly, fileManager: fileManager)
+            writtenDigests[lessonRecordsURL.path] = try TeachingLessonStatisticsStore.saveLessonRecords(newLessonRecords, fileManager: fileManager)
+            writtenDigests[planningRecordsURL.path] = try TeachingLessonPlanningStore.save(newPlanningRecords, kind: .planning, fileManager: fileManager)
+            writtenDigests[weeklyRecordsURL.path] = try TeachingLessonPlanningStore.save(newWeeklyRecords, kind: .weekly, fileManager: fileManager)
             try TeachingStudentSettingsStore.saveSnapshot(newSnapshot, fileManager: fileManager)
         } catch {
             do {
                 try rollback(
                     completedMoves: completedMoves,
-                    rewrites: Array(rewrites.values),
+                    rewrites: completedRewrites,
+                    writtenDigests: writtenDigests,
                     oldSnapshot: oldSnapshot,
                     storeBackup: storeBackup,
                     lessonRecordsURL: lessonRecordsURL,
@@ -418,6 +423,7 @@ enum TeachingStudentRenameService {
     private static func rollback(
         completedMoves: [FileMove],
         rewrites: [FileRewrite],
+        writtenDigests: [String: String],
         oldSnapshot: TeachingSettingsSnapshot,
         storeBackup: StoreBackup,
         lessonRecordsURL: URL,
@@ -438,19 +444,24 @@ enum TeachingStudentRenameService {
         }
         for rewrite in rewrites {
             do {
-                try rewrite.originalData.write(to: rewrite.url, options: .atomic)
+                try TeachingCloudFileAccess.write(rewrite.originalData, to: rewrite.url,
+                    expectedDigest: TeachingCloudFileAccess.digest(rewrite.updatedData))
             } catch {
                 firstError = firstError ?? error
             }
         }
         do {
-            try TeachingLessonStatisticsStore.saveLessonRecords(storeBackup.lessonRecords, fileManager: fileManager)
-            if !storeBackup.lessonRecordsExisted { try? fileManager.removeItem(at: lessonRecordsURL) }
-            try TeachingLessonPlanningStore.save(storeBackup.planningRecords, kind: .planning, fileManager: fileManager)
-            if !storeBackup.planningRecordsExisted { try? fileManager.removeItem(at: planningRecordsURL) }
-            try TeachingLessonPlanningStore.save(storeBackup.weeklyRecords, kind: .weekly, fileManager: fileManager)
-            if !storeBackup.weeklyRecordsExisted { try? fileManager.removeItem(at: weeklyRecordsURL) }
-            try TeachingStudentSettingsStore.saveSnapshot(oldSnapshot, fileManager: fileManager)
+            if let digest = writtenDigests[lessonRecordsURL.path] {
+                try TeachingLessonStatisticsStore.saveLessonRecords(storeBackup.lessonRecords, expectedDigest: digest, fileManager: fileManager)
+            }
+            if let digest = writtenDigests[planningRecordsURL.path] {
+                try TeachingLessonPlanningStore.save(storeBackup.planningRecords, kind: .planning, expectedDigest: digest, fileManager: fileManager)
+            }
+            if let digest = writtenDigests[weeklyRecordsURL.path] {
+                try TeachingLessonPlanningStore.save(storeBackup.weeklyRecords, kind: .weekly, expectedDigest: digest, fileManager: fileManager)
+            }
+            // Settings are committed last. A failed guarded write leaves the old snapshot intact.
+
         } catch {
             firstError = firstError ?? error
         }

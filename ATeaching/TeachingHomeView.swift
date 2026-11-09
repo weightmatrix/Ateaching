@@ -16,6 +16,7 @@ struct TeachingHomeView: View {
 
     @State private var statusMessage = ""
     @State private var students: [TeachingStudentItem] = []
+    @State private var loadedStudentsBaseline: [TeachingStudentItem] = []
     @State private var draggingStudentID: UUID?
     @State private var selectedPage: TeachingPage = .teaching
     @State private var didLoadStudents = false
@@ -72,6 +73,12 @@ struct TeachingHomeView: View {
         .onChange(of: students) { _, _ in
             guard !isApplyingStudentSnapshot else { return }
             saveStudentsToSettings()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .teachingCloudFileChanged)) { notification in
+            guard let path = notification.userInfo?["filePath"] as? String,
+                  URL(fileURLWithPath: path).lastPathComponent == "setting-students" else { return }
+            if students == loadedStudentsBaseline { loadStudentsFromSettings() }
+            else { statusMessage = "iCloud 学生设置已变化，当前未保存修改未被替换。请先核对。" }
         }
         .onReceive(NotificationCenter.default.publisher(for: .teachingStudentsDidChange)) { _ in
             loadStudentsFromSettings()
@@ -523,6 +530,7 @@ struct TeachingHomeView: View {
             let snapshot = try TeachingStudentSettingsStore.loadSnapshot()
             studentSettingsRetryTask?.cancel()
             studentSettingsRetryTask = nil
+            loadedStudentsBaseline = snapshot.students
             students = snapshot.students
             featureFlags = snapshot.featureFlags
             lessonStatisticsEnabled = TeachingDebugLogStore.isLessonStatisticsEnabled()
@@ -552,7 +560,8 @@ struct TeachingHomeView: View {
 
     private func saveStudentsToSettings() {
         do {
-            try TeachingStudentSettingsStore.saveStudents(students)
+            try TeachingStudentSettingsStore.saveStudents(students, expectedStudents: loadedStudentsBaseline)
+            loadedStudentsBaseline = students
         } catch {
             statusMessage = "学生设置保存失败：\(error.localizedDescription)"
         }

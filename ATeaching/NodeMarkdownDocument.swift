@@ -54,6 +54,8 @@ nonisolated struct NodeMarkdownFileMeta: Hashable, Codable {
     var template: String
     var createdAt: String
     var type: String
+    var diskDigest: String? = nil
+    var diskPath: String? = nil
 
     init(
         id: String = UUID().uuidString,
@@ -455,14 +457,19 @@ struct NodeMarkdownPersistResult {
     var document: NodeMarkdownDocument
     var touchedH3IDs: Set<String>
     var restoredH3SourceLinkCount: Int
+    var diskDigest: String
 }
 
 nonisolated struct NodeMarkdownFileManager {
     static let header = ["UUID", "Prefix", "Content", "SourceID", "SourceFile", "Cach"]
 
     nonisolated static func read(fileURL: URL) throws -> (NodeMarkdownDocument, NodeMarkdownFileMeta) {
-        let text = try String(contentsOf: fileURL, encoding: .utf8)
-        return read(rawText: text, fileTitleFallback: fileURL.deletingPathExtension().lastPathComponent)
+        let data = try TeachingCloudFileAccess.read(fileURL)
+        guard let text = String(data: data, encoding: .utf8) else { throw CocoaError(.fileReadInapplicableStringEncoding) }
+        var payload = read(rawText: text, fileTitleFallback: fileURL.deletingPathExtension().lastPathComponent)
+        payload.1.diskDigest = TeachingCloudFileAccess.digest(data)
+        payload.1.diskPath = fileURL.standardizedFileURL.path
+        return payload
     }
 
     nonisolated static func read(rawText: String, fileTitleFallback: String = "") -> (NodeMarkdownDocument, NodeMarkdownFileMeta) {
@@ -556,7 +563,8 @@ nonisolated struct NodeMarkdownFileManager {
     /// 已通过身份校验后的纯序列化+落盘，避免重复校验。
     private nonisolated static func serializeAndWrite(document: NodeMarkdownDocument, meta: NodeMarkdownFileMeta, to fileURL: URL) throws {
         let text = serialize(document: document, meta: meta)
-        try text.write(to: fileURL, atomically: true, encoding: .utf8)
+        let expected = meta.diskPath == fileURL.standardizedFileURL.path ? meta.diskDigest : nil
+        try TeachingCloudFileAccess.write(Data(text.utf8), to: fileURL, expectedDigest: expected)
     }
 
     /// 一次遍历完成「补齐H3来源 → 触摸脏H3 → 传播子节点时间戳 → 校验 → 序列化 → 原子写」。
@@ -584,7 +592,8 @@ nonisolated struct NodeMarkdownFileManager {
         return NodeMarkdownPersistResult(
             document: persistenceDocument,
             touchedH3IDs: touchedH3IDs,
-            restoredH3SourceLinkCount: restoredCount
+            restoredH3SourceLinkCount: restoredCount,
+            diskDigest: TeachingCloudFileAccess.digest(Data(serialize(document: persistenceDocument, meta: meta).utf8))
         )
     }
 
@@ -596,24 +605,34 @@ nonisolated struct NodeMarkdownFileManager {
     ) async -> Result<NodeMarkdownPersistResult, Error> {
         let writeKey = TeachingCourseWriteCoordinator.key(forNotebookURL: fileURL)
         await TeachingCourseWriteCoordinator.shared.acquire(key: writeKey)
-        let result: Result<NodeMarkdownPersistResult, Error>
-        do {
-            _ = NodeMarkdownImageResourceManager.restoreReferencedStashedImages(
-                currentDocument: document,
-                notebookFileURL: fileURL
-            )
-            let diskDocument = (try? read(fileURL: fileURL).0)
-            let persist = try prepareAndWrite(
-                document: document,
-                meta: meta,
-                to: fileURL,
-                comparedToDisk: diskDocument,
-                restoreH3SourceLinksFromDisk: true
-            )
-            result = .success(persist)
-        } catch {
-            result = .failure(error)
-        }
+        let result = await Task.detached(priority: .utility) { () -> Result<NodeMarkdownPersistResult, Error> in
+            do {
+                _ = NodeMarkdownImageResourceManager.restoreReferencedStashedImages(
+                    currentDocument: document,
+                    notebookFileURL: fileURL
+                )
+                let diskDocument: NodeMarkdownDocument?
+                if FileManager.default.fileExists(atPath: fileURL.path) {
+                    diskDocument = try read(fileURL: fileURL).0
+                } else { diskDocument = nil }
+                let persist = try prepareAndWrite(
+                    document: document,
+                    meta: meta,
+                    to: fileURL,
+                    comparedToDisk: diskDocument,
+                    restoreH3SourceLinksFromDisk: true
+                )
+                return .success(persist)
+            } catch {
+                do {
+                    try TeachingCloudFileAccess.preserve(Data(serialize(document: document, meta: meta).utf8), original: fileURL, kind: "pending")
+                    return .failure(error)
+                } catch let recoveryError {
+                    return .failure(NSError(domain: "TeachingCloud", code: 3, userInfo: [NSLocalizedDescriptionKey:
+                        "保存失败：\(error.localizedDescription)；恢复副本失败：\(recoveryError.localizedDescription)。请勿关闭页面。"]))
+                }
+            }
+        }.value
         await TeachingCourseWriteCoordinator.shared.release(key: writeKey)
         return result
     }

@@ -79,6 +79,15 @@ struct TeachingLessonStatisticsSubpageView: View {
         .task {
             loadAllData()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .teachingCloudFileChanged)) { notification in
+            guard let path = notification.userInfo?["filePath"] as? String,
+                  ["Setting-机构.json", "LessonRecords.json", "setting-students"].contains(URL(fileURLWithPath: path).lastPathComponent) else { return }
+            guard !showInstitutionEditor, deleteTarget == nil else {
+                statusMessage = "iCloud 统计文件已变化，当前编辑未自动替换。"
+                return
+            }
+            loadAllData()
+        }
         .onChange(of: mode) { _, _ in
             loadAllData()
         }
@@ -638,7 +647,7 @@ struct TeachingLessonStatisticsSubpageView: View {
             if let index = next.firstIndex(where: { $0.id == normalized.id }) {
                 let oldName = next[index].name
                 next[index] = normalized
-                try TeachingLessonStatisticsStore.saveInstitutions(next)
+                try TeachingLessonStatisticsStore.saveInstitutions(next, expectedDigest: institutions.first?.diskDigest)
                 if oldName != normalized.name {
                     try TeachingStudentSettingsStore.updateInstitutionNameInStudentProfiles(
                         institutionID: normalized.id,
@@ -651,10 +660,10 @@ struct TeachingLessonStatisticsSubpageView: View {
                 }
             } else {
                 next.append(normalized)
-                try TeachingLessonStatisticsStore.saveInstitutions(next)
+                try TeachingLessonStatisticsStore.saveInstitutions(next, expectedDigest: institutions.first?.diskDigest)
             }
 
-            institutions = next
+            institutions = try TeachingLessonStatisticsStore.loadInstitutions()
             showInstitutionEditor = false
             editingInstitution = nil
             statusMessage = "机构已保存。"
@@ -676,9 +685,9 @@ struct TeachingLessonStatisticsSubpageView: View {
         guard let target = deleteTarget else { return }
         do {
             let next = institutions.filter { $0.id != target.id }
-            try TeachingLessonStatisticsStore.saveInstitutions(next)
+            try TeachingLessonStatisticsStore.saveInstitutions(next, expectedDigest: institutions.first?.diskDigest)
             try TeachingStudentSettingsStore.clearInstitutionFromStudentProfiles(institutionID: target.id)
-            institutions = next
+            institutions = try TeachingLessonStatisticsStore.loadInstitutions()
             deleteTarget = nil
             deleteImpactedStudents = []
             statusMessage = "机构已删除；相关学生统计设置已清空。"

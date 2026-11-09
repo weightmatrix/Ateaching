@@ -13,6 +13,11 @@ struct AppSettingsView: View {
     private var mobileSettings: some View {
         List {
             Section {
+                NavigationLink { TeachingCloudSyncSettingsView() } label: {
+                    Label("iCloud同步与恢复", systemImage: "icloud")
+                }
+            }
+            Section {
                 NavigationLink {
                     TeachingPDFSettingsView()
                 } label: {
@@ -69,6 +74,11 @@ struct AppSettingsView: View {
                     .font(.system(size: 30, weight: .bold))
 
                 VStack(spacing: 18) {
+                    macSettingsSection(title: "数据同步") {
+                        macSettingsLink(title: "iCloud同步与恢复", subtitle: "检查下载、上传状态并导出恢复副本", systemImage: "icloud") {
+                            TeachingCloudSyncSettingsView()
+                        }
+                    }
                     primarySettingsSection
                     functionSettingsSection
                 }

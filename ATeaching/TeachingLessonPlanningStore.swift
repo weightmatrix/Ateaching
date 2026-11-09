@@ -27,15 +27,18 @@ nonisolated enum TeachingLessonPlanningStore {
     static func load(_ kind: PlanningKind, fileManager: FileManager = .default) throws -> [TeachingLessonRecord] {
         let url = try fileURL(kind, fileManager: fileManager)
         guard fileManager.fileExists(atPath: url.path) else { return [] }
-        let data = try Data(contentsOf: url)
+        let data = try TeachingCloudFileAccess.read(url)
         return try decoder.decode([TeachingLessonRecord].self, from: data)
-            .map(TeachingLessonPlanningPlaceholder.normalizedRecord)
+            .map { var value = TeachingLessonPlanningPlaceholder.normalizedRecord($0); value.diskDigest = TeachingCloudFileAccess.digest(data); value.diskPath = url.standardizedFileURL.path; return value }
     }
 
-    static func save(_ records: [TeachingLessonRecord], kind: PlanningKind, fileManager: FileManager = .default) throws {
+    @discardableResult
+    static func save(_ records: [TeachingLessonRecord], kind: PlanningKind, expectedDigest: String? = nil, fileManager: FileManager = .default) throws -> String {
         let url = try fileURL(kind, fileManager: fileManager)
         let data = try encoder.encode(records.map(TeachingLessonPlanningPlaceholder.normalizedRecord))
-        try data.write(to: url, options: .atomic)
+        let baseline = expectedDigest ?? records.filter { $0.diskPath == url.standardizedFileURL.path }.compactMap(\.diskDigest).first
+        try TeachingCloudFileAccess.write(data, to: url, expectedDigest: baseline, allowReplacingEmptyArray: true)
+        return TeachingCloudFileAccess.digest(data)
     }
 
     static func fileURL(_ kind: PlanningKind, fileManager: FileManager = .default) throws -> URL {
@@ -48,6 +51,7 @@ nonisolated enum TeachingLessonPlanningStore {
         fileManager: FileManager = .default
     ) throws -> Int {
         var planning = try load(.planning, fileManager: fileManager)
+        let planningBaseline = planning.first?.diskDigest
         let ready = planning.filter { record in
             guard !TeachingLessonPlanningPlaceholder.isPlaceholder(record),
                   let start = TeachingLessonStatisticsStore.date(from: record.startAt) else { return false }
@@ -63,7 +67,7 @@ nonisolated enum TeachingLessonPlanningStore {
         }
         planning.removeAll { record in ready.contains(where: { $0.id == record.id }) }
         try TeachingLessonStatisticsStore.saveLessonRecords(lessons, fileManager: fileManager)
-        try save(planning, kind: .planning, fileManager: fileManager)
+        try save(planning, kind: .planning, expectedDigest: planningBaseline, fileManager: fileManager)
         return ready.count
     }
 }

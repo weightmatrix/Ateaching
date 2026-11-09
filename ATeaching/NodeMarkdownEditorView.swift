@@ -219,6 +219,16 @@ struct NodeMarkdownEditorView: View {
         }
         .onChange(of: saveState, handleSaveStateChange)
         .onChange(of: isTextInputSessionActive, handleTextInputSessionChange)
+        .onReceive(NotificationCenter.default.publisher(for: .teachingCloudFileChanged)) { notification in
+            guard let path = notification.userInfo?["filePath"] as? String,
+                  path == fileURL.standardizedFileURL.path, !isLoading else { return }
+            guard saveState == .clean, documentRevision == persistedDocumentRevision,
+                  !hasUncommittedLegacyDraft, !isNotebookWriteOperationInProgress else {
+                statusMessage = "iCloud 文件有变化；当前编辑未自动替换，保存时将核对版本。"
+                return
+            }
+            reloadFromDisk()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .teachingClassSessionDidChange)) { notification in
             if let changedPath = notification.userInfo?["filePath"] as? String {
                 let standardizedChangedPath = URL(fileURLWithPath: changedPath).standardizedFileURL.path
@@ -629,17 +639,10 @@ struct NodeMarkdownEditorView: View {
             do {
                 loaded = try NodeMarkdownFileManager.read(fileURL: targetURL)
             } catch {
-                loaded = (
-                    NodeMarkdownDocument(
-                        nodes: [
-                            NodeMarkdownNode(level: 1, text: "")
-                        ]
-                    ),
-                    NodeMarkdownFileMeta(
-                        title: targetURL.deletingPathExtension().lastPathComponent,
-                        type: "nodemarkdown"
-                    )
-                )
+                guard loadGeneration == diskLoadGeneration else { return }
+                isLoading = false
+                statusMessage = "读取失败，未创建空白替代文件：\(error.localizedDescription)"
+                return
             }
             var parsedDocument = loaded.0
             _ = parsedDocument.ensureTrailingBlankLine(defaultLevel: 1)
@@ -1015,6 +1018,10 @@ struct NodeMarkdownEditorView: View {
                 )
                 switch result {
                 case .success(let persist):
+                    fileMeta.diskDigest = persist.diskDigest
+                    fileMeta.diskPath = targetURL.standardizedFileURL.path
+                    metaSnapshot.diskDigest = persist.diskDigest
+                    metaSnapshot.diskPath = targetURL.standardizedFileURL.path
                     persistedDocumentRevision = revisionSnapshot
                     guard revisionSnapshot == documentRevision else {
                         saveState = .dirty
@@ -1073,6 +1080,12 @@ struct NodeMarkdownEditorView: View {
             meta: metaSnapshot,
             to: fileURL
         )
+        if case .success(let persist) = result {
+            metaSnapshot.diskDigest = persist.diskDigest
+            metaSnapshot.diskPath = fileURL.standardizedFileURL.path
+            fileMeta.diskDigest = persist.diskDigest
+            fileMeta.diskPath = fileURL.standardizedFileURL.path
+        }
         guard revisionSnapshot == documentRevision else {
             // 旧快照已过期：用最新文档重试一次。
             try await persistCurrentDocumentToDiskForSync(cleanForFinalization: cleanForFinalization)
@@ -3042,6 +3055,8 @@ struct NodeMarkdownEditorView: View {
             do {
                 try NodeMarkdownIdentityPolicy.validateForPersistence(document)
                 try NodeMarkdownFileManager.write(document: document, meta: fileMeta, to: fileURL)
+                fileMeta.diskDigest = TeachingCloudFileAccess.digest(Data(NodeMarkdownFileManager.serialize(document: document, meta: fileMeta).utf8))
+                fileMeta.diskPath = fileURL.standardizedFileURL.path
                 NodeMarkdownPackageCutClipboard.shared.store(
                     .init(
                         sourceFileURL: fileURL.standardizedFileURL,
@@ -3109,6 +3124,8 @@ struct NodeMarkdownEditorView: View {
             do {
                 try NodeMarkdownIdentityPolicy.validateForPersistence(document)
                 try NodeMarkdownFileManager.write(document: document, meta: fileMeta, to: fileURL)
+                fileMeta.diskDigest = TeachingCloudFileAccess.digest(Data(NodeMarkdownFileManager.serialize(document: document, meta: fileMeta).utf8))
+                fileMeta.diskPath = fileURL.standardizedFileURL.path
                 if sharedPayload.sourceFileURL.standardizedFileURL.path != fileURL.standardizedFileURL.path {
                     let movedH3IDs = Set(nodesToPaste.lazy.filter { $0.level == 3 }.map(\.id))
                     relinkedNotebookCount = try TeachingCourseWorkflowService.relinkNotebookPackagesAfterLessonMove(
@@ -3614,6 +3631,8 @@ struct NodeMarkdownEditorView: View {
             do {
                 try NodeMarkdownIdentityPolicy.validateForPersistence(document)
                 try NodeMarkdownFileManager.write(document: document, meta: fileMeta, to: fileURL)
+                fileMeta.diskDigest = TeachingCloudFileAccess.digest(Data(NodeMarkdownFileManager.serialize(document: document, meta: fileMeta).utf8))
+                fileMeta.diskPath = fileURL.standardizedFileURL.path
                 lessonRollbackPersisted = true
             } catch {
                 statusMessage = "剪切包已回到界面，但教案落盘失败：\(error.localizedDescription)"

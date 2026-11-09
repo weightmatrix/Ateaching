@@ -129,6 +129,7 @@ private enum ATeachingLaunchBootstrapper {
     static func bootstrapIfNeeded() async {
         guard !didBootstrap else { return }
         didBootstrap = true
+        TeachingCloudSyncStatus.shared.start()
 
         Task(priority: .utility) {
             _ = try? ArchiveStorage.ensureArchiveRoot()
