@@ -177,6 +177,7 @@ private final class ATeachingMacApplicationDelegate: NSObject, NSApplicationDele
             return
         }
         #endif
+        TeachingAppearanceIcon.shared.start()
         Task { await ATeachingLaunchBootstrapper.bootstrapIfNeeded() }
         ATeachingMacLaunchMainWindowGate.scheduleAutomaticOpenIfNeeded()
     }

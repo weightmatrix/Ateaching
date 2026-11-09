@@ -1,5 +1,9 @@
 # 常用栏设置页面视觉统一
 
+## 授课统一日夜双图标（2026-11-09）
+
+完成授课日夜图标设计和实装：两份母版归档于Design/BrandIcons；更新AppIcon28槽、MobileAppIcon默认/深色/着色，新增Mac日夜资源和自动切换helper，并在现有delegate启动。Mac/iOS Debug构建通过，签名严格验证通过；移动产物phone/pad均含默认、UIAppearanceDark、ISAppearanceTintable，默认与夜间摘要不同。iOS构建命令指定部署目标17.0，保留旧款iPad兼容性，不覆盖用户已有工程配置改动。iPhone14、17PM及iPad Pro10.5、mini5、Air6 11/13英寸六份安装JSON均success。Mac安装前备份，正常退出旧进程后安装，纠正Dock入口；运行日志确认TeachingIconNight实际应用。无课程或同步业务逻辑改动。
+
 ## #124 iCloud按修改时间自动选新（V1.2611092219 / 2611092219）
 
 #124：核实0923959已接入按修改时间自动选新；实际处理ATeaching-序号列表.md：当前版本2026-11-08 17:40:19（北京时间），冲突版本2026-10-30 10:44:33，选中当前正文451433字节，独立进程复核冲突由1归零。原版本备份/private/tmp/ateaching-124-conflicts-DBAFBB70-0AB0-4C40-BDF9-240CDD8120AA。修正相同正文新保存未推进修改时间漏洞，新增实际文件写入回归。定向测试通过：旧重试、乱序、同时间稳定选择、并发写入与相同正文时间推进。沙箱内文件协调测试失败，授权后通过。macOS arm64 Debug构建退出码0，git差异与项目plist检查通过；未安装或重启App，未验证跨设备送达。

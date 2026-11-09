@@ -1,5 +1,9 @@
 # ATeaching白皮书
 
+## 授课统一日夜双图标（2026-11-09）
+
+授课图标日夜配色统一：日间深蓝底暖白偏金，深色墨黑蓝底冰蓝，图案保持书与柱廊及“李知本”书法字。MobileAppIcon提供默认、dark、tinted三种通用1024资源；旧AppIcon全部28个尺寸同步日间图。Mac新增TeachingIconDay/Night imageset和TeachingAppearanceIcon，由应用delegate启动，读取全局系统外观，监听变化与重新激活，更新运行时Dock图标，默认Finder图标由静态资源提供。
+
 ## #124 iCloud按修改时间自动选新（V1.2611092219 / 2611092219）
 
 当前冲突策略取代下文历史记录中的冲突拒写／人工选择：LatestCloudFile在协调区读取当前正文与NSFileVersion冲突版本，按修改时间选择最新，时间相同按正文摘要稳定选择，写回原路径并保留胜出版本修改时间，解除冲突。离线重试沿用原保存时间；相同正文的新保存也推进修改时间，避免旧编辑覆盖。TeachingCloudFileAccess读写及历史冲突UI入口共用此策略。
