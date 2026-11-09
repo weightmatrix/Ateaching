@@ -28,6 +28,10 @@ struct LatestCloudFileTests {
         }
         precondition(tryRead(file).data == Data("9".utf8))
         precondition(tryRead(file).modifiedAt == base.addingTimeInterval(9))
+        _ = try LatestCloudFile.write(Data("9".utf8), to: file, editedAt: base.addingTimeInterval(11))
+        _ = try LatestCloudFile.write(old, to: file, editedAt: base.addingTimeInterval(10))
+        precondition(tryRead(file).data == Data("9".utf8), "Same-content save lost its newer modification time")
+        precondition(tryRead(file).modifiedAt == base.addingTimeInterval(11))
         let pending = LatestCloudFile.Snapshot(data: old, modifiedAt: base)
         precondition(!LatestCloudFile.prefers(pending, over: tryRead(file)))
         let concurrent = root.appendingPathComponent("concurrent.json")

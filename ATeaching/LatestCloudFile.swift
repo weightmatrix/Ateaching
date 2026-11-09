@@ -68,7 +68,11 @@ nonisolated enum LatestCloudFile {
                 if FileManager.default.fileExists(atPath: coordinated.path) {
                     let existing = try resolve(coordinated)
                     if prefers(existing, over: incoming) { return existing }
-                    if existing.digest == incoming.digest { return existing }
+                    if existing.digest == incoming.digest {
+                        // 相同正文的新保存仍须推进修改时间，防止较旧的离线修改随后胜出。
+                        try FileManager.default.setAttributes([.modificationDate: editedAt], ofItemAtPath: coordinated.path)
+                        return incoming
+                    }
                 }
                 try data.write(to: coordinated, options: .atomic)
                 try FileManager.default.setAttributes([.modificationDate: editedAt], ofItemAtPath: coordinated.path)
