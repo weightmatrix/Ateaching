@@ -18,7 +18,7 @@ nonisolated enum TeachingCloudFileAccess {
     static func digest(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
-    static func ensureReady(_ url: URL) throws {
+    static func ensureReady(_ url: URL, rejectConflicts: Bool = true) throws {
         let values = try url.resourceValues(forKeys: [.isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey,
                                                      .ubiquitousItemDownloadingErrorKey])
         if let error = values.ubiquitousItemDownloadingError { throw error }
@@ -26,17 +26,17 @@ nonisolated enum TeachingCloudFileAccess {
             try FileManager.default.startDownloadingUbiquitousItem(at: url)
             throw AccessError.waiting(url.lastPathComponent)
         }
-        if !(NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []).isEmpty {
+        if rejectConflicts && !(NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []).isEmpty {
             throw AccessError.conflict(url.lastPathComponent)
         }
     }
     static func read(_ url: URL) throws -> Data {
         // Refuse known-unready items before coordination can wait for materialization.
-        try ensureReady(url)
+        try ensureReady(url, rejectConflicts: false)
         var error: NSError?
         var result: Result<Data, Error>?
         NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &error) { coordinated in
-            result = Result { try ensureReady(coordinated); return try Data(contentsOf: coordinated) }
+            result = Result { try ensureReady(coordinated, rejectConflicts: false); return try Data(contentsOf: coordinated) }
         }
         if let error { throw error }
         guard let result else { throw AccessError.coordination }

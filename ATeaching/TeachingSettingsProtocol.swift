@@ -7,6 +7,7 @@ nonisolated struct TeachingSettingsSnapshot: Codable, Equatable {
     var schemaVersion: Int
     var savedAt: String
     var diskDigest: String? = nil // Runtime baseline, deliberately excluded from CodingKeys.
+    var hasCloudConflict = false // Readable current snapshot; writes remain guarded.
     var students: [TeachingStudentItem]
     var studentSystem: TeachingStudentSystemSettings
     var lessonPlanSystem: TeachingLessonPlanSystemSettings

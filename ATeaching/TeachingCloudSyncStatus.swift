@@ -123,6 +123,10 @@ struct TeachingCloudSyncSettingsView: View {
     @ObservedObject private var status = TeachingCloudSyncStatus.shared
     @State private var recoveryFiles: [URL] = []
     @State private var recoveryError = ""
+    @State private var conflictReport: TeachingCloudConflictReport?
+    @State private var conflictMessage = ""
+    @State private var isResolvingConflict = false
+    @State private var showKeepCurrentConfirmation = false
     var body: some View {
         List {
             Section("iCloud 文件检查") {
@@ -131,6 +135,23 @@ struct TeachingCloudSyncSettingsView: View {
                 Button(status.isChecking ? "检查中…" : "立即检查并请求下载") { status.check() }.disabled(status.isChecking)
                 Text("保存成功表示文件已写入本机 iCloud 目录，不表示另一设备已经收到。文件版本发生变化时停止覆盖，请先导出恢复副本再重新打开原文件核对。")
                     .font(.footnote).foregroundStyle(.secondary)
+            }
+            Section("学生设置历史冲突") {
+                Button("检查学生设置版本") { loadStudentConflicts() }.disabled(isResolvingConflict)
+                if let report = conflictReport {
+                    Text("当前文件：\(report.current.studentCount.map(String.init) ?? "未知")位学生；保存时间：\(report.current.savedAt)")
+                    Text("未解决历史版本：\(report.conflicts.count)份")
+                    ForEach(Array(report.conflicts.enumerated()), id: \.offset) { index, version in
+                        Text("版本\(index + 1)：\(version.studentCount.map(String.init) ?? "未知")位学生；\(version.savedAt)").font(.footnote)
+                    }
+                    if !report.conflicts.isEmpty {
+                        Button("保留当前设置并解除历史冲突") { showKeepCurrentConfirmation = true }
+                            .disabled(isResolvingConflict)
+                        Text("不会按时间或人数自动选择版本。确认后先在本机保留全部版本副本，再解除历史冲突；当前文件内容不变。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+                if !conflictMessage.isEmpty { Text(conflictMessage).font(.footnote).textSelection(.enabled) }
             }
             Section("文件状态") { ForEach(status.files, id: \.self) { Text($0).font(.footnote) } }
             Section("本机恢复副本") {
@@ -142,7 +163,41 @@ struct TeachingCloudSyncSettingsView: View {
             }
         }
         .navigationTitle("iCloud 同步与恢复")
-        .task { status.start(); loadRecovery() }
+        .task { status.start(); loadRecovery(); loadStudentConflicts() }
+        .confirmationDialog("保留当前学生设置？", isPresented: $showKeepCurrentConfirmation, titleVisibility: .visible) {
+            Button("备份全部版本并保留当前设置") { keepCurrentStudentSettings() }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("当前文件含\(conflictReport?.current.studentCount ?? 0)位学生。历史冲突版本将全部保留为本机恢复副本，之后可在下方刷新并分享。不会合并历史版本里的字段。")
+        }
+    }
+    private func loadStudentConflicts() {
+        Task {
+            do {
+                let report = try await Task.detached(priority: .utility) {
+                    // Validate the current business snapshot before offering to keep it.
+                    _ = try TeachingStudentSettingsStore.loadSnapshot()
+                    return try TeachingCloudConflictResolver.report(at: TeachingStudentSettingsStore.settingsFileURL())
+                }.value
+                conflictReport = report
+                conflictMessage = report.conflicts.isEmpty ? "没有未解决的学生设置冲突。" : "当前文件可以读取；解除冲突前仍禁止覆盖。"
+            } catch { conflictMessage = "版本检查失败：\(error.localizedDescription)" }
+        }
+    }
+    private func keepCurrentStudentSettings() {
+        guard let report = conflictReport, !isResolvingConflict else { return }
+        isResolvingConflict = true
+        Task {
+            defer { isResolvingConflict = false }
+            do {
+                try await Task.detached(priority: .utility) { try TeachingCloudConflictResolver.keepCurrent(report) }.value
+                conflictMessage = "已保留当前设置，全部版本已备份。"
+                NotificationCenter.default.post(name: .teachingCloudFileChanged, object: nil, userInfo: ["filePath": report.url.path])
+                loadRecovery()
+                loadStudentConflicts()
+                status.check()
+            } catch { conflictMessage = "冲突处理未完成：\(error.localizedDescription)"; loadRecovery() }
+        }
     }
     private func loadRecovery() {
         Task {

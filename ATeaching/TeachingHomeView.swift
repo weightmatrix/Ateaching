@@ -17,6 +17,7 @@ struct TeachingHomeView: View {
     @State private var statusMessage = ""
     @State private var students: [TeachingStudentItem] = []
     @State private var loadedStudentsBaseline: [TeachingStudentItem] = []
+    @State private var hasLoadedStudentsSnapshot = false
     @State private var draggingStudentID: UUID?
     @State private var selectedPage: TeachingPage = .teaching
     @State private var didLoadStudents = false
@@ -315,7 +316,7 @@ struct TeachingHomeView: View {
         return VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(students.isEmpty ? "添加学生后，即可从这里进入课堂" : "选择一位学生进入课堂 · 共 \(students.count) 位")
+                    Text(students.isEmpty ? (hasLoadedStudentsSnapshot ? "添加学生后，即可从这里进入课堂" : "学生设置尚未加载，请查看下方提示") : "选择一位学生进入课堂 · 共 \(students.count) 位")
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                 }
@@ -328,7 +329,7 @@ struct TeachingHomeView: View {
             }
 
             if students.isEmpty {
-                Text("暂无学生")
+                Text(hasLoadedStudentsSnapshot ? "暂无学生" : "尚未读取到学生设置")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             } else {
@@ -530,6 +531,10 @@ struct TeachingHomeView: View {
             let snapshot = try TeachingStudentSettingsStore.loadSnapshot()
             studentSettingsRetryTask?.cancel()
             studentSettingsRetryTask = nil
+            statusMessage = snapshot.hasCloudConflict
+                ? "学生设置存在历史 iCloud 冲突，已读取当前文件（\(snapshot.students.count)位学生）。写入仍受保护，请到设置→iCloud同步与恢复处理。"
+                : ""
+            hasLoadedStudentsSnapshot = true
             loadedStudentsBaseline = snapshot.students
             students = snapshot.students
             featureFlags = snapshot.featureFlags

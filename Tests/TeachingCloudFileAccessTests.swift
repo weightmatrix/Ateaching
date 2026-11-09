@@ -3,6 +3,24 @@ import Foundation
 @main
 struct TeachingCloudFileAccessTests {
     static func main() throws {
+        if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == "--inspect-conflicted-file" {
+            let url = URL(fileURLWithPath: CommandLine.arguments[2])
+            let before = try Data(contentsOf: url)
+            let conflictsBefore = NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []
+            precondition(!conflictsBefore.isEmpty, "This regression mode requires existing conflicts")
+            let readable = try TeachingCloudFileAccess.read(url)
+            precondition(readable == before, "Read must return the current file unchanged")
+            do {
+                try TeachingCloudFileAccess.ensureReady(url)
+                fatalError("Write readiness accepted an unresolved conflict")
+            } catch TeachingCloudFileAccess.AccessError.conflict { }
+            let report = try TeachingCloudConflictResolver.report(at: url)
+            precondition(report.conflicts.count == conflictsBefore.count)
+            precondition(tryData(url) == before)
+            precondition((NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []).count == conflictsBefore.count)
+            print("PASS: conflicted current file readable; write validation rejected; version report readable; file and conflict versions untouched (students=\(report.current.studentCount ?? -1), conflicts=\(report.conflicts.count))")
+            return
+        }
         let fm = FileManager.default
         let root = fm.temporaryDirectory.appendingPathComponent("ATeaching-cloud-tests-\(UUID().uuidString)")
         try fm.createDirectory(at: root, withIntermediateDirectories: true)
@@ -53,6 +71,22 @@ struct TeachingCloudFileAccessTests {
         group.wait()
         precondition(state.count == 1, "Exactly one writer with the shared baseline must succeed")
         precondition([Data("writer-A".utf8), Data("writer-B".utf8)].contains(tryData(concurrent)))
+        let preview = try TeachingCloudConflictResolver.report(at: concurrent)
+        let externalEdit = Data("external edit after preview".utf8)
+        try externalEdit.write(to: concurrent, options: .atomic)
+        do {
+            try TeachingCloudConflictResolver.keepCurrent(preview)
+            fatalError("Stale conflict preview was accepted")
+        } catch TeachingCloudFileAccess.AccessError.changed { }
+        precondition(tryData(concurrent) == externalEdit)
+        let fresh = try TeachingCloudConflictResolver.report(at: concurrent)
+        let changedVersionList = TeachingCloudConflictReport(url: fresh.url, currentDigest: fresh.currentDigest,
+            current: fresh.current, conflicts: [.init(id: "a-version-that-is-no-longer-present", studentCount: 1, savedAt: "unknown", modifiedAt: nil)])
+        do {
+            try TeachingCloudConflictResolver.keepCurrent(changedVersionList)
+            fatalError("Changed conflict-version list was accepted")
+        } catch TeachingCloudFileAccess.AccessError.changed { }
+        precondition(tryData(concurrent) == externalEdit)
         let pending = try TeachingCloudFileAccess.preserve(stale, original: file, kind: "pending")
         precondition(tryData(pending) == stale)
         let recovery = try TeachingCloudFileAccess.recoveryRoot()
@@ -63,7 +97,7 @@ struct TeachingCloudFileAccessTests {
                 if fm.fileExists(atPath: folder.path) { try fm.removeItem(at: folder) }
             }
         }
-        print("PASS: creation, stale-write rejection, baseline requirement, idempotent retry, deletion protection, empty-array baseline, concurrent-writer exclusion, recovery content")
+        print("PASS: creation, stale-write rejection, baseline requirement, idempotent retry, deletion protection, empty-array baseline, concurrent-writer exclusion, stale conflict-preview rejection, changed version-list rejection, recovery content")
     }
     static func tryData(_ url: URL) -> Data { try! Data(contentsOf: url) }
 }

@@ -79,6 +79,7 @@ nonisolated enum TeachingStudentSettingsStore {
 
     static func saveStudents(_ students: [TeachingStudentItem], expectedStudents: [TeachingStudentItem], fileManager: FileManager = .default) throws {
         var snapshot = try loadSnapshot(fileManager: fileManager)
+        guard snapshot.students != students else { return }
         guard snapshot.students == expectedStudents || snapshot.students == students else {
             let data = try JSONEncoder().encode(students)
             try TeachingCloudFileAccess.preserve(data, original: settingsFileURL(fileManager: fileManager), kind: "pending")
@@ -165,6 +166,7 @@ nonisolated enum TeachingStudentSettingsStore {
         if let snapshot = try? decoder.decode(TeachingSettingsSnapshot.self, from: data) {
             var normalized = normalize(snapshot)
             normalized.diskDigest = TeachingCloudFileAccess.digest(data)
+            normalized.hasCloudConflict = !(NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []).isEmpty
             let issues = normalized.validationIssues()
             if !issues.isEmpty {
                 throw StoreError.invalidData
@@ -175,7 +177,8 @@ nonisolated enum TeachingStudentSettingsStore {
         if let legacyStudents = try? decoder.decode([TeachingStudentItem].self, from: data) {
             var migrated = TeachingSettingsSnapshot.initial(students: legacyStudents)
             migrated.diskDigest = TeachingCloudFileAccess.digest(data)
-            migrated.diskDigest = try saveSnapshot(migrated, fileManager: fileManager)
+            migrated.hasCloudConflict = !(NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []).isEmpty
+            if !migrated.hasCloudConflict { migrated.diskDigest = try saveSnapshot(migrated, fileManager: fileManager) }
             return migrated
         }
 
@@ -205,7 +208,7 @@ nonisolated enum TeachingStudentSettingsStore {
         }
     }
 
-    private static func settingsFileURL(fileManager: FileManager = .default) throws -> URL {
+    static func settingsFileURL(fileManager: FileManager = .default) throws -> URL {
         let settingsURL = try settingsFolderURL(fileManager: fileManager)
         return settingsURL.appendingPathComponent(fileName, isDirectory: false)
     }
