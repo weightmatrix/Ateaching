@@ -6,10 +6,6 @@ import AppKit
 import UIKit
 #endif
 
-extension Notification.Name {
-    static let teachingCloudFileChanged = Notification.Name("TeachingCloudFileChanged")
-}
-
 @MainActor
 final class TeachingCloudSyncStatus: NSObject, ObservableObject {
     static let shared = TeachingCloudSyncStatus()
@@ -21,6 +17,9 @@ final class TeachingCloudSyncStatus: NSObject, ObservableObject {
     private var fingerprints: [String: String] = [:]
     private var requestedDownloads: Set<String> = []
     private var timeout: Task<Void, Never>?
+    private var refreshTimer: Timer?
+    private var retryInProgress = false
+    private var resolvingPaths: Set<String> = []
     private var foregroundObserver: NSObjectProtocol?
 
     func start() {
@@ -33,7 +32,24 @@ final class TeachingCloudSyncStatus: NSObject, ObservableObject {
         foregroundObserver = NotificationCenter.default.addObserver(forName: event, object: nil, queue: .main) { _ in
             Task { @MainActor in TeachingCloudSyncStatus.shared.check() }
         }
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { _ in
+            Task { @MainActor in
+                let status = TeachingCloudSyncStatus.shared
+                status.check()
+                status.retryPending()
+            }
+        }
         check()
+        retryPending()
+    }
+
+    private func retryPending() {
+        guard !retryInProgress else { return }
+        retryInProgress = true
+        Task {
+            await Task.detached(priority: .utility) { TeachingCloudFileAccess.retryPending() }.value
+            retryInProgress = false
+        }
     }
 
     func check() {
@@ -74,6 +90,20 @@ final class TeachingCloudSyncStatus: NSObject, ObservableObject {
 
     @objc private func updated(_ notification: Notification) { inspect(requestDownload: isChecking) }
 
+    private func refreshLatest(_ url: URL) {
+        guard resolvingPaths.insert(url.path).inserted else { return }
+        Task {
+            do {
+                _ = try await Task.detached(priority: .utility) { try LatestCloudFile.read(url) }.value
+                NotificationCenter.default.post(name: .teachingCloudFileChanged, object: nil, userInfo: ["filePath": url.path])
+            } catch {
+                fingerprints.removeValue(forKey: url.path)
+                message = "最新版本暂未就绪：\(error.localizedDescription)"
+            }
+            resolvingPaths.remove(url.path)
+        }
+    }
+
     private func inspect(requestDownload: Bool) {
         guard let query else { return }
         query.disableUpdates()
@@ -89,18 +119,19 @@ final class TeachingCloudSyncStatus: NSObject, ObservableObject {
                 ?? (item.value(forAttribute: NSMetadataUbiquitousItemUploadingErrorKey) as? NSError)
             if let error { errors.append("\(name)：\(error.localizedDescription)") }
             if status != NSMetadataUbiquitousItemDownloadingStatusCurrent { pending += 1 }
-            if requestDownload && requestedDownloads.insert(url.path).inserted {
+            if status != NSMetadataUbiquitousItemDownloadingStatusCurrent && requestedDownloads.insert(url.path).inserted {
                 do { try FileManager.default.startDownloadingUbiquitousItem(at: url) }
                 catch { errors.append("\(name)：\(error.localizedDescription)") }
             }
+            if status == NSMetadataUbiquitousItemDownloadingStatusCurrent { requestedDownloads.remove(url.path) }
             let isUploaded = (item.value(forAttribute: NSMetadataUbiquitousItemIsUploadedKey) as? NSNumber)?.boolValue == true
             if isUploaded { uploaded += 1 }
             else { uploading += 1 }
             let date = item.value(forAttribute: NSMetadataItemFSContentChangeDateKey) as? Date
-            let fingerprint = "\(date?.timeIntervalSince1970 ?? 0)|\(status ?? "unknown")|\(String(describing: item.value(forAttribute: NSMetadataItemFSSizeKey)))"
+            let fingerprint = "\(date?.timeIntervalSince1970 ?? 0)|\(status ?? "unknown")|\(String(describing: item.value(forAttribute: NSMetadataItemFSSizeKey)))|\(String(describing: item.value(forAttribute: NSMetadataUbiquitousItemHasUnresolvedConflictsKey)))"
             let previous = fingerprints.updateValue(fingerprint, forKey: url.path)
             if previous != fingerprint && status == NSMetadataUbiquitousItemDownloadingStatusCurrent {
-                NotificationCenter.default.post(name: .teachingCloudFileChanged, object: nil, userInfo: ["filePath": url.path])
+                refreshLatest(url)
             }
             details.append("\(name)：\(status == NSMetadataUbiquitousItemDownloadingStatusCurrent ? "本机当前" : "待下载")，\(isUploaded ? "iCloud 标记已上传" : "尚未确认上传")")
         }
@@ -126,14 +157,13 @@ struct TeachingCloudSyncSettingsView: View {
     @State private var conflictReport: TeachingCloudConflictReport?
     @State private var conflictMessage = ""
     @State private var isResolvingConflict = false
-    @State private var showKeepCurrentConfirmation = false
     var body: some View {
         List {
             Section("iCloud 文件检查") {
                 Text(status.message).textSelection(.enabled)
                 if let date = status.checkedAt { Text("最近检查：\(date.formatted())").font(.footnote) }
                 Button(status.isChecking ? "检查中…" : "立即检查并请求下载") { status.check() }.disabled(status.isChecking)
-                Text("保存成功表示文件已写入本机 iCloud 目录，不表示另一设备已经收到。文件版本发生变化时停止覆盖，请先导出恢复副本再重新打开原文件核对。")
+                Text("保存成功表示文件已写入本机 iCloud 目录，不表示另一设备已经收到。发生版本冲突时自动采用保存时间最新的一份并清理旧冲突；下载到达后自动刷新。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             Section("学生设置历史冲突") {
@@ -145,16 +175,16 @@ struct TeachingCloudSyncSettingsView: View {
                         Text("版本\(index + 1)：\(version.studentCount.map(String.init) ?? "未知")位学生；\(version.savedAt)").font(.footnote)
                     }
                     if !report.conflicts.isEmpty {
-                        Button("保留当前设置并解除历史冲突") { showKeepCurrentConfirmation = true }
+                        Button("立即采用最新版本") { keepCurrentStudentSettings() }
                             .disabled(isResolvingConflict)
-                        Text("不会按时间或人数自动选择版本。确认后先在本机保留全部版本副本，再解除历史冲突；当前文件内容不变。")
+                        Text("自动采用保存时间最新的一份，删除旧冲突版本，不按人数或记录数量选取。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                 }
                 if !conflictMessage.isEmpty { Text(conflictMessage).font(.footnote).textSelection(.enabled) }
             }
             Section("文件状态") { ForEach(status.files, id: \.self) { Text($0).font(.footnote) } }
-            Section("本机恢复副本") {
+            Section("历史备份（不参与同步）") {
                 Text("pending 为未保存到原位置的编辑；history 为覆盖前版本。分享副本后可在档案中另存、核对，不自动覆盖原文件。")
                     .font(.footnote).foregroundStyle(.secondary)
                 Button("刷新恢复副本") { loadRecovery() }
@@ -164,12 +194,6 @@ struct TeachingCloudSyncSettingsView: View {
         }
         .navigationTitle("iCloud 同步与恢复")
         .task { status.start(); loadRecovery(); loadStudentConflicts() }
-        .confirmationDialog("保留当前学生设置？", isPresented: $showKeepCurrentConfirmation, titleVisibility: .visible) {
-            Button("备份全部版本并保留当前设置") { keepCurrentStudentSettings() }
-            Button("取消", role: .cancel) { }
-        } message: {
-            Text("当前文件含\(conflictReport?.current.studentCount ?? 0)位学生。历史冲突版本将全部保留为本机恢复副本，之后可在下方刷新并分享。不会合并历史版本里的字段。")
-        }
     }
     private func loadStudentConflicts() {
         Task {
@@ -180,7 +204,8 @@ struct TeachingCloudSyncSettingsView: View {
                     return try TeachingCloudConflictResolver.report(at: TeachingStudentSettingsStore.settingsFileURL())
                 }.value
                 conflictReport = report
-                conflictMessage = report.conflicts.isEmpty ? "没有未解决的学生设置冲突。" : "当前文件可以读取；解除冲突前仍禁止覆盖。"
+                if !report.conflicts.isEmpty { keepCurrentStudentSettings() }
+                conflictMessage = report.conflicts.isEmpty ? "没有未解决的学生设置冲突。" : "发现冲突，正在自动采用最新版本。"
             } catch { conflictMessage = "版本检查失败：\(error.localizedDescription)" }
         }
     }
@@ -190,8 +215,8 @@ struct TeachingCloudSyncSettingsView: View {
         Task {
             defer { isResolvingConflict = false }
             do {
-                try await Task.detached(priority: .utility) { try TeachingCloudConflictResolver.keepCurrent(report) }.value
-                conflictMessage = "已保留当前设置，全部版本已备份。"
+                try await Task.detached(priority: .utility) { _ = try LatestCloudFile.read(report.url) }.value
+                conflictMessage = "已采用保存时间最新的版本并清理旧冲突。"
                 NotificationCenter.default.post(name: .teachingCloudFileChanged, object: nil, userInfo: ["filePath": report.url.path])
                 loadRecovery()
                 loadStudentConflicts()

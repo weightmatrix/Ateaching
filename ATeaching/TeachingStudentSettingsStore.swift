@@ -80,11 +80,6 @@ nonisolated enum TeachingStudentSettingsStore {
     static func saveStudents(_ students: [TeachingStudentItem], expectedStudents: [TeachingStudentItem], fileManager: FileManager = .default) throws {
         var snapshot = try loadSnapshot(fileManager: fileManager)
         guard snapshot.students != students else { return }
-        guard snapshot.students == expectedStudents || snapshot.students == students else {
-            let data = try JSONEncoder().encode(students)
-            try TeachingCloudFileAccess.preserve(data, original: settingsFileURL(fileManager: fileManager), kind: "pending")
-            throw TeachingCloudFileAccess.AccessError.changed("学生列表")
-        }
         snapshot.students = students
         let validIDs = Set(students.map { $0.id.uuidString })
         snapshot.studentProfiles = snapshot.studentProfiles.filter { validIDs.contains($0.key) }

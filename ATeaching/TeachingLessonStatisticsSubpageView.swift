@@ -82,10 +82,8 @@ struct TeachingLessonStatisticsSubpageView: View {
         .onReceive(NotificationCenter.default.publisher(for: .teachingCloudFileChanged)) { notification in
             guard let path = notification.userInfo?["filePath"] as? String,
                   ["Setting-机构.json", "LessonRecords.json", "setting-students"].contains(URL(fileURLWithPath: path).lastPathComponent) else { return }
-            guard !showInstitutionEditor, deleteTarget == nil else {
-                statusMessage = "iCloud 统计文件已变化，当前编辑未自动替换。"
-                return
-            }
+            showInstitutionEditor = false
+            deleteTarget = nil
             loadAllData()
         }
         .onChange(of: mode) { _, _ in

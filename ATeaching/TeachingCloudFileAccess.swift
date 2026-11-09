@@ -19,61 +19,64 @@ nonisolated enum TeachingCloudFileAccess {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
     static func ensureReady(_ url: URL, rejectConflicts: Bool = true) throws {
-        let values = try url.resourceValues(forKeys: [.isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey,
-                                                     .ubiquitousItemDownloadingErrorKey])
-        if let error = values.ubiquitousItemDownloadingError { throw error }
-        if values.isUbiquitousItem == true && values.ubiquitousItemDownloadingStatus != .current {
-            try FileManager.default.startDownloadingUbiquitousItem(at: url)
-            throw AccessError.waiting(url.lastPathComponent)
-        }
-        if rejectConflicts && !(NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []).isEmpty {
-            throw AccessError.conflict(url.lastPathComponent)
-        }
+        try LatestCloudFile.ready(url)
     }
     static func read(_ url: URL) throws -> Data {
-        // Refuse known-unready items before coordination can wait for materialization.
-        try ensureReady(url, rejectConflicts: false)
-        var error: NSError?
-        var result: Result<Data, Error>?
-        NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &error) { coordinated in
-            result = Result { try ensureReady(coordinated, rejectConflicts: false); return try Data(contentsOf: coordinated) }
-        }
-        if let error { throw error }
-        guard let result else { throw AccessError.coordination }
-        return try result.get()
+        try LatestCloudFile.read(url).data
     }
-    /// expectedDigest nil means creation only; never silently replace an existing file without a baseline.
+    /// A fresh user save replaces older versions, irrespective of its previous read baseline.
     static func write(_ data: Data, to url: URL, expectedDigest: String?, allowReplacingEmptyArray: Bool = false) throws {
+        let editedAt = Date()
         do {
-            if FileManager.default.fileExists(atPath: url.path) { try ensureReady(url) }
-        } catch { throw preservingFailure(error, data: data, url: url) }
-        var error: NSError?
-        var result: Result<Void, Error>?
-        NSFileCoordinator().coordinate(writingItemAt: url, options: .forReplacing, error: &error) { coordinated in
-            result = Result {
-                if FileManager.default.fileExists(atPath: coordinated.path) {
-                    try ensureReady(coordinated)
-                    let current = try Data(contentsOf: coordinated)
-                    let hash = digest(current)
-                    let array = (try? JSONSerialization.jsonObject(with: current)) as? [Any]
-                    let mayInitializeEmptyArray = expectedDigest == nil && allowReplacingEmptyArray && array?.isEmpty == true
-                    guard hash == expectedDigest || current == data || mayInitializeEmptyArray else {
-                        if expectedDigest == nil { throw AccessError.missingBaseline(url.lastPathComponent) }
-                        throw AccessError.changed(url.lastPathComponent)
-                    }
-                    // Keep the previous content before replacing it, including for successful writes.
-                    if current != data { _ = try preserve(current, original: url, kind: "history") }
-                } else if expectedDigest != nil {
-                    throw AccessError.changed(url.lastPathComponent)
-                }
-                try data.write(to: coordinated, options: .atomic)
+            let winner = try LatestCloudFile.write(data, to: url, editedAt: editedAt)
+            if winner.data != data {
+                publishChange(url)
             }
+            removePending(for: url, through: editedAt)
+        } catch {
+            try queuePending(data, url: url, editedAt: editedAt)
+            throw error
         }
-        do {
-            if let error { throw error }
-            guard let result else { throw AccessError.coordination }
-            try result.get()
-        } catch { throw preservingFailure(error, data: data, url: url) }
+    }
+    private static func publishChange(_ url: URL) {
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: .teachingCloudFileChanged, object: nil, userInfo: ["filePath": url.path])
+        }
+    }
+    private struct Pending: Codable {
+        let url: URL
+        let data: Data
+        let editedAt: Date
+    }
+    private static let pendingLock = NSLock()
+    private static func pendingURL(for url: URL) throws -> URL {
+        let folder = try recoveryRoot().appendingPathComponent("latest-pending", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder.appendingPathComponent(digest(Data(url.standardizedFileURL.path.utf8)) + ".json")
+    }
+    private static func queuePending(_ data: Data, url: URL, editedAt: Date) throws {
+        pendingLock.lock(); defer { pendingLock.unlock() }
+        let path = try pendingURL(for: url)
+        if let old = try? JSONDecoder().decode(Pending.self, from: Data(contentsOf: path)), old.editedAt > editedAt { return }
+        try JSONEncoder().encode(Pending(url: url, data: data, editedAt: editedAt)).write(to: path, options: .atomic)
+    }
+    private static func removePending(for url: URL, through date: Date) {
+        pendingLock.lock(); defer { pendingLock.unlock() }
+        guard let path = try? pendingURL(for: url),
+              let old = try? JSONDecoder().decode(Pending.self, from: Data(contentsOf: path)), old.editedAt <= date else { return }
+        try? FileManager.default.removeItem(at: path)
+    }
+    static func retryPending() {
+        guard let folder = try? recoveryRoot().appendingPathComponent("latest-pending"),
+              let files = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) else { return }
+        for file in files where file.pathExtension == "json" {
+            guard let pending = try? JSONDecoder().decode(Pending.self, from: Data(contentsOf: file)) else { continue }
+            do {
+                _ = try LatestCloudFile.write(pending.data, to: pending.url, editedAt: pending.editedAt)
+                removePending(for: pending.url, through: pending.editedAt)
+                publishChange(pending.url)
+            } catch { /* Keep only this newest pending edit until the provider is available. */ }
+        }
     }
     private static func preservingFailure(_ error: Error, data: Data, url: URL) -> Error {
         do { _ = try preserve(data, original: url, kind: "pending"); return error }

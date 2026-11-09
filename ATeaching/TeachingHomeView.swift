@@ -78,8 +78,7 @@ struct TeachingHomeView: View {
         .onReceive(NotificationCenter.default.publisher(for: .teachingCloudFileChanged)) { notification in
             guard let path = notification.userInfo?["filePath"] as? String,
                   URL(fileURLWithPath: path).lastPathComponent == "setting-students" else { return }
-            if students == loadedStudentsBaseline { loadStudentsFromSettings() }
-            else { statusMessage = "iCloud 学生设置已变化，当前未保存修改未被替换。请先核对。" }
+            loadStudentsFromSettings()
         }
         .onReceive(NotificationCenter.default.publisher(for: .teachingStudentsDidChange)) { _ in
             loadStudentsFromSettings()

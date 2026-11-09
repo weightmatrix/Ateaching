@@ -62,6 +62,7 @@ struct NodeMarkdownEditorView: View {
     @State private var documentRevision: UInt64 = 0
     @State private var persistedDocumentRevision: UInt64 = 0
     @State private var isSaveTaskRunning = false
+    @State private var pendingLatestCloudReload = false
     @State private var showSettingsSheet = false
     @State private var showTOCPopover = false
     @State private var showExportActionDialog = false
@@ -221,13 +222,18 @@ struct NodeMarkdownEditorView: View {
         .onChange(of: isTextInputSessionActive, handleTextInputSessionChange)
         .onReceive(NotificationCenter.default.publisher(for: .teachingCloudFileChanged)) { notification in
             guard let path = notification.userInfo?["filePath"] as? String,
-                  path == fileURL.standardizedFileURL.path, !isLoading else { return }
-            guard saveState == .clean, documentRevision == persistedDocumentRevision,
-                  !hasUncommittedLegacyDraft, !isNotebookWriteOperationInProgress else {
-                statusMessage = "iCloud 文件有变化；当前编辑未自动替换，保存时将核对版本。"
-                return
-            }
-            reloadFromDisk()
+                  path == fileURL.standardizedFileURL.path else { return }
+            pendingLatestCloudReload = true
+            applyLatestCloudReloadIfReady()
+        }
+        .onChange(of: isSaveTaskRunning) { _, running in
+            if !running { applyLatestCloudReloadIfReady() }
+        }
+        .onChange(of: isNotebookWriteOperationInProgress) { _, running in
+            if !running { applyLatestCloudReloadIfReady() }
+        }
+        .onChange(of: isLoading) { _, loading in
+            if !loading { applyLatestCloudReloadIfReady() }
         }
         .onReceive(NotificationCenter.default.publisher(for: .teachingClassSessionDidChange)) { notification in
             if let changedPath = notification.userInfo?["filePath"] as? String {
@@ -618,6 +624,19 @@ struct NodeMarkdownEditorView: View {
         if structureChanged {
             documentIndex.rebuild(from: currentDocument.nodes)
         }
+    }
+
+    private func applyLatestCloudReloadIfReady() {
+        guard pendingLatestCloudReload, !isLoading, !isSaveTaskRunning, !isNotebookWriteOperationInProgress else { return }
+        do {
+            let data = try TeachingCloudFileAccess.read(fileURL)
+            pendingLatestCloudReload = false
+            guard TeachingCloudFileAccess.digest(data) != fileMeta.diskDigest else { return }
+            pendingRealtimeCoursePushTask?.cancel()
+            persistedDocumentRevision = documentRevision
+            saveState = .clean
+            reloadFromDisk()
+        } catch { statusMessage = "最新文件尚未就绪：\(error.localizedDescription)" }
     }
 
     private func reloadFromDisk() {

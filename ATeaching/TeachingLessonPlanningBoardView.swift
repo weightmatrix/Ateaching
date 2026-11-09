@@ -112,10 +112,8 @@ private struct TeachingLessonPlanningBoardView: View {
         .onReceive(NotificationCenter.default.publisher(for: .teachingCloudFileChanged)) { notification in
             guard let path = notification.userInfo?["filePath"] as? String,
                   URL(fileURLWithPath: path).lastPathComponent == kind.storeKind.fileName else { return }
-            guard !recordsAreDirty, editingRecord == nil, !showInsertWeeklyConfirmation else {
-                statusMessage = "iCloud 排课文件已变化，当前编辑未自动替换。"
-                return
-            }
+            editingRecord = nil
+            showInsertWeeklyConfirmation = false
             undoStack = []
             redoStack = []
             load()
