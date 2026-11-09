@@ -1,5 +1,9 @@
 # ATeaching白皮书
 
+## 全平台图标资源统一（2026-11-09）
+
+授课新古典书法版：AppIcon全部28个槽位和MobileAppIcon的1024资源均替换。Mac/iPhone/iPad资源编译通过，移动产物声明包含phone/pad所需图标文件。 本次遵循整款应用跨端统一换图标约定，不能只设置Finder自定义图标。Mac安装副本同步更新包内ICNS及Assets.car，移动设备桌面最终生效须安装含新资源的构建；此次仅验证移动资源打包，未声称已安装iPhone/iPad。
+
 ## 新古典书法版Mac图标（2026-11-09）
 
 macOS AppIcon十个尺寸改用深蓝、象牙白的新古典书与柱廊图案，下方为“李知本”书法字。原图归档Design/BrandIcons/授课-新古典书法-20261109.png；移动端MobileAppIcon独立资源不变。
