@@ -31,7 +31,8 @@ enum TeachingStudentSyncFolderService {
 
     private static func normalizeSyncRootURL(_ url: URL) -> URL {
         let name = url.lastPathComponent
-        if name == "1·教案" || name == "2·问题" || name == "3·试卷" {
+        // 旧分类目录的授权也应定位到学生根目录，统一生成新版分类。
+        if ["1·教案", "2·问题", "3·试卷", "1-教案PDF", "2-问题PDF", "3-卷子PDF"].contains(name) {
             return url.deletingLastPathComponent()
         }
         return url
