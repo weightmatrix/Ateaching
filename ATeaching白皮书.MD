@@ -1,5 +1,9 @@
 # ATeaching白皮书
 
+## 新古典书法版Mac图标（2026-11-09）
+
+macOS AppIcon十个尺寸改用深蓝、象牙白的新古典书与柱廊图案，下方为“李知本”书法字。原图归档Design/BrandIcons/授课-新古典书法-20261109.png；移动端MobileAppIcon独立资源不变。
+
 ## Mac 蓝白授课图标（2026-11-08）
 
 macOS AppIcon 的十个尺寸槽位统一使用用户确认的蓝底浅白演示板与手写笔图案。原图归档于 Design/BrandIcons/授课-蓝底白板-20261108.png；移动端独立 MobileAppIcon 保持现状。此次为图标资源更新，不涉及功能与版本号。
