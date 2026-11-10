@@ -473,7 +473,8 @@ nonisolated enum TeachingCourseWorkflowService {
     static func deleteH3PackageEverywhere(
         sourceFile: String,
         sourceID: String,
-        excludingNotebookURL: URL? = nil
+        excludingNotebookURL: URL? = nil,
+        progress: (@Sendable (Int, Int) -> Void)? = nil
     ) async throws -> TeachingH3PackageDeletionSummary {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
@@ -481,7 +482,8 @@ nonisolated enum TeachingCourseWorkflowService {
                     let summary = try performDeleteH3PackageEverywhere(
                         sourceFile: sourceFile,
                         sourceID: sourceID,
-                        excludingNotebookURL: excludingNotebookURL
+                        excludingNotebookURL: excludingNotebookURL,
+                        progress: progress
                     )
                     continuation.resume(returning: summary)
                 } catch {
@@ -494,7 +496,8 @@ nonisolated enum TeachingCourseWorkflowService {
     private static func performDeleteH3PackageEverywhere(
         sourceFile: String,
         sourceID: String,
-        excludingNotebookURL: URL?
+        excludingNotebookURL: URL?,
+        progress: (@Sendable (Int, Int) -> Void)?
     ) throws -> TeachingH3PackageDeletionSummary {
         let trimmedSourceFile = sourceFile.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedSourceID = sourceID.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -509,14 +512,19 @@ nonisolated enum TeachingCourseWorkflowService {
         var summary = TeachingH3PackageDeletionSummary()
 
         // 1. 删除所有随堂笔记中引用该母本H3的包。
-        let students = try TeachingStudentSettingsStore.loadStudents()
+        let workspace = try ArchiveStorage.ensureWorkspace()
+        let notebookURLs = try collectRegularFilesRecursively(root: workspace).filter {
+            $0.pathExtension.caseInsensitiveCompare("csv") == .orderedSame
+                && $0.lastPathComponent.hasPrefix("随堂笔记_")
+        }.sorted { $0.path < $1.path }
         let excludingPath = excludingNotebookURL?.standardizedFileURL.path
-        for student in students {
-            let notebookURL = try notebookURL(for: student)
+        progress?(0, notebookURLs.count)
+        for (offset, notebookURL) in notebookURLs.enumerated() {
+            defer { progress?(offset + 1, notebookURLs.count) }
             if let excludingPath, notebookURL.standardizedFileURL.path == excludingPath { continue }
-            guard FileManager.default.fileExists(atPath: notebookURL.path) else { continue }
             startDownloadingUbiquitousItemIfNeeded(notebookURL)
-            guard let payload = try? NodeMarkdownFileManager.read(fileURL: notebookURL) else { continue }
+            // 读失败必须报告，不能静默跳过后宣称清库成功。
+            let payload = try NodeMarkdownFileManager.read(fileURL: notebookURL)
             var document = payload.0
             let meta = payload.1
             var removedCount = 0

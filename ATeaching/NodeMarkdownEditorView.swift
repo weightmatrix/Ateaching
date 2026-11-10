@@ -41,6 +41,22 @@ private final class NodeMarkdownPackageCutClipboard {
 
 // MARK: - NodeMarkdown编辑器页面 - v1 - 独立Web渲染骨架并预留后续原生编辑覆盖层
 struct NodeMarkdownEditorView: View {
+    @State private var deletionProgress: (done: Int, total: Int)?
+
+    @ViewBuilder
+    private var deletionProgressOverlay: some View {
+        if let progress = deletionProgress {
+            VStack(spacing: 12) {
+                Text("正在清理全部随堂笔记")
+                ProgressView(value: Double(progress.done), total: Double(max(1, progress.total)))
+                Text("\(progress.done) / \(progress.total)")
+            }
+            .padding(24)
+            .frame(width: 320)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        }
+    }
+
     private struct ReflectionPresentation: Identifiable {
         let id = UUID()
         let fileURL: URL
@@ -462,7 +478,7 @@ struct NodeMarkdownEditorView: View {
                         }
                         .frame(minHeight: 120, maxHeight: 180)
                     }
-                    if classUpdatePreview.newPackageCount > 0 && !classUpdatePreview.chapterTargets.isEmpty {
+                    if !newPackageItems.isEmpty && !classUpdatePreview.chapterTargets.isEmpty {
                         Divider()
                         newPackagePlacementControls
                     }
@@ -503,6 +519,7 @@ struct NodeMarkdownEditorView: View {
                     ToolbarItem(placement: .cancellationAction) {
                         Button("返回") {
                             showNewPackagePlacementSheet = false
+                            TeachingDebugLogStore.append("placement local=\(newPackageItems.count) preview=\(classUpdatePreview.newPackageCount) targets=\(classUpdatePreview.chapterTargets.count) selected=\(selectedNewPackageIDs.count)", category: "诊断·124·新包落位", force: true)
                             showClassUpdateSheet = true
                         }
                     }
@@ -640,6 +657,7 @@ struct NodeMarkdownEditorView: View {
     }
 
     private func reloadFromDisk() {
+        TeachingDebugLogStore.append("reload row=\(String(describing: activeEditorRowIndex)) saving=\(isSaveTaskRunning) pendingCloud=\(pendingLatestCloudReload)", category: "诊断·124·保存视野", force: true)
         invalidatePendingTextKitParsing()
         // 磁盘加载和编辑器文本解析是两种不同事务。样式刷新、
         // 输入回调或草稿提交可以废弃旧解析，但绝不能把正在进行的
@@ -731,9 +749,9 @@ struct NodeMarkdownEditorView: View {
             if isReadOnlyRendered {
                 readOnlyRenderSurface
             } else if NodeMarkdownFeatureFlags.textKit2EditorEnabled {
-                textKit2EditorSurface
+                textKit2EditorSurface.overlay { deletionProgressOverlay }
             } else {
-                textKitEditorSurface
+                textKitEditorSurface.overlay { deletionProgressOverlay }
             }
         }
     }
@@ -1004,6 +1022,7 @@ struct NodeMarkdownEditorView: View {
     }
 
     private func saveToDisk() {
+        TeachingDebugLogStore.append("save start row=\(String(describing: activeEditorRowIndex)) revision=\(documentRevision)", category: "诊断·124·保存视野", force: true)
         guard !isSaveTaskRunning else { return }
         isSaveTaskRunning = true
         saveState = .saving
@@ -2412,6 +2431,7 @@ struct NodeMarkdownEditorView: View {
                         category: "TeachingCourse.UpdatePreview"
                     )
                     showClassUpdateSheet = true
+                    TeachingDebugLogStore.append("placement local=\(newPackageItems.count) preview=\(preview.newPackageCount) targets=\(preview.chapterTargets.count) selected=\(selectedNewPackageIDs.count)", category: "诊断·124·新包落位", force: true)
                     statusMessage = "更新预览就绪。"
                 }
             } catch {
@@ -2967,6 +2987,10 @@ struct NodeMarkdownEditorView: View {
     private func deleteNodePackageAtRow(_ rowIndex: Int) {
         commitPendingDraftBeforeSyncIfNeeded()
         guard document.nodes.indices.contains(rowIndex) else { return }
+        if isLessonPlanEditor, document.nodes[rowIndex].level == 3 {
+            deleteProtectedH3PackageAtRow(rowIndex)
+            return
+        }
         guard let packageRange = packageRangeForNodePackage(at: rowIndex) else { return }
         let previousDocument = document
         let removedNodes = Array(document.nodes[packageRange])
@@ -3288,7 +3312,14 @@ struct NodeMarkdownEditorView: View {
             statusMessage = "母本删除仅支持H3节点"
             return
         }
-        let sourceFile = node.sourceFile.trimmingCharacters(in: .whitespacesAndNewlines)
+        var sourceFile = node.sourceFile.trimmingCharacters(in: .whitespacesAndNewlines)
+        if isLessonPlanEditor, let workspace = try? ArchiveStorage.ensureWorkspace() {
+            let root = workspace.appendingPathComponent(ArchiveStorage.systemFolderName)
+                .appendingPathComponent(ArchiveStorage.teachingPlanFolderName).standardizedFileURL.path + "/"
+            if fileURL.standardizedFileURL.path.hasPrefix(root) {
+                sourceFile = String(fileURL.standardizedFileURL.path.dropFirst(root.count))
+            }
+        }
         if sourceFile.isEmpty {
             let previousDocument = document
             let localRemoved = document.removeH3Package(startingAt: rowIndex)
@@ -3309,29 +3340,39 @@ struct NodeMarkdownEditorView: View {
             return
         }
         statusMessage = "该H3包已绑定母本，不允许直接删除"
-        let sourceID = node.sourceID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sourceID = isLessonPlanEditor ? node.id.uuidString : node.sourceID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !sourceID.isEmpty else { return }
 
         #if os(macOS)
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "母本删除"
-        alert.informativeText = "将删除母本对应H3包，并删除当前文档中的该H3包。"
+        alert.informativeText = "将扫描全部随堂笔记（含备份），删除所有引用此母本的H3包，再删除母本对应H3包。"
         alert.addButton(withTitle: "确认删除")
         alert.addButton(withTitle: "取消")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         #endif
 
+        guard !isNotebookWriteOperationInProgress else { return }
+        beginExclusiveNotebookOperation()
+        deletionProgress = (0, 0)
         Task {
+            defer {
+                deletionProgress = nil
+                endExclusiveNotebookOperation()
+            }
             do {
                 let summary = try await TeachingCourseWorkflowService.deleteH3PackageEverywhere(
                     sourceFile: sourceFile,
                     sourceID: sourceID,
-                    excludingNotebookURL: fileURL
+                    excludingNotebookURL: fileURL,
+                    progress: { done, total in
+                        Task { @MainActor in deletionProgress = (done, total) }
+                    }
                 )
                 removeLocalH3PackageAfterMasterDeletion(rowIndex: rowIndex, summary: summary)
             } catch {
-                statusMessage = "母本删除失败：\(error.localizedDescription)"
+                statusMessage = "母本删除未完成（部分随堂笔记可能已清理，可重试）：\(error.localizedDescription)"
             }
         }
     }
