@@ -93,6 +93,11 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
         private var viewportWidthTransitionPending = false
         private var exactLayoutRecoveryScheduled = false
         private let renderCache = NodeMarkdownTextKit2RenderCache<NodeMarkdownBlockRenderRecord>(capacity: 4_096)
+        private var flickerWindow: TimeInterval = 0
+        private var flickerCount = 0
+        private var flickerSuppressed = 0
+        private var flickerSequence = 0
+        private var lastDiagnosticViewport: NSRect?
         private var viewportObserver: NSObjectProtocol?
         private var lastExternalToken: Int
         private var lastNavigationToken: Int
@@ -1563,6 +1568,34 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             )
         }
 
+        /// 只在宽度失效、恢复和视口尺寸突变时采集；不触发布局或读取正文。
+        private func recordFlickerContext(_ stage: String, details: String = "", stack: Bool = false) {
+            let now = ProcessInfo.processInfo.systemUptime
+            if now - flickerWindow >= 60 {
+                flickerWindow = now
+                flickerCount = 0
+            }
+            guard flickerCount < 80 else {
+                flickerSuppressed += 1
+                return
+            }
+            flickerCount += 1
+            flickerSequence += 1
+            let scroll = tableView?.enclosingScrollView
+            let vertical = scroll?.verticalScroller
+            let anchor = pendingViewportAnchor.map {
+                "node=\($0.nodeID) offset=\($0.offsetFromRowTop) fallback=\($0.fallbackOrigin)"
+            } ?? "nil"
+            let dimensions = "scrollFrame=\(String(describing: scroll?.frame)) scrollBounds=\(String(describing: scroll?.bounds)) clipFrame=\(String(describing: scroll?.contentView.frame)) clipBounds=\(String(describing: scroll?.contentView.bounds)) tableFrame=\(String(describing: tableView?.frame))"
+            let scrollers = "style=\(scroll?.scrollerStyle.rawValue ?? -1) preferredStyle=\(NSScroller.preferredScrollerStyle.rawValue) autoHide=\(scroll?.autohidesScrollers ?? false) hasVertical=\(scroll?.hasVerticalScroller ?? false) verticalHidden=\(vertical?.isHidden ?? true) verticalFrame=\(String(describing: vertical?.frame)) knob=\(vertical?.knobProportion ?? -1) insets=\(String(describing: scroll?.contentInsets))"
+            let context = "editor=\(sessionID) seq=\(flickerSequence) stage=\(stage) uptime=\(now) suppressed=\(flickerSuppressed) generation=\(exactLayoutGeneration) nodes=\(state.snapshot.nodes.count) ready=\(readyRowCount) rows=\(tableView?.numberOfRows ?? 0) measuredWidth=\(exactLayoutWidth) liveWidth=\(viewportLayoutWidth()) transition=\(viewportWidthTransitionPending) recovery=\(exactLayoutRecoveryScheduled) anchor=[\(anchor)] windowFrame=\(String(describing: tableView?.window?.frame)) liveResize=\(tableView?.inLiveResize ?? false)"
+            flickerSuppressed = 0
+            TeachingDebugLogStore.append("\(context) \(dimensions) \(scrollers) \(details)", category: "诊断·124·闪烁链路", force: true)
+            if stack {
+                TeachingDebugLogStore.append("editor=\(sessionID) seq=\(flickerSequence) stack=\(Thread.callStackSymbols.prefix(8).joined(separator: " | "))", category: "诊断·124·闪烁链路", force: true)
+            }
+        }
+
         func recordLayoutCrashContext(_ stage: String, details: String = "", stack: Bool = false) {
             let now = ProcessInfo.processInfo.systemUptime
             if let last = crashDiagnosticLast[stage], now - last < 1 {
@@ -1976,6 +2009,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             guard oldPixels != newPixels || oldScaleMilli != newScaleMilli else { return }
             diagnostic114.recordCount("宽度全文重排次数")
 
+            recordFlickerContext("宽度失效前", details: "requestedWidth=\(width)", stack: true)
             recordLayoutCrashContext("宽度变化", details: "requestedWidth=\(width)")
             captureViewportAnchor()
             cancelExactLayout()
@@ -1986,6 +2020,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             readyRowCount = 0
             initialViewportIsReady = false
             viewportWidthTransitionPending = true
+            recordFlickerContext("宽度缓存清空后")
         }
 
         private func handleViewportWidthChange() {
@@ -2005,7 +2040,9 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 prepareForViewportWidthChange(to: width)
             }
             viewportWidthTransitionPending = false
+            recordFlickerContext("宽度重载前")
             tableView.reloadData()
+            recordFlickerContext("宽度重载后")
             scheduleExactLayout()
         }
 
@@ -2013,6 +2050,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             guard !exactLayoutRecoveryScheduled else { return }
             diagnostic114.recordCount("布局恢复次数")
             exactLayoutRecoveryScheduled = true
+            recordFlickerContext("恢复排队", stack: true)
             recordLayoutCrashContext("恢复已排队")
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
@@ -2032,6 +2070,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 tableView.reloadData()
                 self.scheduleExactLayout()
                 self.recordLayoutCrashContext("恢复返回")
+                self.recordFlickerContext("恢复重载返回")
             }
         }
 
@@ -2065,6 +2104,13 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
         }
 
         private func viewportDidChange() {
+            if let viewport = tableView?.enclosingScrollView?.contentView.bounds {
+                if let previous = lastDiagnosticViewport,
+                   previous.size != viewport.size || abs(previous.minY - viewport.minY) > max(1, viewport.height) {
+                    recordFlickerContext("视口突变", details: "previous=\(previous)")
+                }
+                lastDiagnosticViewport = viewport
+            }
             diagnostic114.recordCount("视口变化次数")
             scheduleExactLayout()
             diagnostic114.flushIfNeeded(reason: "滚动", readyRows: readyRowCount)
@@ -2106,6 +2152,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             } else {
                 guard readyRowCount == state.snapshot.nodes.count else { return }
             }
+            recordFlickerContext("锚点恢复前", details: "requested=\(requestedOrigin)")
             var bounds = scrollView.contentView.bounds
             bounds.origin = requestedOrigin
             scrollView.contentView.setBoundsOrigin(
@@ -2113,6 +2160,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             )
             scrollView.reflectScrolledClipView(scrollView.contentView)
             pendingViewportAnchor = nil
+            recordFlickerContext("锚点恢复后", details: "requested=\(requestedOrigin)")
         }
 
         private func invalidateExactLayout(startingAt row: Int = 0) {
