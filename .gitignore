@@ -8,3 +8,6 @@ iCloud重复Swift备份/
 **/*冲突副本*
 .swiftpm
 *.xcresult
+
+# Misplaced compiler index cache; never source.
+/ATeaching.xcodeproj/-Xcc/

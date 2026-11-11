@@ -43,20 +43,6 @@ private final class NodeMarkdownPackageCutClipboard {
 struct NodeMarkdownEditorView: View {
     @State private var deletionProgress: (done: Int, total: Int)?
 
-    @ViewBuilder
-    private var deletionProgressOverlay: some View {
-        if let progress = deletionProgress {
-            VStack(spacing: 12) {
-                Text("正在清理全部随堂笔记")
-                ProgressView(value: Double(progress.done), total: Double(max(1, progress.total)))
-                Text("\(progress.done) / \(progress.total)")
-            }
-            .padding(24)
-            .frame(width: 320)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-        }
-    }
-
     private struct ReflectionPresentation: Identifiable {
         let id = UUID()
         let fileURL: URL
@@ -254,6 +240,18 @@ struct NodeMarkdownEditorView: View {
         }
         .onChange(of: isLoading) { _, loading in
             if !loading { applyLatestCloudReloadIfReady() }
+        }
+        .overlay {
+            if let progress = deletionProgress {
+                VStack(spacing: 12) {
+                    Text("正在清理全部随堂笔记")
+                    ProgressView(value: Double(progress.done), total: Double(max(1, progress.total)))
+                    Text("\(progress.done) / \(progress.total)")
+                }
+                .padding(24)
+                .frame(width: 320)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .teachingClassSessionDidChange)) { notification in
             if let changedPath = notification.userInfo?["filePath"] as? String {
@@ -757,9 +755,9 @@ struct NodeMarkdownEditorView: View {
             if isReadOnlyRendered {
                 readOnlyRenderSurface
             } else if NodeMarkdownFeatureFlags.textKit2EditorEnabled {
-                textKit2EditorSurface.overlay { deletionProgressOverlay }
+                textKit2EditorSurface
             } else {
-                textKitEditorSurface.overlay { deletionProgressOverlay }
+                textKitEditorSurface
             }
         }
     }
