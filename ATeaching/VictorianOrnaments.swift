@@ -33,7 +33,7 @@ struct VictorianWallpaper: View {
     var body: some View {
         Canvas { context, size in
             let step: CGFloat = 94
-            let ink = Color(red: 0.55, green: 0.36, blue: 0.16)
+            let ink = AppBackgroundSettingsStore.load().designStyle.border
                 .opacity(colorScheme == .dark ? 0.30 : 0.19)
             for row in 0..<Int(ceil(size.height / step)) {
                 for column in -1..<Int(ceil(size.width / step)) {
@@ -56,7 +56,7 @@ struct VictorianWallpaper: View {
 
 struct VictorianOrnateFrame: View {
     var compact = false
-    private let gold = Color(red: 0.65, green: 0.49, blue: 0.25)
+    private var gold: Color { AppBackgroundSettingsStore.load().designStyle.border }
 
     var body: some View {
         GeometryReader { geometry in
@@ -83,7 +83,7 @@ struct VictorianOrnateFrame: View {
 }
 
 struct VictorianDivider: View {
-    private let gold = Color(red: 0.65, green: 0.49, blue: 0.25)
+    private var gold: Color { AppBackgroundSettingsStore.load().designStyle.border }
 
     var body: some View {
         HStack(spacing: 8) {

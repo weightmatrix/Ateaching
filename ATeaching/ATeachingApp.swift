@@ -16,6 +16,7 @@ struct ATeachingApp: App {
             ATeachingRootWindowView()
                 .environment(\.font, .system(size: 14, weight: .regular, design: .monospaced))
                 .monospaced()
+                .modifier(TeachingSkinAppearance())
                 .task {
                     await ATeachingLaunchBootstrapper.bootstrapIfNeeded()
                 }
@@ -40,6 +41,7 @@ struct ATeachingApp: App {
             }
             .environment(\.font, .system(size: 14, weight: .regular, design: .monospaced))
             .monospaced()
+                .modifier(TeachingSkinAppearance())
             .frame(minWidth: 640, minHeight: 560)
         }
         .defaultSize(width: 900, height: 720)
@@ -49,6 +51,7 @@ struct ATeachingApp: App {
                 MarkdownEditorView(fileURL: URL(fileURLWithPath: filePath))
                     .environment(\.font, .system(size: 14, weight: .regular, design: .monospaced))
                     .monospaced()
+                .modifier(TeachingSkinAppearance())
             } else {
                 Text("未选择Markdown文件")
             }
@@ -61,6 +64,7 @@ struct ATeachingApp: App {
                 NodeMarkdownEditorView(fileURL: URL(fileURLWithPath: filePath))
                     .environment(\.font, .system(size: 14, weight: .regular, design: .monospaced))
                     .monospaced()
+                .modifier(TeachingSkinAppearance())
             } else {
                 Text("未选择NodeMarkdown文件")
             }
@@ -73,6 +77,7 @@ struct ATeachingApp: App {
                 TeachingCoursePageWindowHostView(studentID: studentID)
                     .environment(\.font, .system(size: 14, weight: .regular, design: .monospaced))
                     .monospaced()
+                .modifier(TeachingSkinAppearance())
             } else {
                 Text("未选择学生")
             }
@@ -382,6 +387,7 @@ private struct MacFallbackMainWindowRoot: View {
         ATeachingRootWindowView()
             .environment(\.font, .system(size: 14, weight: .regular, design: .monospaced))
             .monospaced()
+                .modifier(TeachingSkinAppearance())
             .task {
                 await ATeachingLaunchBootstrapper.bootstrapIfNeeded()
             }

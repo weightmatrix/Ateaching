@@ -151,7 +151,7 @@ struct NodeMarkdownEditorView: View {
 
     @ObservedObject private var settingsCenter = NodeMarkdownSettingsCenter.shared
     private let phase150FeatureEnabled = NodeMarkdownFeatureFlags.phase150PackEnabled
-    var body: some View {
+    private var editorChrome: some View {
         ZStack(alignment: .topLeading) {
             editorBackgroundColor
                 .ignoresSafeArea()
@@ -212,6 +212,10 @@ struct NodeMarkdownEditorView: View {
                 }
             }
         }
+    }
+
+    private var editorLifecycle: some View {
+        editorChrome
         .task {
             TeachingDebugLogStore.append("open file=\(fileURL.lastPathComponent) pipeline=\(TeachingDebugLogStore.nodeMarkdownEditorPipeline().rawValue)", category: "NodeMarkdown.Lifecycle")
             tocExpandMode = NodeMarkdownTOCExpandMode(rawValue: NodeMarkdownSettingsStore.loadTOCExpandModeRawValue()) ?? .l3
@@ -339,6 +343,10 @@ struct NodeMarkdownEditorView: View {
                 await TeachingCourseEditingAnchorStore.shared.setActiveRow(filePath: fileURL.path, rowIndex: nil)
             }
         }
+    }
+
+    var body: some View {
+        editorLifecycle
         .confirmationDialog("选择导出方式", isPresented: $showExportActionDialog, titleVisibility: .visible) {
             Button("导出到微信") {
                 exportToWeChat(format: pendingExportFormat)

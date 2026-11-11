@@ -386,8 +386,8 @@ enum TeachingTab: CaseIterable, Hashable {
         if AppBackgroundSettingsStore.load().designStyle == .minimal {
             return .primary
         }
-        if AppBackgroundSettingsStore.load().designStyle == .victorian {
-            return AppBackgroundSettings.DesignStyle.victorian.accent
+        if AppBackgroundSettingsStore.load().designStyle.isOrnamental {
+            return AppBackgroundSettingsStore.load().designStyle.accent
         }
         switch self {
         case .frequent: return .yellow

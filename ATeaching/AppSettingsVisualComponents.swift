@@ -23,14 +23,14 @@ struct AppSettingsPage<Content: View>: View {
             VStack(alignment: .leading, spacing: 20) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(title)
-                        .font(.system(size: 30, weight: .bold, design: design == .victorian ? .serif : .default))
+                        .font(.system(size: 30, weight: .bold, design: design.isOrnamental ? .serif : .default))
                     if let subtitle, !subtitle.isEmpty {
                         Text(subtitle)
                             .font(.system(size: 14))
                             .foregroundStyle(.secondary)
                     }
                 }
-                if design == .victorian {
+                if design.isOrnamental {
                     VictorianDivider()
                         .frame(maxWidth: .infinity)
                 }
@@ -75,17 +75,17 @@ struct AppSettingsCard<Content: View>: View {
                         .frame(width: 26)
                 }
                 Text(title)
-                    .font(.system(size: 21, weight: .bold, design: design == .victorian ? .serif : .default))
+                    .font(.system(size: 21, weight: .bold, design: design.isOrnamental ? .serif : .default))
             }
-            if design == .victorian {
+            if design.isOrnamental {
                 VictorianDivider()
             }
             content
         }
-        .padding(design == .victorian ? 40 : 18)
+        .padding(design.isOrnamental ? 40 : 18)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
-            if design == .victorian {
+            if design.isOrnamental {
                 RoundedRectangle(cornerRadius: 8).fill(.background.opacity(0.88))
             }
         }
@@ -95,10 +95,10 @@ struct AppSettingsCard<Content: View>: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: design.cornerRadius, style: .continuous)
-                .stroke(design.border, lineWidth: design == .victorian ? 2 : 1)
+                .stroke(design.border, lineWidth: design.isOrnamental ? 2 : 1)
         )
         .overlay {
-            if design == .victorian {
+            if design.isOrnamental {
                 VictorianOrnateFrame()
             }
         }

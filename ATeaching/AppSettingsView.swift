@@ -104,7 +104,7 @@ struct AppSettingsView: View {
             Divider()
             macSettingsLink(
                 title: "显示设置",
-                subtitle: "选择设计风格并管理全局背景",
+                subtitle: "选择皮肤并管理全局背景",
                 systemImage: "circle.lefthalf.filled"
             ) {
                 AppDisplaySettingsView()

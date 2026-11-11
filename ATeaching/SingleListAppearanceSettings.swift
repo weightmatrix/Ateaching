@@ -9,6 +9,7 @@ struct AppBackgroundSettings: Codable, Equatable {
         case minimal
         case vibrant
         case victorian
+        case spring
 
         var id: String { rawValue }
 
@@ -18,6 +19,7 @@ struct AppBackgroundSettings: Codable, Equatable {
             case .minimal: return "极简"
             case .vibrant: return "活力"
             case .victorian: return "维多利亚"
+            case .spring: return "春天"
             }
         }
 
@@ -27,6 +29,7 @@ struct AppBackgroundSettings: Codable, Equatable {
             case .minimal: return .primary
             case .vibrant: return .purple
             case .victorian: return Color(red: 0.65, green: 0.32, blue: 0.30)
+            case .spring: return Color(red: 0.141, green: 0.353, blue: 0.263)
             }
         }
 
@@ -35,12 +38,14 @@ struct AppBackgroundSettings: Codable, Equatable {
             case .apple: return 18
             case .minimal: return 4
             case .vibrant: return 26
-            case .victorian: return 8
+            case .victorian, .spring: return 8
             }
         }
 
+        var isOrnamental: Bool { self == .victorian || self == .spring }
+
         var border: Color {
-            self == .victorian ? Color(red: 0.65, green: 0.49, blue: 0.25) : accent.opacity(0.25)
+            self == .spring ? Color(red: 0.545, green: 0.643, blue: 0.471) : (self == .victorian ? Color(red: 0.65, green: 0.49, blue: 0.25) : accent.opacity(0.25))
         }
 
         var subtitle: String {
@@ -49,6 +54,7 @@ struct AppBackgroundSettings: Codable, Equatable {
             case .minimal: return "灰阶、细边框与紧凑布局"
             case .vibrant: return "紫色渐层、大圆角与彩色卡片"
             case .victorian: return "卷草墙纸、繁复角花与古典雕花边框"
+            case .spring: return "网页同款绿色维多利亚风"
             }
         }
     }
@@ -142,7 +148,7 @@ struct AppDisplaySettingsView: View {
 
     var body: some View {
         AppSettingsPage(title: "显示设置", subtitle: "调整界面风格与全局背景") {
-            AppSettingsCard(title: "设计风格", systemImage: "circle.lefthalf.filled") {
+            AppSettingsCard(title: "皮肤", systemImage: "circle.lefthalf.filled") {
                 VStack(spacing: 10) {
                     ForEach(AppBackgroundSettings.DesignStyle.allCases) { style in
                         Button {
@@ -203,7 +209,7 @@ private struct DesignStylePreview: View {
         ZStack {
             RoundedRectangle(cornerRadius: style.cornerRadius, style: .continuous)
                 .fill(fill)
-            if style == .victorian {
+            if style.isOrnamental {
                 VictorianFlourish()
                     .stroke(style.border, lineWidth: 1)
                     .padding(7)
@@ -220,7 +226,7 @@ private struct DesignStylePreview: View {
         .frame(width: 56, height: 42)
         .overlay(
             RoundedRectangle(cornerRadius: style.cornerRadius, style: .continuous)
-                .stroke(style.border, lineWidth: style == .victorian ? 2 : 1)
+                .stroke(style.border, lineWidth: style.isOrnamental ? 2 : 1)
         )
     }
 
@@ -230,6 +236,7 @@ private struct DesignStylePreview: View {
         case .minimal: return Color.secondary.opacity(0.08)
         case .vibrant: return Color.purple.opacity(0.30)
         case .victorian: return Color(red: 0.91, green: 0.83, blue: 0.66)
+        case .spring: return Color(red: 0.929, green: 0.949, blue: 0.890)
         }
     }
 
@@ -289,5 +296,18 @@ private struct AppBackgroundPreview: View {
             .padding()
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+}
+
+/// Keep spring paper and text legible when the system uses dark appearance.
+struct TeachingSkinAppearance: ViewModifier {
+    @State private var style = AppBackgroundSettingsStore.load().designStyle
+    func body(content: Content) -> some View {
+        content
+            .preferredColorScheme(style == .spring ? .light : nil)
+            .tint(style.accent)
+            .onReceive(NotificationCenter.default.publisher(for: .appAppearanceDidChange)) { _ in
+                style = AppBackgroundSettingsStore.load().designStyle
+            }
     }
 }

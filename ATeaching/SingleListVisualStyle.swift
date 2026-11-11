@@ -52,7 +52,10 @@ private struct AppBackgroundView: View {
 
     var body: some View {
         let design: AppBackgroundSettings.DesignStyle = followsDesign ? AppBackgroundSettingsStore.load().designStyle : .apple
-        if design == .victorian {
+        if design == .spring {
+            LinearGradient(colors: [Color(red: 0.969, green: 0.973, blue: 0.949), Color(red: 0.929, green: 0.949, blue: 0.890)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                .overlay { VictorianWallpaper().foregroundStyle(design.border) }
+        } else if design == .victorian {
             LinearGradient(
                 colors: colorScheme == .dark
                     ? [Color(red: 0.18, green: 0.12, blue: 0.10), Color(red: 0.10, green: 0.15, blue: 0.13)]

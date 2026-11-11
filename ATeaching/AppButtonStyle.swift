@@ -22,14 +22,14 @@ struct AppGlassButtonStyle: ButtonStyle {
         let shape = RoundedRectangle(cornerRadius: designStyle.cornerRadius, style: .continuous)
         configuration.label
             .font(.system(size: 13, weight: designStyle == .minimal ? .medium : .semibold))
-            .fontDesign(designStyle == .victorian ? .serif : .default)
-            .padding(.horizontal, designStyle == .victorian ? 24 : (designStyle == .minimal ? 10 : 12))
+            .fontDesign(designStyle.isOrnamental ? .serif : .default)
+            .padding(.horizontal, designStyle.isOrnamental ? 24 : (designStyle == .minimal ? 10 : 12))
             .padding(.vertical, designStyle == .minimal ? 7 : 8)
             .frame(minHeight: 36)
             .foregroundStyle(foregroundColor)
             .background(buttonBackground(isPressed: configuration.isPressed))
             .overlay {
-                if designStyle == .victorian {
+                if designStyle.isOrnamental {
                     VictorianOrnateFrame(compact: true)
                 }
             }
@@ -58,7 +58,7 @@ struct AppGlassButtonStyle: ButtonStyle {
                 .fill(designStyle.accent.opacity(isPressed ? 0.25 : (tier == .prominent ? 0.20 : 0.09)))
                 .overlay {
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .stroke(designStyle.border, lineWidth: designStyle == .victorian ? 1.5 : 1)
+                        .stroke(designStyle.border, lineWidth: designStyle.isOrnamental ? 1.5 : 1)
                 }
         } else if #available(iOS 26.0, macOS 26.0, tvOS 26.0, visionOS 26.0, *) {
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
