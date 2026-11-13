@@ -27,6 +27,7 @@ final class ExternalMarkdownTabStore: ObservableObject {
     static let shared = ExternalMarkdownTabStore()
 
     @Published private(set) var tabs: [ExternalMarkdownTabItem] = []
+    @Published var navigationTarget: ExternalMarkdownTabItem?
     @Published var selectedID: ExternalMarkdownTabItem.ID?
 
     private init() {}

@@ -157,10 +157,11 @@ private enum ATeachingExternalMarkdownOpenRouter {
             .map(\.path)
         guard !filePaths.isEmpty else { return }
         hasReceivedExternalMarkdownOpen = true
-        ATeachingMacLaunchMainWindowGate.suppressForExternalMarkdownOpen()
-        ExternalMarkdownWindowPresenter.openInTabs(filePaths: filePaths)
+        ExternalMarkdownTabStore.shared.navigationTarget = filePaths.last.map {
+            ExternalMarkdownTabItem(fileURL: URL(fileURLWithPath: $0))
+        }
+        ATeachingMacMainWindowPresenter.ensureMainWindowVisible()
         NotificationCenter.default.post(name: didReceiveMarkdownFilesNotification, object: nil)
-        ATeachingMacMainWindowPresenter.scheduleStrayMainWindowCleanup()
     }
 
     static func isMarkdownFile(_ url: URL) -> Bool {

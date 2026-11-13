@@ -6,6 +6,9 @@ struct ContentView: View {
     @State private var selectedTab: TeachingTab = .teaching
     @StateObject private var screenCastService = ScreenCastService()
     @State private var appearanceRevision = 0
+    #if os(macOS)
+    @ObservedObject private var externalMarkdownStore = ExternalMarkdownTabStore.shared
+    #endif
 
     private var displayTitle: String {
         AppDisplayTitle.mainWindowTitle(forPage: selectedTab.title)
@@ -80,6 +83,10 @@ struct ContentView: View {
                 }
             }
             #if os(macOS)
+            .navigationDestination(item: $externalMarkdownStore.navigationTarget) { target in
+                MarkdownEditorView(fileURL: target.fileURL)
+                    .id(target.id)
+            }
             .background(MacMainWindowAccessor(title: displayTitle))
             #endif
         }
@@ -158,6 +165,10 @@ struct ContentView: View {
                         .foregroundStyle(.blue)
                     }
                 }
+            }
+            .navigationDestination(item: $externalMarkdownStore.navigationTarget) { target in
+                MarkdownEditorView(fileURL: target.fileURL)
+                    .id(target.id)
             }
             .background(MacMainWindowAccessor(title: displayTitle))
         }
