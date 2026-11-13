@@ -151,11 +151,26 @@ private enum ATeachingExternalMarkdownOpenRouter {
     static let didReceiveMarkdownFilesNotification = Notification.Name("ATeachingExternalMarkdownOpenRouter.didReceiveMarkdownFiles")
     private(set) static var hasReceivedExternalMarkdownOpen = false
 
-    static func enqueue(_ urls: [URL]) {
+    static func enqueue(_ urls: [URL], forwarded: Bool = false) {
         let filePaths = urls
             .filter(isMarkdownFile(_:))
             .map(\.path)
         guard !filePaths.isEmpty else { return }
+        if !forwarded, let peer = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "Han.ATeaching")
+            .filter({ $0.processIdentifier != ProcessInfo.processInfo.processIdentifier && !$0.isTerminated })
+            .min(by: { ($0.launchDate ?? .distantFuture) < ($1.launchDate ?? .distantFuture) }) {
+            guard let bookmarks = try? urls.filter(isMarkdownFile(_:)).map({
+                try $0.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
+            }), let payload = try? JSONEncoder().encode(bookmarks) else { return }
+            DistributedNotificationCenter.default().postNotificationName(
+                Notification.Name("Han.ATeaching.openMarkdownInExistingInstance"),
+                object: String(peer.processIdentifier) + ":" + payload.base64EncodedString(),
+                userInfo: nil, deliverImmediately: true
+            )
+            peer.activate(options: [.activateIgnoringOtherApps])
+            NSApp.terminate(nil)
+            return
+        }
         hasReceivedExternalMarkdownOpen = true
         ExternalMarkdownTabStore.shared.navigationTarget = filePaths.last.map {
             ExternalMarkdownTabItem(fileURL: URL(fileURLWithPath: $0))
@@ -175,6 +190,32 @@ private final class ATeachingMacApplicationDelegate: NSObject, NSApplicationDele
     #if DEBUG
     private var screenCastListenerProbe: ScreenCastService?
     #endif
+
+    private var forwardedSecurityScopedURLs: [URL] = []
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        DistributedNotificationCenter.default().addObserver(
+            self, selector: #selector(receiveForwardedMarkdown(_:)),
+            name: Notification.Name("Han.ATeaching.openMarkdownInExistingInstance"),
+            object: nil
+        )
+    }
+
+    @objc private func receiveForwardedMarkdown(_ notification: Notification) {
+        guard let payload = notification.object as? String,
+              payload.hasPrefix(String(ProcessInfo.processInfo.processIdentifier) + ":"),
+              let separator = payload.firstIndex(of: ":"),
+              let data = Data(base64Encoded: String(payload[payload.index(after: separator)...])),
+              let bookmarks = try? JSONDecoder().decode([Data].self, from: data) else { return }
+        let urls = bookmarks.compactMap { bookmark -> URL? in
+            var stale = false
+            guard let url = try? URL(resolvingBookmarkData: bookmark, options: .withSecurityScope,
+                                     relativeTo: nil, bookmarkDataIsStale: &stale) else { return nil }
+            if url.startAccessingSecurityScopedResource() { forwardedSecurityScopedURLs.append(url) }
+            return url
+        }
+        ATeachingExternalMarkdownOpenRouter.enqueue(urls, forwarded: true)
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         #if DEBUG
