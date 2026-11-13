@@ -291,7 +291,7 @@ private enum ATeachingMacMainWindowPresenter {
         guard let window = NSApplication.shared.windows.first(where: { window in
             window.identifier?.rawValue == ATeachingWindowID.main ||
             window.title == AppDisplayTitle.defaultMainWindowTitle ||
-            window.title.contains(AppDisplayTitle.mainWindowBaseTitle)
+            (window.title.contains(AppDisplayTitle.mainWindowBaseTitle) || window.title.hasSuffix("·李知本授课系统"))
         }) else {
             return false
         }
@@ -379,7 +379,7 @@ private enum ATeachingMacMainWindowPresenter {
     private static func isMainWindow(_ window: NSWindow) -> Bool {
         window.identifier?.rawValue == ATeachingWindowID.main ||
         window.title == AppDisplayTitle.defaultMainWindowTitle ||
-        window.title.contains(AppDisplayTitle.mainWindowBaseTitle)
+        (window.title.contains(AppDisplayTitle.mainWindowBaseTitle) || window.title.hasSuffix("·李知本授课系统"))
     }
 }
 

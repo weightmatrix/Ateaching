@@ -1118,11 +1118,7 @@ struct ArchiveView: View {
         let fileExtension = entry.url.pathExtension.lowercased()
         let metaType = (ArchiveStorage.readMetaType(fileURL: entry.url) ?? "").lowercased()
         if fileExtension == "md" {
-            #if os(macOS)
-            openWindow(id: "markdown-editor", value: entry.url.path)
-            #else
             markdownNavigationTarget = MarkdownNavigationTarget(id: entry.url.path)
-            #endif
             return
         }
 
