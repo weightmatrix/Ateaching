@@ -1,176 +1,98 @@
 {
-  "images" : [
+  "images": [
     {
-      "filename" : "李知本·授课 26.png",
-      "idiom" : "iphone",
-      "scale" : "2x",
-      "size" : "20x20"
+      "filename": "李知本·授课 4.png",
+      "idiom": "mac",
+      "scale": "1x",
+      "size": "16x16"
     },
     {
-      "filename" : "李知本·授课 27.png",
-      "idiom" : "iphone",
-      "scale" : "3x",
-      "size" : "20x20"
+      "filename": "李知本·授课 5.png",
+      "idiom": "mac",
+      "scale": "2x",
+      "size": "16x16"
     },
     {
-      "filename" : "李知本·授课 24.png",
-      "idiom" : "iphone",
-      "scale" : "2x",
-      "size" : "29x29"
+      "filename": "李知本·授课 6.png",
+      "idiom": "mac",
+      "scale": "1x",
+      "size": "32x32"
     },
     {
-      "filename" : "李知本·授课 25.png",
-      "idiom" : "iphone",
-      "scale" : "3x",
-      "size" : "29x29"
+      "filename": "李知本·授课 7.png",
+      "idiom": "mac",
+      "scale": "2x",
+      "size": "32x32"
     },
     {
-      "filename" : "李知本·授课 22.png",
-      "idiom" : "iphone",
-      "scale" : "2x",
-      "size" : "40x40"
+      "filename": "李知本·授课 9.png",
+      "idiom": "mac",
+      "scale": "1x",
+      "size": "128x128"
     },
     {
-      "filename" : "李知本·授课 23.png",
-      "idiom" : "iphone",
-      "scale" : "3x",
-      "size" : "40x40"
+      "filename": "李知本·授课 8.png",
+      "idiom": "mac",
+      "scale": "2x",
+      "size": "128x128"
     },
     {
-      "filename" : "李知本·授课 20.png",
-      "idiom" : "iphone",
-      "scale" : "2x",
-      "size" : "60x60"
+      "filename": "李知本·授课 10.png",
+      "idiom": "mac",
+      "scale": "1x",
+      "size": "256x256"
     },
     {
-      "filename" : "李知本·授课 21.png",
-      "idiom" : "iphone",
-      "scale" : "3x",
-      "size" : "60x60"
+      "filename": "李知本·授课 11.png",
+      "idiom": "mac",
+      "scale": "2x",
+      "size": "256x256"
     },
     {
-      "filename" : "李知本·授课 18.png",
-      "idiom" : "ipad",
-      "scale" : "1x",
-      "size" : "20x20"
+      "filename": "李知本·授课 12.png",
+      "idiom": "mac",
+      "scale": "1x",
+      "size": "512x512"
     },
     {
-      "filename" : "李知本·授课 19.png",
-      "idiom" : "ipad",
-      "scale" : "2x",
-      "size" : "20x20"
+      "filename": "李知本·授课 13.png",
+      "idiom": "mac",
+      "scale": "2x",
+      "size": "512x512"
     },
     {
-      "filename" : "李知本·授课 16.png",
-      "idiom" : "ipad",
-      "scale" : "1x",
-      "size" : "29x29"
+      "filename": "day.png",
+      "idiom": "universal",
+      "platform": "ios",
+      "size": "1024x1024"
     },
     {
-      "filename" : "李知本·授课 17.png",
-      "idiom" : "ipad",
-      "scale" : "2x",
-      "size" : "29x29"
+      "filename": "dark.png",
+      "idiom": "universal",
+      "platform": "ios",
+      "size": "1024x1024",
+      "appearances": [
+        {
+          "appearance": "luminosity",
+          "value": "dark"
+        }
+      ]
     },
     {
-      "filename" : "李知本·授课 14.png",
-      "idiom" : "ipad",
-      "scale" : "1x",
-      "size" : "40x40"
-    },
-    {
-      "filename" : "李知本·授课 15.png",
-      "idiom" : "ipad",
-      "scale" : "2x",
-      "size" : "40x40"
-    },
-    {
-      "filename" : "李知本·授课 1.png",
-      "idiom" : "ipad",
-      "scale" : "1x",
-      "size" : "76x76"
-    },
-    {
-      "filename" : "李知本·授课 2.png",
-      "idiom" : "ipad",
-      "scale" : "2x",
-      "size" : "76x76"
-    },
-    {
-      "filename" : "李知本·授课 3.png",
-      "idiom" : "ipad",
-      "scale" : "2x",
-      "size" : "83.5x83.5"
-    },
-    {
-      "filename" : "李知本·授课.png",
-      "idiom" : "ios-marketing",
-      "scale" : "1x",
-      "size" : "1024x1024"
-    },
-    {
-      "filename" : "李知本·授课 4.png",
-      "idiom" : "mac",
-      "scale" : "1x",
-      "size" : "16x16"
-    },
-    {
-      "filename" : "李知本·授课 5.png",
-      "idiom" : "mac",
-      "scale" : "2x",
-      "size" : "16x16"
-    },
-    {
-      "filename" : "李知本·授课 6.png",
-      "idiom" : "mac",
-      "scale" : "1x",
-      "size" : "32x32"
-    },
-    {
-      "filename" : "李知本·授课 7.png",
-      "idiom" : "mac",
-      "scale" : "2x",
-      "size" : "32x32"
-    },
-    {
-      "filename" : "李知本·授课 9.png",
-      "idiom" : "mac",
-      "scale" : "1x",
-      "size" : "128x128"
-    },
-    {
-      "filename" : "李知本·授课 8.png",
-      "idiom" : "mac",
-      "scale" : "2x",
-      "size" : "128x128"
-    },
-    {
-      "filename" : "李知本·授课 10.png",
-      "idiom" : "mac",
-      "scale" : "1x",
-      "size" : "256x256"
-    },
-    {
-      "filename" : "李知本·授课 11.png",
-      "idiom" : "mac",
-      "scale" : "2x",
-      "size" : "256x256"
-    },
-    {
-      "filename" : "李知本·授课 12.png",
-      "idiom" : "mac",
-      "scale" : "1x",
-      "size" : "512x512"
-    },
-    {
-      "filename" : "李知本·授课 13.png",
-      "idiom" : "mac",
-      "scale" : "2x",
-      "size" : "512x512"
+      "filename": "tinted.png",
+      "idiom": "universal",
+      "platform": "ios",
+      "size": "1024x1024",
+      "appearances": [
+        {
+          "appearance": "luminosity",
+          "value": "tinted"
+        }
+      ]
     }
   ],
-  "info" : {
-    "author" : "xcode",
-    "version" : 1
+  "info": {
+    "author": "xcode",
+    "version": 1
   }
 }
