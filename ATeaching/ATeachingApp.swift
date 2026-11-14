@@ -172,10 +172,9 @@ private enum ATeachingExternalMarkdownOpenRouter {
             return
         }
         hasReceivedExternalMarkdownOpen = true
-        ExternalMarkdownTabStore.shared.navigationTarget = filePaths.last.map {
-            ExternalMarkdownTabItem(fileURL: URL(fileURLWithPath: $0))
+        for path in filePaths {
+            ExternalMarkdownWindowPresenter.presentSingleMarkdownWindow(fileURL: URL(fileURLWithPath: path))
         }
-        ATeachingMacMainWindowPresenter.ensureMainWindowVisible()
         NotificationCenter.default.post(name: didReceiveMarkdownFilesNotification, object: nil)
     }
 
