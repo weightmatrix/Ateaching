@@ -20,6 +20,10 @@ struct NodeMarkdownDrawingBoardSheet: View {
     @State private var selectedShapeID: UUID?
     @State private var selectedTextID: UUID?
 
+    @State private var diagnosticSession = UUID().uuidString
+    @State private var diagnosticLastDrag: TimeInterval = 0
+    @State private var diagnosticLastSample: TimeInterval = 0
+
     @State private var activeTool: DrawingTool = .selection
     @State private var activeShapeTool: ShapeTool = .line
     @State private var standardizesFreehand = false
@@ -90,7 +94,16 @@ struct NodeMarkdownDrawingBoardSheet: View {
         .onAppear {
             standardizesFreehand = false
             loadDrawingSettings()
+            recordDrawingDiagnostic("appear os=\(ProcessInfo.processInfo.operatingSystemVersionString)")
         }
+        .onDisappear { recordDrawingDiagnostic("disappear") }
+    }
+
+    private func recordDrawingDiagnostic(_ stage: String) {
+        TeachingDebugLogStore.append(
+            "session=\(diagnosticSession) stage=\(stage) uptime=\(ProcessInfo.processInfo.systemUptime) tool=\(activeTool) canvas=\(canvasSize) strokes=\(freehandStrokes.count) shapes=\(shapeElements.count) texts=\(textElements.count) undo=\(undoStack.count) event=\(String(describing: NSApp.currentEvent?.type)) window=\(NSApp.keyWindow?.windowNumber ?? -1)",
+            category: "Drawing.InputStall", force: true
+        )
     }
 
     private var topBar: some View {
@@ -642,6 +655,17 @@ struct NodeMarkdownDrawingBoardSheet: View {
     }
 
     private func handleDragChanged(_ value: DragGesture.Value) {
+        let started = ProcessInfo.processInfo.systemUptime
+        let gap = diagnosticLastDrag == 0 ? 0 : started - diagnosticLastDrag
+        diagnosticLastDrag = started
+        if started - diagnosticLastSample >= 1 {
+            diagnosticLastSample = started
+            recordDrawingDiagnostic("dragSample gapMs=\(Int(gap * 1000))")
+        }
+        defer {
+            let elapsed = ProcessInfo.processInfo.systemUptime - started
+            if elapsed >= 0.05 { recordDrawingDiagnostic("slowDrag durationMs=\(Int(elapsed * 1000))") }
+        }
         let point = value.location
         switch activeTool {
         case .selection:
@@ -658,6 +682,8 @@ struct NodeMarkdownDrawingBoardSheet: View {
     }
 
     private func handleDragEnded(_ value: DragGesture.Value) {
+        recordDrawingDiagnostic("dragEnded")
+        diagnosticLastDrag = 0
         switch activeTool {
         case .selection:
             break
@@ -1110,6 +1136,9 @@ struct NodeMarkdownDrawingBoardSheet: View {
     }
 
     private func exportDrawingToTemporaryPNG() -> URL? {
+        let diagnosticStart = ProcessInfo.processInfo.systemUptime
+        recordDrawingDiagnostic("exportBegin")
+        defer { recordDrawingDiagnostic("exportEnd durationMs=\(Int((ProcessInfo.processInfo.systemUptime - diagnosticStart) * 1000))") }
         let bounds = drawingBounds()
         let outputSize = CGSize(width: ceil(bounds.width), height: ceil(bounds.height))
         guard outputSize.width > 0, outputSize.height > 0 else { return nil }
