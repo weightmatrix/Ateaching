@@ -225,7 +225,25 @@ private final class ATeachingMacApplicationDelegate: NSObject, NSApplicationDele
         ATeachingExternalMarkdownOpenRouter.enqueue(urls, forwarded: true)
     }
 
+    private var inputDiagnosticMonitor: Any?
+    private var inputDiagnosticLastSample: TimeInterval = 0
+
+    private func installInputDiagnostics() {
+        inputDiagnosticMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .keyDown, .scrollWheel]) { [weak self] event in
+            guard let self else { return event }
+            let now = ProcessInfo.processInfo.systemUptime
+            if now - self.inputDiagnosticLastSample >= 1 {
+                self.inputDiagnosticLastSample = now
+                let window = event.window ?? NSApp.keyWindow
+                let hit = event.window?.contentView.map { $0.hitTest($0.convert(event.locationInWindow, from: nil)) }
+                TeachingDebugLogStore.append("event=\(event.type) window=\(window?.windowNumber ?? -1) key=\(window?.isKeyWindow ?? false) modal=\(NSApp.modalWindow?.windowNumber ?? -1) sheet=\(window?.attachedSheet?.windowNumber ?? -1) responder=\(String(describing: window?.firstResponder.map { type(of: $0) })) hit=\(String(describing: hit.flatMap { $0 }.map { type(of: $0) }))", category: "App.InputRoute", force: true)
+            }
+            return event
+        }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        installInputDiagnostics()
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--screen-cast-listener-probe") {
             runScreenCastListenerProbe()

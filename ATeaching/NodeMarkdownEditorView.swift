@@ -236,6 +236,7 @@ struct NodeMarkdownEditorView: View {
             if !running { applyLatestCloudReloadIfReady() }
         }
         .onChange(of: isNotebookWriteOperationInProgress) { _, running in
+            TeachingDebugLogStore.append("writeLock=\(running) loading=\(isLoading) whiteboard=\(isWhiteboardPresented) annotation=\(annotationController.isActive)", category: "NodeMarkdown.InputGate", force: true)
             if !running { applyLatestCloudReloadIfReady() }
         }
         .onChange(of: isLoading) { _, loading in
@@ -670,6 +671,11 @@ struct NodeMarkdownEditorView: View {
         // 首次磁盘加载一起废弃，否则isLoading没有收尾机会。
         diskLoadGeneration &+= 1
         let loadGeneration = diskLoadGeneration
+        let diagnosticStart = ProcessInfo.processInfo.systemUptime
+        func loadDiagnostic(_ stage: String) {
+            TeachingDebugLogStore.append("file=\(fileURL.lastPathComponent) generation=\(loadGeneration) stage=\(stage) elapsedMs=\(Int((ProcessInfo.processInfo.systemUptime - diagnosticStart) * 1000))", category: "NodeMarkdown.LoadStage", force: true)
+        }
+        loadDiagnostic("begin")
         isLoading = true
         statusMessage = ""
         let targetURL = fileURL
@@ -680,8 +686,11 @@ struct NodeMarkdownEditorView: View {
         Task(priority: .userInitiated) {
             let loaded: (NodeMarkdownDocument, NodeMarkdownFileMeta)
             do {
+                loadDiagnostic("readBegin")
                 loaded = try NodeMarkdownFileManager.read(fileURL: targetURL)
+                loadDiagnostic("readEnd nodes=\(loaded.0.nodes.count)")
             } catch {
+                loadDiagnostic("readError \(error.localizedDescription)")
                 guard loadGeneration == diskLoadGeneration else { return }
                 isLoading = false
                 statusMessage = "读取失败，未创建空白替代文件：\(error.localizedDescription)"
@@ -689,8 +698,11 @@ struct NodeMarkdownEditorView: View {
             }
             var parsedDocument = loaded.0
             _ = parsedDocument.ensureTrailingBlankLine(defaultLevel: 1)
+            loadDiagnostic("restoreImageUndoBegin")
             restoreImageUndoStashForOpeningIfNeeded(document: parsedDocument)
+            loadDiagnostic("htmlBegin")
             let rows = NodeMarkdownHTMLBuilder.buildRows(document: parsedDocument, style: styleSnapshot)
+            loadDiagnostic("htmlEnd anchorBegin")
             let openingAnchorRowIndex = await TeachingCourseEditingAnchorStore.shared.activeRow(filePath: targetURL.path)
             if openingAnchorRowIndex != nil {
                 await TeachingCourseEditingAnchorStore.shared.setActiveRow(filePath: targetURL.path, rowIndex: nil)
@@ -702,6 +714,7 @@ struct NodeMarkdownEditorView: View {
                 return
             }
 
+            loadDiagnostic("installBegin")
             document = parsedDocument
             documentIndex.rebuild(from: parsedDocument.nodes)
             fileMeta = loaded.1
@@ -727,6 +740,7 @@ struct NodeMarkdownEditorView: View {
             loadedFileSizeBytes = fileSizeBytes
             isLargeFileMode = fileSizeBytes >= largeFileThreshold
             isLoading = false
+            loadDiagnostic("installed nodes=\(document.nodes.count)")
             documentRevision = 0
             persistedDocumentRevision = 0
             saveState = .clean
