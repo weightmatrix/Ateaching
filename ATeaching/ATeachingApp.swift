@@ -157,18 +157,27 @@ private enum ATeachingExternalMarkdownOpenRouter {
             .map(\.path)
         guard !filePaths.isEmpty else { return }
         if !forwarded, let peer = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "Han.ATeaching")
-            .filter({ $0.processIdentifier != ProcessInfo.processInfo.processIdentifier && !$0.isTerminated })
+            .filter({ $0.processIdentifier != ProcessInfo.processInfo.processIdentifier && !$0.isTerminated
+                && ($0.launchDate ?? .distantFuture) < (NSRunningApplication.current.launchDate ?? .distantPast) })
             .min(by: { ($0.launchDate ?? .distantFuture) < ($1.launchDate ?? .distantFuture) }) {
-            guard let bookmarks = try? urls.filter(isMarkdownFile(_:)).map({
-                try $0.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
-            }), let payload = try? JSONEncoder().encode(bookmarks) else { return }
-            DistributedNotificationCenter.default().postNotificationName(
-                Notification.Name("Han.ATeaching.openMarkdownInExistingInstance"),
-                object: String(peer.processIdentifier) + ":" + payload.base64EncodedString(),
-                userInfo: nil, deliverImmediately: true
-            )
-            peer.activate(options: [.activateIgnoringOtherApps])
-            NSApp.terminate(nil)
+            guard let applicationURL = peer.bundleURL else { return }
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.createsNewApplicationInstance = false
+            configuration.activates = true
+            NSWorkspace.shared.open(urls.filter(isMarkdownFile(_:)), withApplicationAt: applicationURL,
+                                    configuration: configuration) { _, error in
+                Task { @MainActor in
+                    if let error {
+                        TeachingDebugLogStore.append("MD转交失败：\(error.localizedDescription)", category: "Markdown.Open", force: true)
+                        let alert = NSAlert()
+                        alert.messageText = "无法向已运行的授课打开文件"
+                        alert.informativeText = error.localizedDescription
+                        alert.runModal()
+                    } else {
+                        NSApp.terminate(nil)
+                    }
+                }
+            }
             return
         }
         hasReceivedExternalMarkdownOpen = true
