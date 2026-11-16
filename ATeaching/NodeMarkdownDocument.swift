@@ -563,6 +563,7 @@ nonisolated struct NodeMarkdownFileManager {
     /// 已通过身份校验后的纯序列化+落盘，避免重复校验。
     private nonisolated static func serializeAndWrite(document: NodeMarkdownDocument, meta: NodeMarkdownFileMeta, to fileURL: URL) throws {
         let text = serialize(document: document, meta: meta)
+        TeachingDebugLogStore.append("file=\(fileURL.lastPathComponent) nodes=\(document.nodes.count) outputBytes=\(text.utf8.count) expectedDigestPresent=\(meta.diskDigest != nil)", category: "NodeMarkdown.WriteIntent", force: true)
         let expected = meta.diskPath == fileURL.standardizedFileURL.path ? meta.diskDigest : nil
         try TeachingCloudFileAccess.write(Data(text.utf8), to: fileURL, expectedDigest: expected)
     }

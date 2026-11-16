@@ -3668,6 +3668,7 @@ struct NodeMarkdownEditorView: View {
     }
 
     private func canPersistCurrentDocument() -> Bool {
+        TeachingDebugLogStore.append("file=\(fileURL.lastPathComponent) nodes=\(document.nodes.count) loading=\(isLoading) generation=\(diskLoadGeneration) revision=\(documentRevision)/\(persistedDocumentRevision) saving=\(isSaveTaskRunning)", category: "NodeMarkdown.PersistGate", force: true)
         guard pendingCutPackageNodes.isEmpty else {
             presentPendingCutGuard(message: "存在未粘贴的剪切包，不能保存。请先粘贴或回退剪切。")
             return false
