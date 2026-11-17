@@ -14,6 +14,7 @@ enum FrequentDocumentUsage {
     static let prefix = "frequent-document."
     private static let pinnedKey = "frequent-document.pinned-paths"
     private static let snapshotKey = "frequent-document.snapshot"
+    private static let cachedCountsKey = "frequent-document.cached-device-counts"
 
     static func record(_ url: URL) {
         guard let root = try? ArchiveStorage.ensureWorkspace(),
@@ -46,11 +47,21 @@ enum FrequentDocumentUsage {
             }
             records[key] = counts
         }
+        // 每台设备计数只增不减；云端暂时缺项不撤销已收到的历史。
+        var cached = UserDefaults.standard.dictionary(forKey: cachedCountsKey) ?? [:]
         for (key, value) in records where key.hasPrefix(prefix) {
-            guard let counts = value as? [String: Any] else { continue }
+            guard UUID(uuidString: String(key.dropFirst(prefix.count))) != nil,
+                  let counts = value as? [String: Any] else { continue }
+            var merged = cached[key] as? [String: Int] ?? [:]
             for (path, count) in counts {
-                totals[path, default: 0] += (count as? NSNumber)?.intValue ?? 0
+                merged[path] = max(merged[path] ?? 0, (count as? NSNumber)?.intValue ?? 0)
             }
+            cached[key] = merged
+        }
+        UserDefaults.standard.set(cached, forKey: cachedCountsKey)
+        for value in cached.values {
+            guard let counts = value as? [String: Int] else { continue }
+            for (path, count) in counts { totals[path, default: 0] += count }
         }
         return totals.map { (path: $0.key, count: $0.value) }.sorted {
             $0.count == $1.count ? $0.path < $1.path : $0.count > $1.count
@@ -71,15 +82,22 @@ enum FrequentDocumentUsage {
     }
 
     private static func persistSnapshot(workspaceRoot: URL) {
-        let items = ranked().compactMap { rankedItem -> FrequentDocumentSnapshotItem? in
+        let previous = loadSnapshot()
+        let previousByPath = Dictionary(previous.map { ($0.relativePath, $0) }, uniquingKeysWith: { first, _ in first })
+        var items = ranked().compactMap { rankedItem -> FrequentDocumentSnapshotItem? in
             let url = workspaceRoot.appendingPathComponent(rankedItem.path)
-            guard isEligible(url, workspaceRoot: workspaceRoot) else { return nil }
+            guard isEligible(url, workspaceRoot: workspaceRoot) else {
+                return previousByPath[rankedItem.path]
+            }
             return FrequentDocumentSnapshotItem(
                 relativePath: rankedItem.path,
                 absolutePath: url.path,
                 metaType: ArchiveStorage.readMetaType(fileURL: url)
             )
         }
+        let included = Set(items.map(\.relativePath))
+        // 旧快照也参与保底，避免首次升级时尚未缓存的云端记录消失。
+        items.append(contentsOf: previous.filter { !included.contains($0.relativePath) })
         guard let data = try? JSONEncoder().encode(items) else { return }
         UserDefaults.standard.set(data, forKey: snapshotKey)
     }
