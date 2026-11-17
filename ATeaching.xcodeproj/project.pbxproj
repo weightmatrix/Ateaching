@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		127000000000000000000001 /* Markdown in Frameworks */ = {isa = PBXBuildFile; productRef = 127000000000000000000002 /* Markdown */; };
 		8800A9AA2F9D136D00B96C59 /* SwiftMath in Frameworks */ = {isa = PBXBuildFile; productRef = 8800A9A92F9D136D00B96C59 /* SwiftMath */; };
 		8843ECEA2FA4EC7B00626F5B /* TeachingCoursePackageChangeTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8843ECE92FA4EC7B00626F5B /* TeachingCoursePackageChangeTracker.swift */; };
 		88F260812F9E000100000001 /* mathFonts.bundle in Resources */ = {isa = PBXBuildFile; fileRef = 88F260812F9E000200000002 /* mathFonts.bundle */; };
@@ -31,6 +32,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				127000000000000000000001 /* Markdown in Frameworks */,
 				8800A9AA2F9D136D00B96C59 /* SwiftMath in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -76,6 +78,7 @@
 			);
 			name = ATeaching;
 			packageProductDependencies = (
+				127000000000000000000002 /* Markdown */,
 				8800A9A92F9D136D00B96C59 /* SwiftMath */,
 			);
 			productName = ATeaching;
@@ -107,6 +110,7 @@
 			mainGroup = 88C376062F95267100093CC3;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				127000000000000000000003 /* XCRemoteSwiftPackageReference "swift-markdown" */,
 				8800A9A82F9D136D00B96C59 /* XCLocalSwiftPackageReference "Vendor/SwiftMath" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -281,7 +285,7 @@
 				CODE_SIGN_ENTITLEMENTS = ATeaching/ATeaching.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2611171609;
+				CURRENT_PROJECT_VERSION = 2611171719;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = F4L9P953MQ;
 				ENABLE_APP_SANDBOX = YES;
@@ -307,7 +311,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.6;
-				MARKETING_VERSION = 1.2611171609;
+				MARKETING_VERSION = 1.2611171719;
 				PRODUCT_BUNDLE_IDENTIFIER = Han.ATeaching;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -332,7 +336,7 @@
 				CODE_SIGN_ENTITLEMENTS = ATeaching/ATeaching.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2611171609;
+				CURRENT_PROJECT_VERSION = 2611171719;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = F4L9P953MQ;
 				ENABLE_APP_SANDBOX = YES;
@@ -358,7 +362,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.6;
-				MARKETING_VERSION = 1.2611171609;
+				MARKETING_VERSION = 1.2611171719;
 				PRODUCT_BUNDLE_IDENTIFIER = Han.ATeaching;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -404,7 +408,23 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		127000000000000000000003 /* XCRemoteSwiftPackageReference "swift-markdown" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/swiftlang/swift-markdown.git";
+			requirement = {
+				kind = exactVersion;
+				version = 0.9.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
+		127000000000000000000002 /* Markdown */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 127000000000000000000003 /* XCRemoteSwiftPackageReference "swift-markdown" */;
+			productName = Markdown;
+		};
 		8800A9A92F9D136D00B96C59 /* SwiftMath */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = SwiftMath;

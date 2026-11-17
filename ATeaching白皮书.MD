@@ -1,5 +1,9 @@
 ## 课堂笔记清空现场补充
 
+## #127 普通MD局部更新与共享语法（V1.2611171719 / 2611171719）
+
+普通MD接入锁定Swift Markdown/cmark 0.9.0共享语法快照，目录、原生基础行内语法及代码上下文、Web块边界使用同源结果。UTF8源位置转UTF16按Unicode标量校正，缓存有界且同正文并发解析合并；视口裁剪使用有序索引。iOS逐键只装饰受影响行、自动续行局部替换并注册撤销，打开与滚动只装饰可见区，停顿/保存经commitBridge提交全文；组合态不重装。Mac去除取长度/删除判断的全文字符串投影，停用主线程全文补样式及全文补搜索高亮。搜索与目录移到后台并拒绝过期结果。预览按AST块保持代码/列表上下文，展开已解析引用链接，保留公式/HTML原文，数学只重渲染变更块。仍有停顿后全文快照、后台全量解析及全预览DOM，尚未达到所有场景性能恒定。详见Experiments/Markdown127/README.md。
+
 ## #126 普通Markdown全面TK2（V1.2611171609 / 2611171609）
 
 普通Markdown的Mac源码/历史即时入口统一进入既有MarkdownTextKit2PlainTextEditor，共用父页面commitBridge以维持延迟提交、保存与搜索桥接；源码模式仍传sourceStandard样式。iOS全部文本入口使用UITextView(usingTextLayoutManager:true)。原MarkdownNativeTextEditor及MarkdownTextView以.swift.txt封存于Archives/MarkdownTextKit1，不参与编译且无自动回退。运行发现TK2不可用时禁用编辑并记录错误，不降级TK1。Web只读渲染不受影响；本次不迁移NodeMarkdown。

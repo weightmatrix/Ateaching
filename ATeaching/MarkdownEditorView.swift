@@ -821,6 +821,8 @@ struct MarkdownEditorView: View {
     @State private var showScaledPDFSheet = false
     @AppStorage("markdownScaledPDFMultiplier") private var scaledPDFMultiplier = 1.0
     @State private var documentStyleRefreshToken = 0
+    @State private var searchGeneration = 0
+    @State private var syntaxHeadings: [MarkdownHeading] = []
     @StateObject private var textKit2CommitBridge = MarkdownTextKit2CommitBridge()
     @ObservedObject private var screenCastAnnotationHub = ScreenCastAnnotationHub.shared
     @State private var pendingScreenCastPublishTask: Task<Void, Never>?
@@ -943,6 +945,14 @@ struct MarkdownEditorView: View {
             pendingAutoSaveWorkItem?.cancel()
             pendingAutoSaveWorkItem = nil
             saveBeforeClosing()
+        }
+        .task(id: markdownText) {
+            let source = markdownText
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
+            let syntax = await Task.detached(priority: .utility) { NormalMarkdownSyntax.parse(source) }.value
+            guard !Task.isCancelled, markdownText == source else { return }
+            syntaxHeadings = syntax.headings.map { MarkdownHeading(level: $0.level, title: $0.title, utf16Offset: $0.offset) }
         }
         .onChange(of: markdownText) { _, newValue in
             let profileStart = MarkdownEditorPerformanceProbe.start()
@@ -1115,7 +1125,7 @@ struct MarkdownEditorView: View {
     }
 
     private var headings: [MarkdownHeading] {
-        parseHeadings(from: markdownText, maxLevel: tocMaxLevel)
+        syntaxHeadings.filter { $0.level <= tocMaxLevel }
     }
 
     private var searchButton: some View {
@@ -1484,23 +1494,18 @@ struct MarkdownEditorView: View {
             return searchResults[activeSearchResultIndex].range.location
         }()
 
-        searchResults = markdownBuildSearchResults(in: markdownText, query: query)
-        MarkdownEditorPerformanceProbe.end(
-            "MarkdownEditorView.rebuildSearchResults",
-            start: profileStart,
-            details: "queryLength=\((query as NSString).length),matches=\(searchResults.count),\(MarkdownEditorPerformanceProbe.textDetails(markdownText))"
-        )
-
-        guard !searchResults.isEmpty else {
-            activeSearchResultIndex = nil
-            return
-        }
-
-        if let previousLocation,
-           let index = searchResults.firstIndex(where: { $0.range.location >= previousLocation }) {
-            activeSearchResultIndex = index
-        } else {
-            activeSearchResultIndex = 0
+        searchGeneration += 1
+        let generation = searchGeneration
+        let source = markdownText
+        Task {
+            let results = await Task.detached(priority: .utility) {
+                markdownBuildSearchResults(in: source, query: query)
+            }.value
+            guard generation == searchGeneration, source == markdownText, query == searchQuery else { return }
+            searchResults = results
+            if let previousLocation, let index = results.firstIndex(where: { $0.range.location >= previousLocation }) {
+                activeSearchResultIndex = index
+            } else { activeSearchResultIndex = results.isEmpty ? nil : 0 }
         }
     }
 
@@ -1521,42 +1526,6 @@ struct MarkdownEditorView: View {
         searchResults = []
         activeSearchResultIndex = nil
         targetUTF16Offset = nil
-    }
-
-    private func parseHeadings(from source: String, maxLevel: Int) -> [MarkdownHeading] {
-        var result: [MarkdownHeading] = []
-        var offset = 0
-
-        for line in source.split(separator: "\n", omittingEmptySubsequences: false) {
-            let lineString = String(line)
-            let level = headingLevel(for: lineString)
-            if level > 0, level <= maxLevel {
-                let title = lineString.dropFirst(level).trimmingCharacters(in: .whitespaces)
-                if !title.isEmpty {
-                    result.append(MarkdownHeading(level: level, title: title, utf16Offset: offset))
-                }
-            }
-            offset += (lineString as NSString).length + 1
-        }
-
-        return result
-    }
-
-    private func headingLevel(for line: String) -> Int {
-        var level = 0
-        for char in line {
-            if char == "#" {
-                level += 1
-            } else {
-                break
-            }
-        }
-        if level == 0 || level > 6 {
-            return 0
-        }
-
-        let index = line.index(line.startIndex, offsetBy: level)
-        return index < line.endIndex && line[index] == " " ? level : 0
     }
 
     @MainActor
@@ -2182,14 +2151,14 @@ struct MarkdownQuickInputSettingsView: View {
 }
 
 // MARK: - 搜索结果模型 - v1 - 存储命中范围与右侧浮窗展示片段
-struct MarkdownSearchResult: Identifiable, Hashable {
+nonisolated struct MarkdownSearchResult: Identifiable, Hashable, Sendable {
     let id: Int
     let range: NSRange
     let snippet: String
 }
 
 // MARK: - 搜索结果构建 - v1 - 生成全文命中列表并提取行级片段
-func markdownBuildSearchResults(in text: String, query: String) -> [MarkdownSearchResult] {
+nonisolated func markdownBuildSearchResults(in text: String, query: String) -> [MarkdownSearchResult] {
     let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !normalizedQuery.isEmpty else { return [] }
 
@@ -2591,7 +2560,8 @@ struct MarkdownTextKit2PlainModeView: View {
         MarkdownIOSStyledTextEditor(
             text: $markdownText,
             targetUTF16Offset: $targetUTF16Offset,
-            documentStyle: documentStyle
+            documentStyle: documentStyle,
+            commitBridge: commitBridge
         )
             .padding(8)
         #endif
@@ -3257,6 +3227,7 @@ struct MarkdownIOSStyledTextEditor: UIViewRepresentable {
     @Binding var text: String
     @Binding var targetUTF16Offset: Int?
     let documentStyle: MarkdownDocumentStyle
+    let commitBridge: MarkdownTextKit2CommitBridge
 
     func makeCoordinator() -> Coordinator {
         Coordinator(text: $text, targetUTF16Offset: $targetUTF16Offset, documentStyle: documentStyle)
@@ -3276,8 +3247,14 @@ struct MarkdownIOSStyledTextEditor: UIViewRepresentable {
         textView.textContainerInset = UIEdgeInsets(top: 12, left: 10, bottom: 12, right: 10)
         textView.textContainer.lineFragmentPadding = 0
         textView.adjustsFontForContentSizeCategory = false
-        textView.attributedText = markdownIOSStyledAttributedString(from: text, style: documentStyle)
+        textView.text = text
         context.coordinator.lastAppliedText = text
+        context.coordinator.lastAppliedStyle = documentStyle
+        context.coordinator.commitBridge = commitBridge
+        context.coordinator.textView = textView
+        context.coordinator.applyVisibleStyle()
+        context.coordinator.scheduleSyntax(text)
+        commitBridge.commitHandler = { [weak coordinator = context.coordinator] in coordinator?.flushBinding() }
         return textView
     }
 
@@ -3289,11 +3266,17 @@ struct MarkdownIOSStyledTextEditor: UIViewRepresentable {
         context.coordinator.documentStyle = documentStyle
         // 输入法组合态不替换全文属性，待提交后再应用样式。
         guard textView.markedTextRange == nil else { return }
-        if context.coordinator.lastAppliedText != text || context.coordinator.lastAppliedStyle != documentStyle {
+        if context.coordinator.lastAppliedStyle != documentStyle {
+            context.coordinator.flushBinding()
+        }
+        if (context.coordinator.lastAppliedText != text && !commitBridge.hasPendingChanges)
+            || context.coordinator.lastAppliedStyle != documentStyle {
             let selectedRange = textView.selectedRange
             let preservedOffset = textView.contentOffset
             context.coordinator.isApplyingProgrammaticChange = true
-            textView.attributedText = markdownIOSStyledAttributedString(from: text, style: documentStyle)
+            if context.coordinator.lastAppliedText != text { textView.text = text }
+            context.coordinator.applyVisibleStyle()
+            context.coordinator.scheduleSyntax(text)
             textView.selectedRange = markdownIOSClampedRange(selectedRange, textLength: (text as NSString).length)
             context.coordinator.isApplyingProgrammaticChange = false
             context.coordinator.lastAppliedText = text
@@ -3313,6 +3296,11 @@ struct MarkdownIOSStyledTextEditor: UIViewRepresentable {
         }
     }
 
+    static func dismantleUIView(_ uiView: UITextView, coordinator: Coordinator) {
+        coordinator.flushBinding()
+        coordinator.commitBridge?.commitHandler = nil
+    }
+
     final class Coordinator: NSObject, UITextViewDelegate {
         @Binding private var text: String
         @Binding private var targetUTF16Offset: Int?
@@ -3321,6 +3309,57 @@ struct MarkdownIOSStyledTextEditor: UIViewRepresentable {
         var lastAppliedStyle: MarkdownDocumentStyle?
         var lastConsumedTargetOffset: Int?
         var isApplyingProgrammaticChange = false
+        var pendingEditRange: NSRange?
+        weak var textView: UITextView?
+        var commitBridge: MarkdownTextKit2CommitBridge?
+        var pendingBinding: DispatchWorkItem?
+        var syntaxGeneration = 0
+        var syntaxSnapshot: NormalMarkdownSyntax.Snapshot?
+        func scheduleSyntax(_ source: String) {
+            syntaxGeneration += 1
+            let generation = syntaxGeneration
+            Task {
+                let snapshot = await Task.detached(priority: .utility) { NormalMarkdownSyntax.parse(source) }.value
+                guard generation == syntaxGeneration, let textView, textView.markedTextRange == nil else { return }
+                syntaxSnapshot = snapshot
+                applyVisibleStyle()
+            }
+        }
+        func applyVisibleStyle() {
+            guard !isApplyingProgrammaticChange, let textView, textView.markedTextRange == nil else { return }
+            let storage = textView.textStorage
+            guard storage.length > 0 else { return }
+            var range = NSRange(location: min(textView.selectedRange.location, storage.length - 1), length: 0)
+            if let manager = textView.textLayoutManager, let content = manager.textContentManager,
+               let viewport = manager.textViewportLayoutController.viewportRange {
+                let start = content.offset(from: content.documentRange.location, to: viewport.location)
+                let end = content.offset(from: content.documentRange.location, to: viewport.endLocation)
+                if start >= 0, end >= start, end <= storage.length { range = NSRange(location: start, length: end - start) }
+            }
+            range = storage.mutableString.lineRange(for: range)
+            guard range.length <= 32_768 else { return }
+            let fragment = storage.mutableString.substring(with: range)
+            let styled = markdownIOSStyledAttributedString(from: fragment, style: documentStyle, syntax: syntaxSnapshot?.clipped(to: range))
+            isApplyingProgrammaticChange = true
+            storage.beginEditing()
+            styled.enumerateAttributes(in: NSRange(location: 0, length: styled.length)) { attrs, local, _ in
+                storage.setAttributes(attrs, range: NSRange(location: range.location + local.location, length: local.length))
+            }
+            storage.endEditing()
+            isApplyingProgrammaticChange = false
+        }
+        func scrollViewDidScroll(_ scrollView: UIScrollView) { applyVisibleStyle() }
+        func flushBinding() {
+            pendingBinding?.cancel()
+            pendingBinding = nil
+            guard let textView, textView.markedTextRange == nil else { return }
+            let value = textView.text ?? ""
+            lastAppliedText = value
+            text = value
+            commitBridge?.reset()
+            scheduleSyntax(value)
+        }
+
 
         init(
             text: Binding<String>,
@@ -3333,22 +3372,37 @@ struct MarkdownIOSStyledTextEditor: UIViewRepresentable {
         }
 
         func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
+            pendingEditRange = NSRange(location: range.location, length: (text as NSString).length)
             guard text == "\n" else { return true }
             return !applyAutoContinueRule(in: textView, replacementRange: range)
         }
 
         func textViewDidChange(_ textView: UITextView) {
             guard !isApplyingProgrammaticChange, textView.markedTextRange == nil else { return }
-            let selectedRange = textView.selectedRange
-            let preservedOffset = textView.contentOffset
-            let value = textView.text ?? ""
-            text = value
-            lastAppliedText = value
-            isApplyingProgrammaticChange = true
-            textView.attributedText = markdownIOSStyledAttributedString(from: value, style: documentStyle)
-            textView.selectedRange = markdownIOSClampedRange(selectedRange, textLength: (value as NSString).length)
-            isApplyingProgrammaticChange = false
-            restoreContentOffset(preservedOffset, in: textView)
+            syntaxGeneration += 1
+            syntaxSnapshot = nil
+            let length = textView.textStorage.length
+            if length > 0 {
+                let affected = markdownIOSClampedRange(pendingEditRange ?? textView.selectedRange, textLength: length)
+                let lineRange = textView.textStorage.mutableString.lineRange(for: affected)
+                let fragment = lineRange.length <= 32_768 ? textView.textStorage.mutableString.substring(with: lineRange) : ""
+                let styled = markdownIOSStyledAttributedString(from: fragment, style: documentStyle)
+                isApplyingProgrammaticChange = true
+                textView.textStorage.beginEditing()
+                styled.enumerateAttributes(in: NSRange(location: 0, length: styled.length)) { attributes, range, _ in
+                    textView.textStorage.setAttributes(attributes, range: NSRange(location: lineRange.location + range.location, length: range.length))
+                }
+                textView.textStorage.endEditing()
+                isApplyingProgrammaticChange = false
+            }
+            pendingEditRange = nil
+            // Assigning the binding does not re-style the text view on its echo.
+            lastAppliedStyle = documentStyle
+            commitBridge?.markDirty()
+            pendingBinding?.cancel()
+            let work = DispatchWorkItem { [weak self] in self?.flushBinding() }
+            pendingBinding = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
         }
 
         func textViewDidChangeSelection(_ textView: UITextView) {
@@ -3361,12 +3415,12 @@ struct MarkdownIOSStyledTextEditor: UIViewRepresentable {
         }
 
         private func applyTypingAttributes(in textView: UITextView) {
-            let source = textView.text ?? ""
-            let style = markdownIOSRoleStyle(at: textView.selectedRange.location, in: source, documentStyle: documentStyle)
-            let line = markdownIOSLineText(at: textView.selectedRange.location, in: source)
+            let storage = textView.textStorage.mutableString
+            let location = max(0, min(textView.selectedRange.location, max(0, storage.length - 1)))
+            let line = storage.length > 0 ? storage.substring(with: storage.lineRange(for: NSRange(location: location, length: 0))) : ""
+            let style = markdownIOSRoleStyle(forLine: line, documentStyle: documentStyle)
             textView.typingAttributes = markdownIOSTextAttributes(
-                for: style,
-                line: line,
+                for: style, line: line,
                 progressivelyIndentHeadings: documentStyle.progressivelyIndentHeadings,
                 progressiveIndentStep: documentStyle.progressiveIndentStep
             )
@@ -3375,8 +3429,7 @@ struct MarkdownIOSStyledTextEditor: UIViewRepresentable {
         private func applyAutoContinueRule(in textView: UITextView, replacementRange: NSRange) -> Bool {
             guard replacementRange.length == 0 else { return false }
 
-            let source = textView.text ?? ""
-            let nsText = source as NSString
+            let nsText = textView.textStorage.mutableString
             let caret = max(0, min(replacementRange.location, nsText.length))
             let lineAnchor = max(0, min(caret > 0 ? caret - 1 : caret, nsText.length))
             let lineRange = nsText.lineRange(for: NSRange(location: lineAnchor, length: 0))
@@ -3387,35 +3440,32 @@ struct MarkdownIOSStyledTextEditor: UIViewRepresentable {
             guard caret == lineRange.location + (line as NSString).length else { return false }
             guard let marker = markdownIOSAutoContinueMarker(in: line) else { return false }
 
-            let preservedOffset = textView.contentOffset
             if marker.hasContent {
                 let insertion = "\n\(marker.nextMarker)"
-                let nextText = nsText.replacingCharacters(in: replacementRange, with: insertion)
                 let nextSelection = NSRange(location: caret + (insertion as NSString).length, length: 0)
-                applyProgrammaticText(nextText, selectedRange: nextSelection, in: textView, preservedOffset: preservedOffset)
+                replaceLocalEdit(replacementRange, with: insertion, selectedRange: nextSelection, in: textView)
                 textView.scrollRangeToVisible(nextSelection)
             } else {
                 let markerRange = NSRange(location: lineRange.location, length: marker.markerLength)
-                let nextText = nsText.replacingCharacters(in: markerRange, with: "")
                 let nextSelection = NSRange(location: max(0, caret - marker.markerLength), length: 0)
-                applyProgrammaticText(nextText, selectedRange: nextSelection, in: textView, preservedOffset: preservedOffset)
+                replaceLocalEdit(markerRange, with: "", selectedRange: nextSelection, in: textView)
             }
             return true
         }
 
-        private func applyProgrammaticText(
-            _ value: String,
-            selectedRange: NSRange,
-            in textView: UITextView,
-            preservedOffset: CGPoint
-        ) {
-            text = value
-            lastAppliedText = value
+        private func replaceLocalEdit(_ range: NSRange, with replacement: String, selectedRange: NSRange, in textView: UITextView) {
+            let old = textView.textStorage.mutableString.substring(with: range)
+            let oldSelection = textView.selectedRange
+            let inverse = NSRange(location: range.location, length: replacement.utf16.count)
+            textView.undoManager?.registerUndo(withTarget: self) { target in
+                target.replaceLocalEdit(inverse, with: old, selectedRange: oldSelection, in: textView)
+            }
             isApplyingProgrammaticChange = true
-            textView.attributedText = markdownIOSStyledAttributedString(from: value, style: documentStyle)
-            textView.selectedRange = markdownIOSClampedRange(selectedRange, textLength: (value as NSString).length)
+            textView.textStorage.replaceCharacters(in: range, with: replacement)
+            textView.selectedRange = selectedRange
             isApplyingProgrammaticChange = false
-            restoreContentOffset(preservedOffset, in: textView)
+            pendingEditRange = inverse
+            textViewDidChange(textView)
             applyTypingAttributes(in: textView)
         }
 
@@ -3481,7 +3531,7 @@ private func markdownIOSFixedAutoContinueMarker(in line: String, markerBody: Str
     return (indent + markerBody, markerLength, !content.isEmpty)
 }
 
-private func markdownIOSStyledAttributedString(from source: String, style: MarkdownDocumentStyle) -> NSAttributedString {
+private func markdownIOSStyledAttributedString(from source: String, style: MarkdownDocumentStyle, syntax providedSyntax: NormalMarkdownSyntax.Snapshot? = nil) -> NSAttributedString {
     let nsText = source as NSString
     let attributed = NSMutableAttributedString(string: source)
     guard nsText.length > 0 else {
@@ -3489,11 +3539,14 @@ private func markdownIOSStyledAttributedString(from source: String, style: Markd
         return attributed
     }
 
+    let syntax = providedSyntax ?? NormalMarkdownSyntax.parse(source)
+    let headings = Dictionary(syntax.headings.map { ($0.offset, $0.level) }, uniquingKeysWith: { first, _ in first })
     var cursor = 0
     while cursor < nsText.length {
         let lineRange = nsText.lineRange(for: NSRange(location: cursor, length: 0))
         let rawLine = nsText.substring(with: lineRange).trimmingCharacters(in: .newlines)
-        let roleStyle = markdownIOSRoleStyle(forLine: rawLine, documentStyle: style)
+        let roleStyle = syntax.isLiteral(at: lineRange.location) ? style.body
+            : (headings[lineRange.location].map { style.headingStyle(level: $0) } ?? markdownIOSRoleStyle(forLine: rawLine, documentStyle: style))
         attributed.addAttributes(
             markdownIOSTextAttributes(
                 for: roleStyle,
@@ -3506,6 +3559,14 @@ private func markdownIOSStyledAttributedString(from source: String, style: Markd
         let next = NSMaxRange(lineRange)
         if next <= cursor { break }
         cursor = next
+    }
+    for span in syntax.spans where NSMaxRange(span.range) <= attributed.length {
+        switch span.kind {
+        case .code: attributed.addAttribute(.font, value: UIFont.monospacedSystemFont(ofSize: CGFloat(style.body.fontSize), weight: .regular), range: span.range)
+        case .strong: attributed.addAttribute(.font, value: UIFont.boldSystemFont(ofSize: CGFloat(style.body.fontSize)), range: span.range)
+        case .emphasis: attributed.addAttribute(.font, value: UIFont.italicSystemFont(ofSize: CGFloat(style.body.fontSize)), range: span.range)
+        case .link: attributed.addAttributes([.foregroundColor: UIColor.systemBlue, .underlineStyle: NSUnderlineStyle.single.rawValue], range: span.range)
+        }
     }
     return attributed
 }
@@ -3721,6 +3782,8 @@ final class MarkdownWebRenderCoordinator: NSObject {
     private var pendingWorkItem: DispatchWorkItem?
     private var lastSource = ""
     private var cachedBlocks: [MarkdownWebBlock] = []
+    private var renderGeneration = 0
+    private var latestRequestedSource = ""
     private var bootstrapLoaded = false
     private var pendingScript: String?
     private var styleSignature = ""
@@ -3748,6 +3811,7 @@ final class MarkdownWebRenderCoordinator: NSObject {
     func teardown() {
         pendingWorkItem?.cancel()
         pendingWorkItem = nil
+        renderGeneration += 1
         #if os(macOS)
         webView?.configuration.userContentController.removeScriptMessageHandler(forName: "markdownScrollSync")
         #endif
@@ -3765,6 +3829,7 @@ final class MarkdownWebRenderCoordinator: NSObject {
     ) {
         let profileStart = MarkdownEditorPerformanceProbe.start()
         self.webView = webView
+        latestRequestedSource = source
         #if os(macOS)
         self.scrollSyncBridge = scrollSyncBridge
         applyExternalScrollSyncIfNeeded(on: webView)
@@ -3800,6 +3865,8 @@ final class MarkdownWebRenderCoordinator: NSObject {
             return
         }
         pendingWorkItem?.cancel()
+        renderGeneration += 1
+        let generation = renderGeneration
 
         let sourceSnapshot = source
         let blocksSnapshot = cachedBlocks
@@ -3817,6 +3884,7 @@ final class MarkdownWebRenderCoordinator: NSObject {
 
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
+                guard generation == self.renderGeneration, self.latestRequestedSource == sourceSnapshot else { return }
                 let applyStart = MarkdownEditorPerformanceProbe.start()
                 self.lastSource = sourceSnapshot
                 self.cachedBlocks = nextBlocks
@@ -4009,15 +4077,9 @@ func markdownWebStyleSignature(_ style: MarkdownDocumentStyle) -> String {
 // MARK: - Web块渲染器 - v2 - 基于块级缓存与邻接重算生成Markdown块列表
 func markdownWebRenderBlocks(source: String, previousBlocks: [MarkdownWebBlock]) -> [MarkdownWebBlock] {
     let profileStart = MarkdownEditorPerformanceProbe.start()
-    let normalized = source.replacingOccurrences(of: "\r\n", with: "\n")
-    let sourceBlocks = normalized.components(separatedBy: "\n\n")
-    var sourceBlockStartLines: [Int] = []
-    sourceBlockStartLines.reserveCapacity(sourceBlocks.count)
-    var lineCursor = 0
-    for block in sourceBlocks {
-        sourceBlockStartLines.append(lineCursor)
-        lineCursor += block.reduce(0) { $1 == "\n" ? $0 + 1 : $0 } + 2
-    }
+    let syntax = NormalMarkdownSyntax.parse(source)
+    let sourceBlocks = syntax.blocks.map(\.preview)
+    let sourceBlockStartLines = syntax.blocks.map(\.startLine)
 
     var changedIndexes = Set<Int>()
     let commonCount = min(sourceBlocks.count, previousBlocks.count)
@@ -4416,7 +4478,7 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
         if let offset = targetUTF16Offset {
             if context.coordinator.lastConsumedTargetOffset != offset {
                 let jumpStart = MarkdownEditorPerformanceProbe.start()
-                let location = min(max(offset, 0), (textView.string as NSString).length)
+                let location = min(max(offset, 0), (textView.textStorage?.length ?? 0))
                 textView.setSelectedRange(NSRange(location: location, length: 0))
                 textView.scrollRangeToVisible(NSRange(location: location, length: 0))
                 context.coordinator.lastConsumedTargetOffset = offset
@@ -4502,7 +4564,7 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
                 && !deletesLineBreak
             if (replacementString ?? "").isEmpty, affectedCharRange.length > 0 {
                 let diagnosis = EditorDeletionClassifier.diagnoseDeletion(
-                    source: textView.string as NSString,
+                    source: source,
                     affectedRange: affectedCharRange,
                     protectedPrefixLengthForLine: markdownProtectedPrefixLengthForDeletion
                 )
@@ -4554,6 +4616,7 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
                 return
             }
             parent.commitBridge.markDirty()
+            textView.scheduleSemanticRefresh()
             let quickInputStart = MarkdownEditorPerformanceProbe.start()
             let diagnosticQuickInputStart = MarkdownTextKit2Diagnostic38.now()
             if textView.applyQuickInputIfNeeded() {
@@ -4604,7 +4667,7 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
                 "TextKit2.input",
                 start: profileStart,
                 budgetMs: 16,
-                textLength: (textView.string as NSString).length,
+                textLength: (textView.textStorage?.length ?? 0),
                 details: "edited={\(editedRange.location),\(editedRange.length)},deletion=\(pendingDeletionLog)"
             )
             pendingDeletionLog = "none"
@@ -4852,14 +4915,14 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         let clipView = scrollView.contentView
         let clipCenter = NSPoint(x: clipView.bounds.midX, y: clipView.bounds.midY)
         let localPoint = convert(clipCenter, from: clipView)
-        let characterIndex = max(0, min((string as NSString).length, characterIndexForInsertion(at: localPoint)))
+        let characterIndex = max(0, min((self.textStorage?.length ?? 0), characterIndexForInsertion(at: localPoint)))
         return markdownSourceLineIndex(containing: characterIndex)
     }
 
     func scrollMarkdownSourceLineToCenter(_ sourceLine: Int, in scrollView: NSScrollView) {
         performanceDiagnostics.checkPipeline(self, stage: "TextKit2同步滚动前")
         defer { performanceDiagnostics.checkPipeline(self, stage: "TextKit2同步滚动后") }
-        let nsText = string as NSString
+        let nsText = self.textStorage?.mutableString ?? NSMutableString(string: string)
         guard nsText.length > 0, let manager = textLayoutManager,
               let content = manager.textContentManager else { return }
         let lineRange = markdownSourceRange(forLine: max(0, sourceLine), in: nsText)
@@ -4884,7 +4947,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
 
     private func markdownSourceLineIndex(containing location: Int) -> Int {
         let diagnosticStart = MarkdownTextKit2Diagnostic38.now()
-        let nsText = string as NSString
+        let nsText = self.textStorage?.mutableString ?? NSMutableString(string: string)
         guard nsText.length > 0 else { return 0 }
         let safeLocation = max(0, min(location, nsText.length))
         var lineIndex = 0
@@ -4941,6 +5004,38 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     var isApplyingQuickInputReplacement = false
     var isApplyingMarkdownStyle = false
     var isRestoringAttachmentSource = false
+    private var semanticSnapshot: NormalMarkdownSyntax.Snapshot?
+    private var semanticHeadings: [Int: Int] = [:]
+    private var semanticWork: DispatchWorkItem?
+    private var semanticGeneration = 0
+
+    func scheduleSemanticRefresh() {
+        semanticWork?.cancel()
+        semanticGeneration += 1
+        let generation = semanticGeneration
+        semanticSnapshot = nil
+        semanticHeadings = [:]
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            let source = self.markdownSourceStringPreservingAttachments()
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                let snapshot = NormalMarkdownSyntax.parse(source)
+                DispatchQueue.main.async {
+                    guard let self, generation == self.semanticGeneration else { return }
+                    self.semanticSnapshot = snapshot
+                    self.semanticHeadings = Dictionary(snapshot.headings.map { ($0.offset, $0.level) }, uniquingKeysWith: { first, _ in first })
+                    if !self.hasActiveMarkedText, let style = self.currentDocumentStyle { self.applyMarkdownStyleToVisibleRange(style: style) }
+                }
+            }
+        }
+        semanticWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
+    }
+
+    private func isSemanticLiteral(at offset: Int) -> Bool {
+        semanticSnapshot?.isLiteral(at: offset) ?? false
+    }
+
     private var lineRangeCache: [NSRange] = []
     private var cachedStringLength = -1
     private var markdownBlockCache: [Int: MarkdownBlock] = [:]
@@ -5053,7 +5148,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         let restored = restoreAttachmentSourceTokens(in: lineRange)
         if restored {
             invalidateLineRangeCache()
-            setSelectedRange(NSRange(location: min(safeLocation, (string as NSString).length), length: 0))
+            setSelectedRange(NSRange(location: min(safeLocation, (self.textStorage?.length ?? 0)), length: 0))
         }
         return restored
     }
@@ -5156,13 +5251,13 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     }
 
     func applyMarkdownStyleVisibleFirst(style: MarkdownDocumentStyle) {
+        scheduleSemanticRefresh()
         let diagnosticStart = MarkdownTextKit2Diagnostic38.now()
         defer { onDiagnostic38Duration?("可见优先样式", MarkdownTextKit2Diagnostic38.milliseconds(since: diagnosticStart)) }
         let profileStart = MarkdownEditorPerformanceProbe.start()
         guard let textStorage else { return }
         cancelIdleMarkdownStyleCompletion()
         currentDocumentStyle = style
-        rebuildLineRangeCache()
         let fullRange = NSRange(location: 0, length: textStorage.length)
         let visibleRange = NSIntersectionRange(selectedNeighborhoodRange(), fullRange)
         if visibleRange.length > 0 {
@@ -5170,7 +5265,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         } else if fullRange.length <= 20_000 {
             applyMarkdownStyle(in: fullRange, style: style)
         }
-        scheduleIdleMarkdownStyleCompletion(style: style, skipping: visibleRange)
+        // Unseen content is styled on scrolling, never by walking the entire document on main.
         MarkdownEditorPerformanceProbe.end(
             "MarkdownTextKit2PlainTextView.applyMarkdownStyleVisibleFirst",
             start: profileStart,
@@ -5474,7 +5569,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     }
 
     private func cachedLineRange(containing range: NSRange) -> NSRange? {
-        guard !lineRangeCache.isEmpty else { return nil }
+        guard cachedStringLength == (self.textStorage?.length ?? 0), !lineRangeCache.isEmpty else { return nil }
         let location = max(0, range.location)
         var lower = 0
         var upper = lineRangeCache.count - 1
@@ -5499,7 +5594,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
               let range = manager.textViewportLayoutController.viewportRange else { return nil }
         let start = content.offset(from: content.documentRange.location, to: range.location)
         let end = content.offset(from: content.documentRange.location, to: range.endLocation)
-        guard start >= 0, end >= start, end <= (textStorage?.length ?? 0) else { return nil }
+        guard start >= 0, end >= start, end <= (self.textStorage?.length ?? 0) else { return nil }
         return NSRange(location: start, length: end - start)
     }
 
@@ -5609,6 +5704,12 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
             let lineRange = nsText.lineRange(for: NSRange(location: lineLocation, length: 0))
             if lineRange.length == 0 { break }
             processedLineCount += 1
+            // A single pathological line must not run parsers/regular expressions on main.
+            if lineRange.length > 32_768 {
+                onDiagnostic38Count?("超长行延后样式", 1)
+                lineLocation = NSMaxRange(lineRange)
+                continue
+            }
 
             var rawLine = nsText.substring(with: lineRange)
             if rawLine.hasSuffix("\n") { rawLine.removeLast() }
@@ -5625,10 +5726,10 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
             if layers.contains(.block) {
                 applyMarkdownBlockStyle(in: textStorage, rawLine: syntaxLine, lineRange: lineRange, style: style)
             }
-            if layers.contains(.inline) {
+            if layers.contains(.inline), !isSemanticLiteral(at: lineRange.location) {
                 applyMarkdownInlineStyle(in: textStorage, rawLine: syntaxLine, lineRange: lineRange, style: style)
             }
-            if layers.contains(.attachment) {
+            if layers.contains(.attachment), !isSemanticLiteral(at: lineRange.location) {
                 applyMarkdownAttachmentStyle(in: textStorage, rawLine: syntaxLine, lineRange: lineRange, style: style)
             }
 
@@ -5651,7 +5752,9 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         style: MarkdownDocumentStyle
     ) {
         let roleStyle: MarkdownRoleStyle
-        if let headingLevel = parseHeadingLevelForStyling(in: rawLine) {
+        if isSemanticLiteral(at: lineRange.location) {
+            roleStyle = style.body
+        } else if let headingLevel = semanticHeadings[lineRange.location] ?? parseHeadingLevelForStyling(in: rawLine) {
             roleStyle = style.headingStyle(level: headingLevel)
             applyRoleStyle(roleStyle, to: textStorage, range: lineRange)
         } else if parseCommentLine(rawLine) != nil {
@@ -5678,7 +5781,13 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         lineRange: NSRange,
         style: MarkdownDocumentStyle
     ) {
-        for codeRange in parseInlineCodeRanges(in: rawLine, base: lineRange.location) {
+        let semantic = NormalMarkdownSyntax.parse(rawLine)
+        func semanticRanges(_ kind: NormalMarkdownSyntax.Span.Kind) -> [NSRange] {
+            semantic.spans.filter { $0.kind == kind }.map {
+                NSRange(location: lineRange.location + $0.range.location, length: $0.range.length)
+            }
+        }
+        for codeRange in semanticRanges(.code) {
             let codeFont = NSFont.monospacedSystemFont(ofSize: style.body.fontSize, weight: .regular)
             textStorage.addAttributes([
                 .font: codeFont,
@@ -5696,16 +5805,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
             ], range: codeRange)
         }
 
-        for strongRange in parseInlineStrongRanges(in: rawLine, base: lineRange.location) {
-            let existingFont = (textStorage.attribute(.font, at: max(0, min(strongRange.location, max(0, textStorage.length - 1))), effectiveRange: nil) as? NSFont) ?? markdownResolvedFont(name: style.body.fontName, size: style.body.fontSize)
-            let boldFont = NSFont.monospacedSystemFont(ofSize: existingFont.pointSize, weight: .bold)
-            textStorage.addAttributes([
-                .font: boldFont,
-                .foregroundColor: NSColor.systemOrange
-            ], range: strongRange)
-        }
-
-        for strongRange in parseInlineRegexCaptureRanges(pattern: #"__([^_\n]+)__"#, in: rawLine, base: lineRange.location) {
+        for strongRange in semanticRanges(.strong) {
             let existingFont = (textStorage.attribute(.font, at: max(0, min(strongRange.location, max(0, textStorage.length - 1))), effectiveRange: nil) as? NSFont) ?? markdownResolvedFont(name: style.body.fontName, size: style.body.fontSize)
             let boldFont = NSFont.monospacedSystemFont(ofSize: existingFont.pointSize, weight: .bold)
             textStorage.addAttributes([
@@ -5737,7 +5837,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
             }
         }
 
-        for italicRange in parseInlineItalicRanges(in: rawLine, base: lineRange.location) {
+        for italicRange in semanticRanges(.emphasis) {
             let existingFont = (textStorage.attribute(.font, at: max(0, min(italicRange.location, max(0, textStorage.length - 1))), effectiveRange: nil) as? NSFont) ?? markdownResolvedFont(name: style.body.fontName, size: style.body.fontSize)
             let italicFont = NSFontManager.shared.convert(existingFont, toHaveTrait: .italicFontMask)
             textStorage.addAttributes([
@@ -5757,7 +5857,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
             textStorage.addAttributes([.font: italicFont], range: italicRange)
         }
 
-        for linkRange in parseInlineLinkLabelRanges(in: rawLine, base: lineRange.location) {
+        for linkRange in semanticRanges(.link) {
             textStorage.addAttributes([
                 .foregroundColor: NSColor.systemBlue,
                 .underlineStyle: NSUnderlineStyle.single.rawValue
@@ -6316,7 +6416,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         let fullRange = NSRange(location: 0, length: textStorage.length)
         let visibleRange = NSIntersectionRange(expandedLineRange(for: visibleCharacterRange() ?? selectedNeighborhoodRange()), fullRange)
         applySearchHighlights(query: trimmedQuery, activeRange: activeRange, in: visibleRange)
-        scheduleIdleSearchHighlights(query: trimmedQuery, activeRange: activeRange, skipping: visibleRange)
+        // Visible highlights only; the complete results list is searched off-main.
         MarkdownEditorPerformanceProbe.end(
             "MarkdownTextKit2PlainTextView.updateSearchHighlights",
             start: profileStart,
@@ -6347,7 +6447,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         let safeRange = NSIntersectionRange(targetRange, fullRange)
         guard safeRange.length > 0 else { return }
 
-        let nsText = string as NSString
+        let nsText = self.textStorage?.mutableString ?? NSMutableString(string: string)
         let ranges = searchRanges(in: nsText, query: query, range: safeRange)
         textStorage.beginEditing()
         for range in ranges {
@@ -6691,7 +6791,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         selection: NSRange,
         isShift: Bool
     ) -> Bool {
-        let nsText = string as NSString
+        let nsText = self.textStorage?.mutableString ?? NSMutableString(string: string)
         let caret = max(0, min(selection.location, nsText.length))
         let lineRange = caretLineRange(at: caret, in: nsText)
         var line = lineRange.length > 0 ? nsText.substring(with: lineRange) : ""
@@ -6827,7 +6927,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         selection: NSRange,
         isShift: Bool
     ) -> Bool {
-        let nsText = string as NSString
+        let nsText = self.textStorage?.mutableString ?? NSMutableString(string: string)
         guard nsText.length > 0 else { return false }
 
         let safeLocation = max(0, min(selection.location, nsText.length))
@@ -7012,7 +7112,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
 
     private func applyAutoContinueRule() -> Bool {
         let profileStart = MarkdownEditorPerformanceProbe.start()
-        let nsText = string as NSString
+        let nsText = self.textStorage?.mutableString ?? NSMutableString(string: string)
         let selection = selectedRange()
         guard selection.length == 0 else { return false }
 
@@ -7460,7 +7560,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
             return
         }
 
-        let textLength = (string as NSString).length
+        let textLength = (self.textStorage?.length ?? 0)
         let selection = selectedRange()
         let insertionLocation = max(0, min(selection.location, textLength))
         let insertionRange = NSRange(location: insertionLocation, length: 0)

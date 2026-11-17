@@ -177,9 +177,8 @@
                 node.dataset.hash = patch.hash;
                 node.dataset.sourceLineStart = String(patch.startLine || 0);
                 node.innerHTML = renderMarkdown(patch.markdown || '');
+                renderMath(node);
             }
-
-            renderMath(root);
         },
         currentCenterSourceLine: currentCenterSourceLine,
         scrollToSourceLine: scrollToSourceLine
