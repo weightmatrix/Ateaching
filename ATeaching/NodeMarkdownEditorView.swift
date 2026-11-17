@@ -655,7 +655,9 @@ struct NodeMarkdownEditorView: View {
         do {
             let data = try TeachingCloudFileAccess.read(fileURL)
             pendingLatestCloudReload = false
-            guard TeachingCloudFileAccess.digest(data) != fileMeta.diskDigest else { return }
+            let cloudChanged = TeachingCloudFileAccess.digest(data) != fileMeta.diskDigest
+            TeachingDebugLogStore.append("trigger=applyLatestCloudReloadIfReady changed=\(cloudChanged) revision=\(documentRevision)/\(persistedDocumentRevision) rows=\(document.nodes.count)", category: "NodeMarkdown.ReloadTrigger", force: true)
+            guard cloudChanged else { return }
             pendingRealtimeCoursePushTask?.cancel()
             persistedDocumentRevision = documentRevision
             saveState = .clean
@@ -663,8 +665,8 @@ struct NodeMarkdownEditorView: View {
         } catch { statusMessage = "最新文件尚未就绪：\(error.localizedDescription)" }
     }
 
-    private func reloadFromDisk() {
-        TeachingDebugLogStore.append("reload row=\(String(describing: activeEditorRowIndex)) saving=\(isSaveTaskRunning) pendingCloud=\(pendingLatestCloudReload)", category: "诊断·124·保存视野", force: true)
+    private func reloadFromDisk(reason: String = #function) {
+        TeachingDebugLogStore.append("trigger=\(reason) reload row=\(String(describing: activeEditorRowIndex)) saving=\(isSaveTaskRunning) pendingCloud=\(pendingLatestCloudReload)", category: "诊断·124·保存视野", force: true)
         invalidatePendingTextKitParsing()
         // 磁盘加载和编辑器文本解析是两种不同事务。样式刷新、
         // 输入回调或草稿提交可以废弃旧解析，但绝不能把正在进行的
@@ -1047,8 +1049,11 @@ struct NodeMarkdownEditorView: View {
         isSaveTaskRunning = true
         saveState = .saving
         Task {
+            let trace = NodeMarkdownPerformanceTrace("commandSave")
+            defer { trace.mark("remaining"); trace.finish(rows: document.nodes.count) }
             defer { isSaveTaskRunning = false }
             await commitPendingDraftForSaveAsync()
+            trace.mark("draftCommitIncludingWait")
             while documentRevision != persistedDocumentRevision {
                 guard canPersistCurrentDocument() else {
                     saveState = .dirty
@@ -1069,11 +1074,13 @@ struct NodeMarkdownEditorView: View {
                     metaSnapshot.type = "nodemarkdown"
                 }
 
+                trace.mark("prepare")
                 let result = await NodeMarkdownFileManager.persistToDiskAndPrepare(
                     document: documentSnapshot,
                     meta: metaSnapshot,
                     to: targetURL
                 )
+                trace.mark("diskPersistIncludingWait")
                 switch result {
                 case .success(let persist):
                     fileMeta.diskDigest = persist.diskDigest
@@ -1110,7 +1117,10 @@ struct NodeMarkdownEditorView: View {
     }
 
     private func persistCurrentDocumentToDiskForSync(cleanForFinalization: Bool = false) async throws {
+        let trace = NodeMarkdownPerformanceTrace("syncSave")
+        defer { trace.mark("remaining"); trace.finish(rows: document.nodes.count) }
         await commitPendingDraftForSaveAsync()
+        trace.mark("draftCommitIncludingWait")
         guard canPersistCurrentDocument() else {
             let message = pendingCutGuardMessage.isEmpty
                 ? "当前Node身份检查未通过，禁止保存"
@@ -1133,11 +1143,13 @@ struct NodeMarkdownEditorView: View {
         let revisionSnapshot = documentRevision
         let documentSnapshot = document
 
+        trace.mark("prepare")
         let result = await NodeMarkdownFileManager.persistToDiskAndPrepare(
             document: documentSnapshot,
             meta: metaSnapshot,
             to: fileURL
         )
+        trace.mark("diskPersistIncludingWait")
         if case .success(let persist) = result {
             metaSnapshot.diskDigest = persist.diskDigest
             metaSnapshot.diskPath = fileURL.standardizedFileURL.path
@@ -1348,9 +1360,13 @@ struct NodeMarkdownEditorView: View {
 
     /// 保存路径专用：把待提交草稿的全文解析放到后台，主线程只负责应用结果。
     private func commitPendingDraftForSaveAsync() async {
+        let trace = NodeMarkdownPerformanceTrace("saveDraft")
+        defer { trace.mark("remaining"); trace.finish(rows: document.nodes.count) }
         legacyDraftCommitController.commitPendingEditing()
+        trace.mark("editorCommit")
         pendingTextKitParseTask?.cancel()
         let serialized = NodeMarkdownPlainTextCodec.serialize(document: document)
+        trace.mark("serializeAndCompare")
         guard textKitDraft != serialized else {
             return
         }
@@ -1374,6 +1390,7 @@ struct NodeMarkdownEditorView: View {
                 rowMetadata: rowMetadata
             )
         }.value
+        trace.mark("backgroundParseIncludingWait")
         applyPendingDraftCommit(previousDocument: previousDocument, parsed: parsed)
     }
 
@@ -1427,6 +1444,8 @@ struct NodeMarkdownEditorView: View {
     /// 如果像旧管线那样防抖，新行的UUID会在第一次输入和离行时尚未存在，
     /// 进而丢失焦点、脏包和新包归属。
     private func applyTextKit2DocumentSnapshot(_ snapshot: NodeMarkdownLegacyDocumentSnapshot) {
+        let trace = NodeMarkdownPerformanceTrace("parentSnapshot")
+        defer { trace.mark("remaining"); trace.finish(rows: document.nodes.count) }
         guard !isNotebookWriteOperationInProgress else { return }
         pendingTextKitParseTask?.cancel()
         textKitParseGeneration &+= 1
@@ -1437,18 +1456,22 @@ struct NodeMarkdownEditorView: View {
             snapshot: snapshot,
             previousNodes: previousDocument.nodes
         )
+        trace.mark("parse")
         _ = parsed.restoreMissingH3SourceLinks(from: previousDocument)
         _ = parsed.touchChangedH3Packages(comparedTo: previousDocument)
         parsed.propagateChildMtimeToH3Roots()
 
+        trace.mark("H3Maintenance")
         document = parsed
         synchronizeDocumentIndex(
             previousDocument: previousDocument,
             currentDocument: parsed,
             activeRowIndex: activeEditorRowIndex
         )
+        trace.mark("index")
         textKitDraft = snapshot.plainText
         textKitDraftRowMetadata = makeTextKitRowMetadata(for: parsed)
+        trace.mark("projection")
         cleanupUnusedImageAssets(previousDocument: previousDocument, currentDocument: parsed)
         if isClassSessionEditor {
             _ = packageChangeTracker.recordDocumentMutation(
@@ -1458,8 +1481,10 @@ struct NodeMarkdownEditorView: View {
             )
             refreshLocalPackageListsAndLight()
         }
+        trace.mark("cleanupAndPackageTracking")
         markDocumentDirty()
         scheduleSnapshotRebuild()
+        trace.mark("dirtyAndSchedule")
         rebuildSearchResults()
     }
 
@@ -1526,6 +1551,8 @@ struct NodeMarkdownEditorView: View {
     /// 旧管线失焦提交只按UUID更新一个Node。正文已经不含`### `等层级前缀，
     /// 因此level和Source信息必须来自编辑暂存，不能再从Content反推。
     private func commitLegacyEditingNode(_ draft: NodeMarkdownLegacyEditingNodeDraft) {
+        let trace = NodeMarkdownPerformanceTrace("parentNodeCommit")
+        defer { trace.mark("remaining"); trace.finish(rows: document.nodes.count) }
         guard let nodeID = UUID(uuidString: draft.nodeID),
               let rowIndex = documentIndex.row(for: nodeID),
               document.nodes.indices.contains(rowIndex) else {
@@ -1536,6 +1563,7 @@ struct NodeMarkdownEditorView: View {
             return
         }
 
+        trace.mark("lookup")
         let previousDocument = document
         let previousNode = previousDocument.nodes[rowIndex]
         let previousOwnerID = previousDocument.owningH3Index(
@@ -1594,6 +1622,7 @@ struct NodeMarkdownEditorView: View {
             return
         }
 
+        trace.mark("compareAndOwnership")
         pendingTextKitParseTask?.cancel()
         latestLegacyDocumentSnapshot = nil
         var updatedDocument = previousDocument
@@ -1614,16 +1643,22 @@ struct NodeMarkdownEditorView: View {
             comparedTo: previousDocument,
             affectedRowIndex: rowIndex
         )
+        trace.mark("mutationAndH3Touch")
         document = updatedDocument
         documentIndex = updatedIndex
+        trace.mark("assignDocument")
         textKitDraft = NodeMarkdownPlainTextCodec.serialize(document: updatedDocument)
+        trace.mark("serialize")
         textKitDraftRowMetadata = makeTextKitRowMetadata(for: updatedDocument)
+        trace.mark("rowMetadata")
         cleanupUnusedImageAssets(previousDocument: previousDocument, currentDocument: updatedDocument)
+        trace.mark("imageCleanup")
         if isClassSessionEditor {
             _ = packageChangeTracker.recordDocumentMutation(
                 previousDocument: previousDocument,
                 currentDocument: updatedDocument
             )
+            trace.mark("packageMutation")
             NodeMarkdownDiagnostic26.log(
                 "外层追踪结果 Node=\(NodeMarkdownDiagnostic26.shortID(draft.nodeID)) "
                     + "脏包=\(packageChangeTracker.dirtyPackageIDList().map(NodeMarkdownDiagnostic26.shortID).sorted()) "
@@ -1631,8 +1666,10 @@ struct NodeMarkdownEditorView: View {
             )
             refreshLocalPackageListsAndLight()
         }
+        trace.mark("packageListRefresh")
         markDocumentDirty()
         scheduleSnapshotRebuild()
+        trace.mark("dirtyAndSchedule")
         rebuildSearchResults()
     }
 
@@ -1702,7 +1739,13 @@ struct NodeMarkdownEditorView: View {
             guard !Task.isCancelled else { return }
             // HTML整篇构建是纯计算，放到后台线程，避免保存后主线程卡顿。
             let rows = await Task.detached(priority: .utility) {
-                NodeMarkdownHTMLBuilder.buildRows(document: documentSnapshot, style: styleSnapshot)
+                let started = ProcessInfo.processInfo.systemUptime
+                let rows = NodeMarkdownHTMLBuilder.buildRows(document: documentSnapshot, style: styleSnapshot)
+                let elapsed = (ProcessInfo.processInfo.systemUptime - started) * 1000
+                if elapsed >= 16 {
+                    TeachingDebugLogStore.append("operation=backgroundHTML rows=\(documentSnapshot.nodes.count) wallMs=\(String(format: "%.2f", elapsed))", category: "NodeMarkdown.Performance", force: true)
+                }
+                return rows
             }.value
             guard !Task.isCancelled else { return }
             rowsSnapshot = rows

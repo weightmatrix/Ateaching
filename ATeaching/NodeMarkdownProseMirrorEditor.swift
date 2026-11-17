@@ -482,6 +482,8 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
         }
 
         func commitActiveNode(reason: String) {
+            let trace = NodeMarkdownPerformanceTrace("commitActiveNode")
+            defer { trace.mark("remaining"); trace.finish(rows: state.snapshot.nodes.count) }
             let diagnosticStart = NodeMarkdownDiagnostic114.now()
             defer {
                 diagnostic114.recordDuration("提交活动Node", since: diagnosticStart, slowThresholdMilliseconds: 8, details: "reason=\(reason)")
@@ -497,6 +499,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                     textView.setSelectedRange(NSRange(location: caret, length: 0))
                 }
             }
+            trace.mark("selection")
             if let baselineNode, baselineNode != node {
                 if let onCommitEditingNode = owner.onCommitEditingNode {
                     onCommitEditingNode(draft(for: node))
@@ -504,16 +507,22 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                     publishProjectionFallback()
                 }
             }
+            trace.mark("parentCommit")
             activeNodeID = nil
             baselineNode = nil
             owner.onEditingDraftDirtyChange?(false)
             guard !isStructuralTransition else { return }
+            trace.mark("dirtyCallback")
             installExactStaticGeometry(at: row)
+            trace.mark("staticGeometry")
             owner.onActiveRowChange?(nil)
             owner.onFocusLocationChange?(nil)
+            trace.mark("focusCallbacks")
             if let textView = textViewsByNodeID[nodeID]?.value {
                 reinstall(node: node, in: textView, row: row)
+                trace.mark("reinstall")
                 measure(textView: textView, nodeID: nodeID, row: row)
+                trace.mark("measure")
                 textView.setNeedsDisplay(textView.bounds)
             } else {
                 refreshRows([row])

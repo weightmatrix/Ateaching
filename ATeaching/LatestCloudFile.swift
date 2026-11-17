@@ -13,12 +13,16 @@ nonisolated enum LatestCloudFile {
         if candidate.modifiedAt != current.modifiedAt { return candidate.modifiedAt > current.modifiedAt }
         return candidate.digest > current.digest
     }
-    static func ready(_ url: URL) throws {
+    static func ready(_ url: URL, caller: String = #function, line: Int = #line) throws {
         var freshURL = url
         freshURL.removeAllCachedResourceValues()
         let values = try freshURL.resourceValues(forKeys: [.isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey, .ubiquitousItemDownloadingErrorKey])
         if let error = values.ubiquitousItemDownloadingError { throw error }
         if values.isUbiquitousItem == true && values.ubiquitousItemDownloadingStatus != .current {
+            TeachingDebugLogStore.append(
+                "operation=ready current=false status=\(String(describing: values.ubiquitousItemDownloadingStatus)) caller=\(caller):\(line)",
+                category: "Cloud.NotReady", force: true
+            )
             try FileManager.default.startDownloadingUbiquitousItem(at: url)
             throw NSError(domain: "LatestCloudFile", code: 1, userInfo: [NSLocalizedDescriptionKey: "等待 iCloud 当前版本下载：\(url.lastPathComponent)"])
         }

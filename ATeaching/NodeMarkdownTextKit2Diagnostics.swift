@@ -1,6 +1,36 @@
 // PIPELINE MARKER: NodeMarkdown TextKit2 new pipeline.
 import Foundation
 
+/// One bounded summary per slow operation. Labels and counts only; never document text.
+@MainActor
+final class NodeMarkdownPerformanceTrace {
+    private let operation: String
+    private let started = ProcessInfo.processInfo.systemUptime
+    private var checkpoint = ProcessInfo.processInfo.systemUptime
+    private var stages: [(String, Double)] = []
+
+    init(_ operation: String) { self.operation = operation }
+
+    func mark(_ stage: String) {
+        let now = ProcessInfo.processInfo.systemUptime
+        if stages.count < 24 {
+            stages.append((stage, (now - checkpoint) * 1000))
+        }
+        checkpoint = now
+    }
+
+    func finish(rows: Int, minimumMilliseconds: Double = 8) {
+        let elapsed = (ProcessInfo.processInfo.systemUptime - started) * 1000
+        guard elapsed >= minimumMilliseconds else { return }
+        let id = String(UUID().uuidString.prefix(8))
+        let summary = stages.map { "\($0.0)=\(String(format: "%.2f", $0.1))ms" }.joined(separator: ", ")
+        TeachingDebugLogStore.append(
+            "op=\(id) operation=\(operation) rows=\(rows) wallMs=\(String(format: "%.2f", elapsed)) stages=[\(summary)] asyncWaitIncluded=true",
+            category: "NodeMarkdown.Performance", force: true
+        )
+    }
+}
+
 @MainActor
 enum NodeMarkdownDiagnostic33 {
     static func record(_ message: String) {}
