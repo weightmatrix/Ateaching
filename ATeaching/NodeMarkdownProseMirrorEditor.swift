@@ -2273,6 +2273,21 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             focus(nodeID: nodeID, offset: pendingFocusOffset ?? 0)
         }
 
+        private func publishReadyRows(_ count: Int, in tableView: NSTableView) {
+            let previousReady = readyRowCount
+            // The previous trailing spacer may now occupy the first appended node's row.
+            // Row-count notification alone retains NSTableView's cached 15pt height/view.
+            let reusedSpacer = previousReady < count && tableView.numberOfRows > previousReady
+            readyRowCount = count
+            initialViewportIsReady = true
+            tableView.noteNumberOfRowsChanged()
+            if reusedSpacer {
+                let rows = IndexSet(integer: previousReady)
+                tableView.noteHeightOfRows(withIndexesChanged: rows)
+                tableView.reloadData(forRowIndexes: rows, columnIndexes: IndexSet(integer: 0))
+            }
+        }
+
         private func buildExactLayout(generation: UInt64) async {
             guard let tableView else { return }
             let diagnosticStart = NodeMarkdownDiagnostic114.now()
@@ -2320,10 +2335,8 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 let completedDocument = row == state.snapshot.nodes.count
                 if completedInitialViewport || completedBatch || completedDocument {
                     let publishStart = NodeMarkdownDiagnostic114.now()
-                    readyRowCount = row
-                    initialViewportIsReady = true
                     recordLayoutCrashContext("布局发布前", details: "taskGeneration=\(generation) measuredRow=\(row)")
-                    tableView.noteNumberOfRowsChanged()
+                    publishReadyRows(row, in: tableView)
                     restorePendingViewportAnchorIfPossible()
                     fulfillPendingNavigationIfPossible()
                     fulfillPendingFocusIfPossible()
@@ -2341,10 +2354,8 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             }
             if generation == exactLayoutGeneration {
                 if readyRowCount < row {
-                    readyRowCount = row
-                    initialViewportIsReady = true
                     recordLayoutCrashContext("布局发布前", details: "taskGeneration=\(generation) measuredRow=\(row)")
-                    tableView.noteNumberOfRowsChanged()
+                    publishReadyRows(row, in: tableView)
                     restorePendingViewportAnchorIfPossible()
                     fulfillPendingNavigationIfPossible()
                     fulfillPendingFocusIfPossible()
