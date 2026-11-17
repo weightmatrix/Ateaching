@@ -78,7 +78,8 @@ final class NodeMarkdownDiagnostic114 {
         }
     }
 
-    private static let isEnabled = false
+    // Aggregate in memory; write at most once per two seconds during activity.
+    private static let isEnabled = true
 
     private let sessionID: String
     private var documentRows: Int
@@ -146,8 +147,7 @@ final class NodeMarkdownDiagnostic114 {
             .joined(separator: ", ")
         let slowText = slowSamples.isEmpty ? "-" : slowSamples.joined(separator: " | ")
         let message = "[诊断·114] session=\(sessionID) reason=\(reason) rows=\(documentRows) utf16=\(documentUTF16) ready=\(readyRows) metrics=[\(metricText)] counters=[\(counterText)] slow=[\(slowText)]"
-        print(message)
-        TeachingDebugLogStore.append(message, category: "诊断·114")
+        TeachingDebugLogStore.append(message, category: "诊断·114", force: true)
 
         metrics.removeAll(keepingCapacity: true)
         counters.removeAll(keepingCapacity: true)
