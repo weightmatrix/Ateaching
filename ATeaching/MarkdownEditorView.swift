@@ -858,7 +858,8 @@ struct MarkdownEditorView: View {
                         documentStyle: documentStyle,
                         quickInputSettings: quickInputSettings,
                         searchQuery: searchQuery,
-                        activeSearchRange: activeSearchRange
+                        activeSearchRange: activeSearchRange,
+                        commitBridge: textKit2CommitBridge
                     )
                 case .source:
                     MarkdownSourceModeView(
@@ -869,7 +870,8 @@ struct MarkdownEditorView: View {
                         documentStyle: documentStyle,
                         quickInputSettings: quickInputSettings,
                         searchQuery: searchQuery,
-                        activeSearchRange: activeSearchRange
+                        activeSearchRange: activeSearchRange,
+                        commitBridge: textKit2CommitBridge
                     )
                 case .textKit2Plain:
                     MarkdownTextKit2PlainModeView(
@@ -2413,6 +2415,7 @@ struct MarkdownInstantRenderModeView: View {
     let quickInputSettings: MarkdownQuickInputSettings
     let searchQuery: String
     let activeSearchRange: NSRange?
+    let commitBridge: MarkdownTextKit2CommitBridge
 
     var body: some View {
         MarkdownInstantEditorContainer(
@@ -2422,7 +2425,8 @@ struct MarkdownInstantRenderModeView: View {
             documentStyle: documentStyle,
             quickInputSettings: quickInputSettings,
             searchQuery: searchQuery,
-            activeSearchRange: activeSearchRange
+            activeSearchRange: activeSearchRange,
+            commitBridge: commitBridge
         )
     }
 }
@@ -2437,6 +2441,7 @@ struct MarkdownSourceModeView: View {
     let quickInputSettings: MarkdownQuickInputSettings
     let searchQuery: String
     let activeSearchRange: NSRange?
+    let commitBridge: MarkdownTextKit2CommitBridge
 
     private var sourceStyle: MarkdownDocumentStyle {
         .sourceStandard
@@ -2450,7 +2455,8 @@ struct MarkdownSourceModeView: View {
             documentStyle: sourceStyle,
             quickInputSettings: quickInputSettings,
             searchQuery: searchQuery,
-            activeSearchRange: activeSearchRange
+            activeSearchRange: activeSearchRange,
+            commitBridge: commitBridge
         )
     }
 }
@@ -2647,28 +2653,20 @@ struct MarkdownSourceEditorContainer: View {
     let quickInputSettings: MarkdownQuickInputSettings
     let searchQuery: String
     let activeSearchRange: NSRange?
+    let commitBridge: MarkdownTextKit2CommitBridge
 
     var body: some View {
-        #if os(macOS)
-        MarkdownNativeTextEditor(
-            text: $markdownText,
+        MarkdownTextKit2PlainModeView(
+            markdownText: $markdownText,
             targetUTF16Offset: $targetUTF16Offset,
+            preferredScheme: nil,
             workingDirectoryURL: workingDirectoryURL,
-            highlightMode: .source(documentStyle),
+            documentStyle: documentStyle,
             quickInputSettings: quickInputSettings,
             searchQuery: searchQuery,
-            activeSearchRange: activeSearchRange
+            activeSearchRange: activeSearchRange,
+            commitBridge: commitBridge
         )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .padding(8)
-        #else
-        MarkdownIOSStyledTextEditor(
-            text: $markdownText,
-            targetUTF16Offset: $targetUTF16Offset,
-            documentStyle: documentStyle
-        )
-            .padding(8)
-        #endif
     }
 }
 
@@ -2681,28 +2679,20 @@ struct MarkdownInstantEditorContainer: View {
     let quickInputSettings: MarkdownQuickInputSettings
     let searchQuery: String
     let activeSearchRange: NSRange?
+    let commitBridge: MarkdownTextKit2CommitBridge
 
     var body: some View {
-        #if os(macOS)
-        MarkdownNativeTextEditor(
-            text: $markdownText,
+        MarkdownTextKit2PlainModeView(
+            markdownText: $markdownText,
             targetUTF16Offset: $targetUTF16Offset,
+            preferredScheme: nil,
             workingDirectoryURL: workingDirectoryURL,
-            highlightMode: .instant(documentStyle),
+            documentStyle: documentStyle,
             quickInputSettings: quickInputSettings,
             searchQuery: searchQuery,
-            activeSearchRange: activeSearchRange
+            activeSearchRange: activeSearchRange,
+            commitBridge: commitBridge
         )
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(8)
-        #else
-        MarkdownIOSStyledTextEditor(
-            text: $markdownText,
-            targetUTF16Offset: $targetUTF16Offset,
-            documentStyle: documentStyle
-        )
-            .padding(8)
-        #endif
     }
 }
 
@@ -3273,7 +3263,11 @@ struct MarkdownIOSStyledTextEditor: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> UITextView {
-        let textView = UITextView()
+        let textView = UITextView(usingTextLayoutManager: true)
+        if textView.textLayoutManager == nil {
+            textView.isEditable = false
+            TeachingDebugLogStore.append("iOS TextKit2 unavailable; editing disabled, no TextKit1 fallback", category: "Markdown.Pipeline", force: true)
+        }
         textView.delegate = context.coordinator
         textView.backgroundColor = .clear
         textView.isScrollEnabled = true
@@ -3288,7 +3282,13 @@ struct MarkdownIOSStyledTextEditor: UIViewRepresentable {
     }
 
     func updateUIView(_ textView: UITextView, context: Context) {
+        if textView.textLayoutManager == nil {
+            textView.isEditable = false
+            TeachingDebugLogStore.append("iOS TextKit2 unavailable; editing disabled, no TextKit1 fallback", category: "Markdown.Pipeline", force: true)
+        }
         context.coordinator.documentStyle = documentStyle
+        // 输入法组合态不替换全文属性，待提交后再应用样式。
+        guard textView.markedTextRange == nil else { return }
         if context.coordinator.lastAppliedText != text || context.coordinator.lastAppliedStyle != documentStyle {
             let selectedRange = textView.selectedRange
             let preservedOffset = textView.contentOffset
@@ -3338,7 +3338,7 @@ struct MarkdownIOSStyledTextEditor: UIViewRepresentable {
         }
 
         func textViewDidChange(_ textView: UITextView) {
-            guard !isApplyingProgrammaticChange else { return }
+            guard !isApplyingProgrammaticChange, textView.markedTextRange == nil else { return }
             let selectedRange = textView.selectedRange
             let preservedOffset = textView.contentOffset
             let value = textView.text ?? ""
@@ -4210,6 +4210,10 @@ private final class MarkdownPerformanceDiagnostics {
     func checkPipeline(_ view: NSTextView, stage: String) {
         // 只读取TextKit2属性；绝不能为诊断访问layoutManager而触发兼容模式。
         let active = view.textLayoutManager != nil
+        if !active {
+            view.isEditable = false
+            TeachingDebugLogStore.append("TextKit2 unavailable; editing disabled, no TextKit1 fallback", category: "Markdown.Pipeline", force: true)
+        }
         if pipeline != active {
             TeachingDebugLogStore.append("view=\(id) stage=\(stage) textKit2=\(active) chars=\(view.textStorage?.length ?? 0) window=\(view.window?.windowNumber ?? -1)", category: "Markdown.Pipeline", force: true)
             pipeline = active
@@ -7524,1190 +7528,7 @@ private extension String {
 }
 
 // MARK: - 原生文本编辑器 - v12 - 使用统一高亮引擎并支持搜索命中高亮与定位提示
-struct MarkdownNativeTextEditor: NSViewRepresentable {
-    @Binding var text: String
-    @Binding var targetUTF16Offset: Int?
-    var workingDirectoryURL: URL?
-    var highlightMode: MarkdownHighlightMode = .source(MarkdownDocumentStyle())
-    var quickInputSettings: MarkdownQuickInputSettings = .init()
-    var searchQuery: String = ""
-    var activeSearchRange: NSRange?
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(self)
-    }
-
-    func makeNSView(context: Context) -> NSScrollView {
-        let profileStart = MarkdownEditorPerformanceProbe.start()
-        let scrollView = NSScrollView()
-        scrollView.hasVerticalScroller = true
-        scrollView.borderType = .noBorder
-        let textView = MarkdownTextView()
-        textView.font = markdownResolvedFont(name: appleSystemMonospacedFontName, size: 14)
-        textView.isRichText = true
-        textView.isAutomaticQuoteSubstitutionEnabled = false
-        textView.isAutomaticDashSubstitutionEnabled = false
-        textView.isAutomaticTextReplacementEnabled = false
-        textView.allowsUndo = true
-        textView.isVerticallyResizable = true
-        textView.isHorizontallyResizable = false
-        textView.autoresizingMask = [.width]
-        textView.minSize = NSSize(width: 0, height: 0)
-        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        textView.textContainer?.widthTracksTextView = true
-        textView.textContainer?.heightTracksTextView = false
-        textView.textContainer?.containerSize = NSSize(width: scrollView.contentSize.width, height: CGFloat.greatestFiniteMagnitude)
-        textView.delegate = context.coordinator
-        textView.string = text
-        textView.highlightMode = highlightMode
-        textView.quickInputSettings = quickInputSettings
-        textView.workingDirectoryURL = workingDirectoryURL
-        textView.updateSearchHighlights(query: searchQuery, activeRange: activeSearchRange)
-
-        scrollView.documentView = textView
-        context.coordinator.textView = textView
-        context.coordinator.applyHighlightMode(forceFullDocument: true)
-        MarkdownEditorPerformanceProbe.end(
-            "MarkdownNativeTextEditor.makeNSView",
-            start: profileStart,
-            details: MarkdownEditorPerformanceProbe.textDetails(text)
-        )
-
-        return scrollView
-    }
-
-    func updateNSView(_ nsView: NSScrollView, context: Context) {
-        let profileStart = MarkdownEditorPerformanceProbe.start()
-        guard let textView = context.coordinator.textView else { return }
-
-        if textView.string != text {
-            let syncStart = MarkdownEditorPerformanceProbe.start()
-            textView.string = text
-            context.coordinator.applyHighlightMode(forceFullDocument: true)
-            MarkdownEditorPerformanceProbe.end(
-                "MarkdownNativeTextEditor.updateNSView.externalTextSync",
-                start: syncStart,
-                details: MarkdownEditorPerformanceProbe.textDetails(text)
-            )
-        }
-
-        if textView.highlightMode != highlightMode {
-            let modeStart = MarkdownEditorPerformanceProbe.start()
-            textView.highlightMode = highlightMode
-            context.coordinator.applyHighlightMode(forceFullDocument: true)
-            MarkdownEditorPerformanceProbe.end(
-                "MarkdownNativeTextEditor.updateNSView.highlightMode",
-                start: modeStart,
-                details: MarkdownEditorPerformanceProbe.textDetails(textView.string)
-            )
-        }
-
-        if textView.quickInputSettings != quickInputSettings {
-            textView.quickInputSettings = quickInputSettings
-        }
-        textView.workingDirectoryURL = workingDirectoryURL
-
-        let searchStart = MarkdownEditorPerformanceProbe.start()
-        textView.updateSearchHighlights(query: searchQuery, activeRange: activeSearchRange)
-        MarkdownEditorPerformanceProbe.end(
-            "MarkdownNativeTextEditor.updateNSView.searchHighlights",
-            start: searchStart,
-            details: "queryLength=\((searchQuery as NSString).length),\(MarkdownEditorPerformanceProbe.textDetails(textView.string))"
-        )
-
-        if let offset = targetUTF16Offset {
-            if context.coordinator.lastConsumedTargetOffset != offset {
-                let jumpStart = MarkdownEditorPerformanceProbe.start()
-                let location = min(max(offset, 0), (textView.string as NSString).length)
-                textView.setSelectedRange(NSRange(location: location, length: 0))
-                textView.scrollRangeToVisible(NSRange(location: location, length: 0))
-                context.coordinator.lastConsumedTargetOffset = offset
-                MarkdownEditorPerformanceProbe.end(
-                    "MarkdownNativeTextEditor.updateNSView.jumpToOffset",
-                    start: jumpStart,
-                    details: "offset=\(offset),location=\(location)"
-                )
-            }
-        } else {
-            context.coordinator.lastConsumedTargetOffset = nil
-        }
-        MarkdownEditorPerformanceProbe.end(
-            "MarkdownNativeTextEditor.updateNSView",
-            start: profileStart,
-            details: MarkdownEditorPerformanceProbe.textDetails(textView.string)
-        )
-
-    }
-
-    // MARK: - 编辑器协调器 - v9 - 管理统一富文本刷新定位消费快捷输入并同步搜索高亮
-    final class Coordinator: NSObject, NSTextViewDelegate {
-        var parent: MarkdownNativeTextEditor
-        weak var textView: MarkdownTextView?
-        var pendingEditedRange: NSRange?
-        var lastConsumedTargetOffset: Int?
-        private var pendingDeletionLog = "none"
-        private var pendingDeletionKind: EditorDeletionKind = .none
-        private var pendingBindingText: String?
-        private var pendingBindingWorkItem: DispatchWorkItem?
-        private var pendingSearchWorkItem: DispatchWorkItem?
-
-        init(_ parent: MarkdownNativeTextEditor) {
-            self.parent = parent
-        }
-
-        deinit {
-            pendingBindingWorkItem?.cancel()
-            pendingSearchWorkItem?.cancel()
-        }
-
-        func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
-            let profileStart = MarkdownEditorPerformanceProbe.start()
-            guard let markdownTextView = textView as? MarkdownTextView else { return true }
-            pendingEditedRange = replacedRange(from: affectedCharRange, replacementString: replacementString)
-            if (replacementString ?? "").isEmpty, affectedCharRange.length > 0 {
-                let diagnosis = EditorDeletionClassifier.diagnoseDeletion(
-                    source: textView.string as NSString,
-                    affectedRange: affectedCharRange,
-                    protectedPrefixLengthForLine: markdownProtectedPrefixLengthForDeletion
-                )
-                pendingDeletionLog = diagnosis.logSummary
-                pendingDeletionKind = diagnosis.kind
-            } else {
-                pendingDeletionLog = "none"
-                pendingDeletionKind = .none
-            }
-            markdownTextView.prepareTypingAttributesIfNeeded(at: affectedCharRange.location)
-            MarkdownEditorPerformanceProbe.end(
-                "MarkdownNativeTextEditor.shouldChangeText",
-                start: profileStart,
-                details: "affected={\(affectedCharRange.location),\(affectedCharRange.length)},replacementUtf16=\(((replacementString ?? "") as NSString).length),deletion=\(pendingDeletionLog)"
-            )
-            return true
-        }
-
-        func textDidChange(_ notification: Notification) {
-            let profileStart = MarkdownEditorPerformanceProbe.start()
-            guard let textView else { return }
-            guard !textView.isApplyingQuickInputReplacement else { return }
-
-            let quickInputStart = MarkdownEditorPerformanceProbe.start()
-            if textView.applyQuickInputIfNeeded() {
-                pendingEditedRange = textView.selectedRange()
-            }
-            MarkdownEditorPerformanceProbe.end(
-                "MarkdownNativeTextEditor.textDidChange.quickInput",
-                start: quickInputStart,
-                details: MarkdownEditorPerformanceProbe.textDetails(textView.string)
-            )
-
-            let usesInlineDeletionFastPath = pendingDeletionKind == .inlineCharacter
-            let bindingStart = MarkdownEditorPerformanceProbe.start()
-            if usesInlineDeletionFastPath {
-                scheduleBindingSync(textView.string, delay: 0.04)
-            } else {
-                flushPendingBindingSync()
-                parent.text = textView.string
-            }
-            MarkdownEditorPerformanceProbe.end(
-                "MarkdownNativeTextEditor.textDidChange.bindingSync",
-                start: bindingStart,
-                details: "\(MarkdownEditorPerformanceProbe.textDetails(textView.string)),deferred=\(usesInlineDeletionFastPath)"
-            )
-            switch textView.highlightMode {
-            case let .source(style), let .instant(style):
-                let highlightStart = MarkdownEditorPerformanceProbe.start()
-                if usesInlineDeletionFastPath {
-                    MarkdownEditorPerformanceProbe.end(
-                        "MarkdownNativeTextEditor.textDidChange.inlineDeletionHighlightSkipped",
-                        start: highlightStart,
-                        details: pendingDeletionLog
-                    )
-                } else if let pendingEditedRange {
-                    textView.applyInstantStyleIncrementally(for: pendingEditedRange, style: style)
-                } else {
-                    textView.applyInstantStyleIncrementally(for: textView.selectedRange(), style: style)
-                }
-                MarkdownEditorPerformanceProbe.end(
-                    "MarkdownNativeTextEditor.textDidChange.incrementalHighlight",
-                    start: highlightStart,
-                    details: MarkdownEditorPerformanceProbe.textDetails(textView.string)
-                )
-                pendingEditedRange = nil
-                let typingStart = MarkdownEditorPerformanceProbe.start()
-                textView.prepareTypingAttributesIfNeeded(at: textView.selectedRange().location)
-                MarkdownEditorPerformanceProbe.end(
-                    "MarkdownNativeTextEditor.textDidChange.typingAttributes",
-                    start: typingStart,
-                    details: "location=\(textView.selectedRange().location)"
-                )
-                if usesInlineDeletionFastPath {
-                    scheduleSearchHighlightRefreshIfNeeded(on: textView, delay: 0.12)
-                } else {
-                    let searchStart = MarkdownEditorPerformanceProbe.start()
-                    textView.updateSearchHighlights(query: parent.searchQuery, activeRange: parent.activeSearchRange)
-                    MarkdownEditorPerformanceProbe.end(
-                        "MarkdownNativeTextEditor.textDidChange.searchHighlights",
-                        start: searchStart,
-                        details: "queryLength=\((parent.searchQuery as NSString).length),\(MarkdownEditorPerformanceProbe.textDetails(textView.string))"
-                    )
-                }
-            }
-            MarkdownEditorPerformanceProbe.end(
-                "MarkdownNativeTextEditor.textDidChange",
-                start: profileStart,
-                details: "\(MarkdownEditorPerformanceProbe.textDetails(textView.string)),deletion=\(pendingDeletionLog)"
-            )
-            pendingDeletionLog = "none"
-            pendingDeletionKind = .none
-        }
-
-        private func scheduleBindingSync(_ text: String, delay: TimeInterval) {
-            pendingBindingText = text
-            pendingBindingWorkItem?.cancel()
-            let workItem = DispatchWorkItem { [weak self] in
-                self?.flushPendingBindingSync()
-            }
-            pendingBindingWorkItem = workItem
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
-        }
-
-        private func flushPendingBindingSync() {
-            pendingBindingWorkItem?.cancel()
-            pendingBindingWorkItem = nil
-            guard let text = pendingBindingText else { return }
-            pendingBindingText = nil
-            parent.text = text
-        }
-
-        private func scheduleSearchHighlightRefreshIfNeeded(on textView: MarkdownTextView, delay: TimeInterval) {
-            guard !parent.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-            pendingSearchWorkItem?.cancel()
-            let workItem = DispatchWorkItem { [weak self, weak textView] in
-                guard let self, let textView else { return }
-                let searchStart = MarkdownEditorPerformanceProbe.start()
-                textView.updateSearchHighlights(query: self.parent.searchQuery, activeRange: self.parent.activeSearchRange)
-                MarkdownEditorPerformanceProbe.end(
-                    "MarkdownNativeTextEditor.delayedSearchHighlights",
-                    start: searchStart,
-                    details: "queryLength=\((self.parent.searchQuery as NSString).length),\(MarkdownEditorPerformanceProbe.textDetails(textView.string))"
-                )
-            }
-            pendingSearchWorkItem = workItem
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
-        }
-
-        func applyHighlightMode(forceFullDocument: Bool) {
-            let profileStart = MarkdownEditorPerformanceProbe.start()
-            guard let textView else { return }
-            switch textView.highlightMode {
-            case let .source(style), let .instant(style):
-                if forceFullDocument {
-                    textView.applyInstantStyleToEntireDocument(style: style)
-                } else {
-                    textView.applyInstantStyleIncrementally(for: textView.selectedRange(), style: style)
-                }
-                textView.prepareTypingAttributesIfNeeded(at: textView.selectedRange().location)
-                textView.updateSearchHighlights(query: parent.searchQuery, activeRange: parent.activeSearchRange)
-            }
-            MarkdownEditorPerformanceProbe.end(
-                "MarkdownNativeTextEditor.applyHighlightMode",
-                start: profileStart,
-                details: "forceFullDocument=\(forceFullDocument),\(MarkdownEditorPerformanceProbe.textDetails(textView.string))"
-            )
-        }
-
-        private func replacedRange(from affectedRange: NSRange, replacementString: String?) -> NSRange {
-            let replacementLength = (replacementString ?? "") as NSString
-            return NSRange(location: affectedRange.location, length: replacementLength.length)
-        }
-    }
-}
-
-// MARK: - 文本编辑实现 - v10 - 修复双目快捷输入按闭合触发整体替换并保持单目即时替换
-final class MarkdownTextView: NSTextView {
-    var workingDirectoryURL: URL?
-    var highlightMode: MarkdownHighlightMode = .source(MarkdownDocumentStyle())
-    var quickInputSettings = MarkdownQuickInputSettings()
-    var isApplyingQuickInputReplacement = false
-    private var searchHighlightRanges: [NSRange] = []
-    private var searchActiveRange: NSRange?
-    private var searchBlinkTimer: Timer?
-    private var searchBlinkVisible = true
-
-    override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        if handleMarkdownImagePasteShortcut(event) { return true }
-        return super.performKeyEquivalent(with: event)
-    }
-
-    override func keyDown(with event: NSEvent) {
-        if handleMarkdownImagePasteShortcut(event) { return }
-        super.keyDown(with: event)
-    }
-
-    override func paste(_ sender: Any?) {
-        if insertPastedMarkdownImageIfAvailable() { return }
-        super.paste(sender)
-    }
-
-    private func handleMarkdownImagePasteShortcut(_ event: NSEvent) -> Bool {
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        guard flags.contains(.command),
-              !flags.contains(.shift),
-              !flags.contains(.option),
-              !flags.contains(.control),
-              event.charactersIgnoringModifiers?.lowercased() == "v" else {
-            return false
-        }
-        return insertPastedMarkdownImageIfAvailable()
-    }
-
-    private func insertPastedMarkdownImageIfAvailable() -> Bool {
-        guard NodeMarkdownImageAssetService.hasPastedImage(),
-              let markdownDirectoryURL = workingDirectoryURL,
-              let selectedURL = NodeMarkdownImageAssetService.pastedImageURL() else {
-            return false
-        }
-        let removesTemporaryImage = NodeMarkdownImageAssetService.isTemporaryPastedImageURL(selectedURL)
-        defer {
-            if removesTemporaryImage { try? FileManager.default.removeItem(at: selectedURL) }
-        }
-        guard let insertion = NodeMarkdownImageAssetService.insertMarkdownImage(
-            selectedURL: selectedURL,
-            markdownDirectoryURL: markdownDirectoryURL
-        ) else {
-            NSSound.beep()
-            return true
-        }
-        insertText(insertion.htmlSnippet, replacementRange: selectedRange())
-        return true
-    }
-
-    func applyInstantStyleToEntireDocument(style: MarkdownDocumentStyle) {
-        let profileStart = MarkdownEditorPerformanceProbe.start()
-        guard let textStorage else { return }
-        let fullRange = NSRange(location: 0, length: textStorage.length)
-        applyInstantStyle(in: fullRange, style: style)
-        MarkdownEditorPerformanceProbe.end(
-            "MarkdownTextView.applyInstantStyleToEntireDocument",
-            start: profileStart,
-            details: MarkdownEditorPerformanceProbe.rangeDetails(fullRange, textLength: textStorage.length)
-        )
-    }
-
-    func applyInstantStyleIncrementally(for editedRange: NSRange, style: MarkdownDocumentStyle) {
-        let profileStart = MarkdownEditorPerformanceProbe.start()
-        guard let textStorage else { return }
-        let totalLength = textStorage.length
-        guard totalLength >= 0 else { return }
-        let safeRange = NSRange(
-            location: max(0, min(editedRange.location, totalLength)),
-            length: max(0, min(editedRange.length, totalLength - max(0, min(editedRange.location, totalLength))))
-        )
-        let expandedLocation = max(0, safeRange.location - 1)
-        let expandedUpperBound = min(totalLength, NSMaxRange(safeRange) + 1)
-        let expandedRange = NSRange(location: expandedLocation, length: max(0, expandedUpperBound - expandedLocation))
-        let nsText = textStorage.string as NSString
-        let lineRange = nsText.lineRange(for: expandedRange)
-        applyInstantStyle(in: lineRange, style: style)
-        MarkdownEditorPerformanceProbe.end(
-            "MarkdownTextView.applyInstantStyleIncrementally",
-            start: profileStart,
-            details: "edited={\(editedRange.location),\(editedRange.length)},line={\(lineRange.location),\(lineRange.length)},utf16=\(totalLength)"
-        )
-    }
-
-    func prepareTypingAttributesIfNeeded(at location: Int) {
-        let style: MarkdownDocumentStyle
-        switch highlightMode {
-        case .source(let value), .instant(let value):
-            style = value
-        }
-        let lineStyle = lineRoleStyle(at: location, style: style)
-        let paragraphStyle = paragraphStyleForCurrentLine(at: location)
-        let font = markdownResolvedFont(name: lineStyle.fontName, size: lineStyle.fontSize)
-        var attributes: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: NSColor(lineStyle.renderedColor)
-        ]
-        if let paragraphStyle {
-            attributes[.paragraphStyle] = paragraphStyle
-        }
-        typingAttributes = attributes
-    }
-
-    private func applyInstantStyle(in targetRange: NSRange, style: MarkdownDocumentStyle) {
-        let profileStart = MarkdownEditorPerformanceProbe.start()
-        guard let textStorage else { return }
-        let totalLength = textStorage.length
-        let safeRange = NSRange(
-            location: max(0, min(targetRange.location, totalLength)),
-            length: max(0, min(targetRange.length, totalLength - max(0, min(targetRange.location, totalLength))))
-        )
-        guard safeRange.length >= 0 else { return }
-
-        let nsText = textStorage.string as NSString
-        let actualLineRange = nsText.lineRange(for: safeRange)
-        let selectedRange = selectedRange()
-        textStorage.beginEditing()
-
-        let bodyAttributes = bodyAttributes(for: style.body)
-        textStorage.setAttributes(bodyAttributes, range: actualLineRange)
-
-        var lineLocation = actualLineRange.location
-        while lineLocation < NSMaxRange(actualLineRange) {
-            let lineRange = nsText.lineRange(for: NSRange(location: lineLocation, length: 0))
-            if lineRange.length == 0 { break }
-
-            var rawLine = nsText.substring(with: lineRange)
-            if rawLine.hasSuffix("\n") { rawLine.removeLast() }
-
-            if let headingLevel = parseHeadingLevelForStyling(in: rawLine) {
-                applyRoleStyle(style.headingStyle(level: headingLevel), to: textStorage, range: lineRange)
-            } else if parseCommentLine(rawLine) != nil {
-                applyRoleStyle(style.comment, to: textStorage, range: lineRange)
-            }
-
-            applyMarkdownHangingIndentStyle(
-                to: textStorage,
-                rawLine: rawLine,
-                range: lineRange,
-                baseIndent: markdownHeadingIndent(in: rawLine, enabled: style.progressivelyIndentHeadings, step: style.progressiveIndentStep)
-            )
-
-            for codeRange in parseInlineCodeRanges(in: rawLine, base: lineRange.location) {
-                let codeFont = NSFont.monospacedSystemFont(ofSize: style.body.fontSize, weight: .regular)
-                textStorage.addAttributes([
-                    .font: codeFont,
-                    .foregroundColor: NSColor.systemOrange,
-                    .backgroundColor: NSColor.quaternaryLabelColor.withAlphaComponent(0.28)
-                ], range: codeRange)
-            }
-
-            for strongRange in parseInlineStrongRanges(in: rawLine, base: lineRange.location) {
-                let existingFont = (textStorage.attribute(.font, at: max(0, min(strongRange.location, max(0, textStorage.length - 1))), effectiveRange: nil) as? NSFont) ?? markdownResolvedFont(name: style.body.fontName, size: style.body.fontSize)
-                let boldFont = NSFont.monospacedSystemFont(ofSize: existingFont.pointSize, weight: .bold)
-                textStorage.addAttributes([
-                    .font: boldFont,
-                    .foregroundColor: NSColor.systemOrange
-                ], range: strongRange)
-            }
-
-            for italicRange in parseInlineItalicRanges(in: rawLine, base: lineRange.location) {
-                let existingFont = (textStorage.attribute(.font, at: max(0, min(italicRange.location, max(0, textStorage.length - 1))), effectiveRange: nil) as? NSFont) ?? markdownResolvedFont(name: style.body.fontName, size: style.body.fontSize)
-                let italicFont = NSFontManager.shared.convert(existingFont, toHaveTrait: .italicFontMask)
-                textStorage.addAttributes([
-                    .font: italicFont
-                ], range: italicRange)
-            }
-
-            for linkRange in parseInlineLinkLabelRanges(in: rawLine, base: lineRange.location) {
-                textStorage.addAttributes([
-                    .foregroundColor: NSColor.systemBlue,
-                    .underlineStyle: NSUnderlineStyle.single.rawValue
-                ], range: linkRange)
-            }
-
-            for mathRange in parseInlineMathRanges(in: rawLine, base: lineRange.location) {
-                textStorage.addAttributes([
-                    .foregroundColor: NSColor.systemCyan
-                ], range: mathRange)
-            }
-
-            for highlightRange in parseInlineHighlightRanges(in: rawLine, base: lineRange.location) {
-                textStorage.addAttributes([
-                    .foregroundColor: NSColor.labelColor,
-                    .backgroundColor: NSColor.systemYellow.withAlphaComponent(0.35)
-                ], range: highlightRange)
-            }
-
-            for underlineRange in parseInlineUnderlineRanges(in: rawLine, base: lineRange.location) {
-                textStorage.addAttributes([
-                    .foregroundColor: NSColor.systemBlue,
-                    .underlineStyle: NSUnderlineStyle.single.rawValue
-                ], range: underlineRange)
-            }
-
-            lineLocation = NSMaxRange(lineRange)
-        }
-
-        textStorage.endEditing()
-        setSelectedRange(selectedRange)
-        MarkdownEditorPerformanceProbe.end(
-            "MarkdownTextView.applyInstantStyle",
-            start: profileStart,
-            details: MarkdownEditorPerformanceProbe.rangeDetails(actualLineRange, textLength: totalLength)
-        )
-    }
-
-    private func lineRoleStyle(at location: Int, style: MarkdownDocumentStyle) -> MarkdownRoleStyle {
-        let rawLine = caretLineText(at: location)
-        if let headingLevel = parseHeadingLevelForStyling(in: rawLine) {
-            return style.headingStyle(level: headingLevel)
-        }
-        if parseCommentLine(rawLine) != nil {
-            return style.comment
-        }
-        return style.body
-    }
-
-    private func paragraphStyleForCurrentLine(at location: Int) -> NSParagraphStyle? {
-        let rawLine = caretLineText(at: location)
-        let style: MarkdownDocumentStyle
-        switch highlightMode {
-        case .source(let value), .instant(let value):
-            style = value
-        }
-        let lineStyle = lineRoleStyle(at: location, style: style)
-        let font = markdownResolvedFont(name: lineStyle.fontName, size: lineStyle.fontSize)
-        return markdownHangingParagraphStyle(
-            for: rawLine,
-            font: font,
-            baseIndent: markdownHeadingIndent(in: rawLine, enabled: style.progressivelyIndentHeadings, step: style.progressiveIndentStep)
-        )
-    }
-
-    private func caretLineRange(at location: Int, in nsText: NSString) -> NSRange {
-        let safeLocation = max(0, min(location, nsText.length))
-        if isAtTrailingEmptyLine(caretLocation: safeLocation, text: nsText) {
-            return NSRange(location: safeLocation, length: 0)
-        }
-        return nsText.lineRange(for: NSRange(location: safeLocation, length: 0))
-    }
-
-    private func caretLineText(at location: Int) -> String {
-        let nsText = string as NSString
-        let lineRange = caretLineRange(at: location, in: nsText)
-        guard lineRange.length > 0 else { return "" }
-        var rawLine = nsText.substring(with: lineRange)
-        if rawLine.hasSuffix("\n") { rawLine.removeLast() }
-        return rawLine
-    }
-
-    private func bodyAttributes(for style: MarkdownRoleStyle) -> [NSAttributedString.Key: Any] {
-        let font = markdownResolvedFont(name: style.fontName, size: style.fontSize)
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.lineBreakMode = .byWordWrapping
-        return [
-            .font: font,
-            .foregroundColor: NSColor(style.renderedColor),
-            .paragraphStyle: paragraph
-        ]
-    }
-
-    func applyQuickInputIfNeeded() -> Bool {
-        guard !isApplyingQuickInputReplacement else { return false }
-        guard let textStorage else { return false }
-        let selection = selectedRange()
-        guard selection.length == 0 else { return false }
-
-        let nsText = string as NSString
-        let caret = max(0, min(selection.location, nsText.length))
-        let prefix = nsText.substring(to: caret)
-
-        if applyPairQuickInputIfNeeded(textStorage: textStorage, prefix: prefix, caret: caret) {
-            return true
-        }
-
-        for candidate in quickInputSingleCandidates() {
-            guard !candidate.trigger.isEmpty else { continue }
-            guard candidate.replacement != candidate.trigger else { continue }
-            guard prefix.hasSuffix(candidate.trigger) else { continue }
-
-            let triggerLength = (candidate.trigger as NSString).length
-            let replacementLength = (candidate.replacement as NSString).length
-            let start = caret - triggerLength
-            guard start >= 0 else { continue }
-
-            isApplyingQuickInputReplacement = true
-            textStorage.beginEditing()
-            textStorage.replaceCharacters(in: NSRange(location: start, length: triggerLength), with: candidate.replacement)
-            textStorage.endEditing()
-            setSelectedRange(NSRange(location: start + replacementLength, length: 0))
-            isApplyingQuickInputReplacement = false
-            return true
-        }
-        return false
-    }
-
-    private func applyPairQuickInputIfNeeded(textStorage: NSTextStorage, prefix: String, caret: Int) -> Bool {
-        let nsPrefix = prefix as NSString
-
-        for pairRule in quickInputPairCandidates() {
-            let openTrigger = pairRule.openTrigger
-            let closeTrigger = pairRule.closeTrigger
-            guard !openTrigger.isEmpty, !closeTrigger.isEmpty else { continue }
-            guard pairRule.openReplacement != openTrigger || pairRule.closeReplacement != closeTrigger else { continue }
-            guard prefix.hasSuffix(closeTrigger) else { continue }
-
-            let closeLength = (closeTrigger as NSString).length
-            let openLength = (openTrigger as NSString).length
-            let closeStart = caret - closeLength
-            guard closeStart >= 0 else { continue }
-
-            let searchRange = NSRange(location: 0, length: closeStart)
-            let openRange = nsPrefix.range(of: openTrigger, options: .backwards, range: searchRange)
-            guard openRange.location != NSNotFound else { continue }
-
-            let contentStart = openRange.location + openLength
-            guard contentStart <= closeStart else { continue }
-            let contentLength = closeStart - contentStart
-            let content = nsPrefix.substring(with: NSRange(location: contentStart, length: contentLength))
-            let replacement = pairRule.openReplacement + content + pairRule.closeReplacement
-
-            isApplyingQuickInputReplacement = true
-            textStorage.beginEditing()
-            textStorage.replaceCharacters(
-                in: NSRange(location: openRange.location, length: caret - openRange.location),
-                with: replacement
-            )
-            textStorage.endEditing()
-            setSelectedRange(NSRange(location: openRange.location + (replacement as NSString).length, length: 0))
-            isApplyingQuickInputReplacement = false
-            return true
-        }
-
-        return false
-    }
-
-    private func quickInputSingleCandidates() -> [(trigger: String, replacement: String)] {
-        quickInputSettings.singleRules
-            .map { ($0.trigger, $0.replacement) }
-            .sorted {
-            ($0.trigger as NSString).length > ($1.trigger as NSString).length
-        }
-    }
-
-    private func quickInputPairCandidates() -> [MarkdownPairShortcutRule] {
-        quickInputSettings.pairRules.sorted {
-            let lhsClose = ($0.closeTrigger as NSString).length
-            let rhsClose = ($1.closeTrigger as NSString).length
-            if lhsClose != rhsClose {
-                return lhsClose > rhsClose
-            }
-            return ($0.openTrigger as NSString).length > ($1.openTrigger as NSString).length
-        }
-    }
-
-    func updateSearchHighlights(query: String, activeRange: NSRange?) {
-        let profileStart = MarkdownEditorPerformanceProbe.start()
-        clearSearchHighlights()
-        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedQuery.isEmpty else {
-            MarkdownEditorPerformanceProbe.end(
-                "MarkdownTextView.updateSearchHighlights.empty",
-                start: profileStart,
-                details: MarkdownEditorPerformanceProbe.textDetails(string)
-            )
-            return
-        }
-        guard let layoutManager else { return }
-
-        let nsText = string as NSString
-        searchHighlightRanges = markdownFindSearchRanges(in: nsText, query: trimmedQuery)
-
-        for range in searchHighlightRanges {
-            layoutManager.addTemporaryAttribute(
-                .backgroundColor,
-                value: NSColor.systemBlue.withAlphaComponent(0.22),
-                forCharacterRange: range
-            )
-            layoutManager.addTemporaryAttribute(
-                .foregroundColor,
-                value: NSColor.systemBlue,
-                forCharacterRange: range
-            )
-        }
-
-        if let activeRange {
-            searchActiveRange = activeRange
-            applyActiveSearchBlinkState()
-            startSearchBlinkTimer()
-        }
-        MarkdownEditorPerformanceProbe.end(
-            "MarkdownTextView.updateSearchHighlights",
-            start: profileStart,
-            details: "queryLength=\((trimmedQuery as NSString).length),matches=\(searchHighlightRanges.count),\(MarkdownEditorPerformanceProbe.textDetails(string))"
-        )
-    }
-
-    private func clearSearchHighlights() {
-        let profileStart = MarkdownEditorPerformanceProbe.start()
-        stopSearchBlinkTimer()
-        guard let layoutManager else { return }
-        let clearedCount = searchHighlightRanges.count
-        for range in searchHighlightRanges {
-            layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: range)
-            layoutManager.removeTemporaryAttribute(.foregroundColor, forCharacterRange: range)
-        }
-        if let searchActiveRange {
-            layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: searchActiveRange)
-        }
-        searchHighlightRanges = []
-        searchActiveRange = nil
-        searchBlinkVisible = true
-        MarkdownEditorPerformanceProbe.end(
-            "MarkdownTextView.clearSearchHighlights",
-            start: profileStart,
-            details: "cleared=\(clearedCount),\(MarkdownEditorPerformanceProbe.textDetails(string))"
-        )
-    }
-
-    private func startSearchBlinkTimer() {
-        stopSearchBlinkTimer()
-        searchBlinkTimer = Timer.scheduledTimer(withTimeInterval: 0.55, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            self.searchBlinkVisible.toggle()
-            self.applyActiveSearchBlinkState()
-        }
-        RunLoop.main.add(searchBlinkTimer!, forMode: .common)
-    }
-
-    private func stopSearchBlinkTimer() {
-        searchBlinkTimer?.invalidate()
-        searchBlinkTimer = nil
-    }
-
-    private func applyActiveSearchBlinkState() {
-        guard let layoutManager, let searchActiveRange else { return }
-        layoutManager.addTemporaryAttribute(
-            .backgroundColor,
-            value: searchBlinkVisible ? NSColor.systemBlue.withAlphaComponent(0.55) : NSColor.systemBlue.withAlphaComponent(0.30),
-            forCharacterRange: searchActiveRange
-        )
-    }
-
-    deinit {
-        stopSearchBlinkTimer()
-    }
-
-    override func insertTab(_ sender: Any?) {
-        if applyHierarchyTabAction(isShift: false) {
-            return
-        }
-        super.insertTab(sender)
-    }
-
-    override func insertBacktab(_ sender: Any?) {
-        if applyHierarchyTabAction(isShift: true) {
-            return
-        }
-        super.insertBacktab(sender)
-    }
-
-    override func insertNewline(_ sender: Any?) {
-        let shiftPressed = NSApp.currentEvent?.modifierFlags.contains(.shift) == true
-        if shiftPressed {
-            super.insertNewline(sender)
-            return
-        }
-
-        if applyAutoContinueRule() {
-            return
-        }
-
-        super.insertNewline(sender)
-        enforceBodyTypingAttributesForEmptyLine()
-    }
-
-    private func enforceBodyTypingAttributesForEmptyLine() {
-        let style: MarkdownDocumentStyle
-        switch highlightMode {
-        case .source(let value), .instant(let value):
-            style = value
-        }
-        let selection = selectedRange()
-        let rawLine = caretLineText(at: selection.location)
-        if rawLine.trimmingCharacters(in: .whitespaces).isEmpty {
-            let font = markdownResolvedFont(name: style.body.fontName, size: style.body.fontSize)
-            let paragraph = NSMutableParagraphStyle()
-            paragraph.lineBreakMode = .byWordWrapping
-            typingAttributes = [
-                .font: font,
-                .foregroundColor: NSColor(style.body.renderedColor),
-                .paragraphStyle: paragraph
-            ]
-        }
-    }
-
-    private func isAtTrailingEmptyLine(caretLocation: Int, text: NSString) -> Bool {
-        guard caretLocation == text.length, text.length > 0 else { return false }
-        return text.character(at: text.length - 1) == 10
-    }
-
-    private func applyHierarchyTabAction(isShift: Bool) -> Bool {
-        guard let textStorage else { return false }
-        let selection = selectedRange()
-        if selection.length > 0 {
-            return applyHierarchyTabActionForSelectedLines(
-                textStorage: textStorage,
-                selection: selection,
-                isShift: isShift
-            )
-        }
-
-        let nsText = string as NSString
-        let caret = max(0, min(selection.location, nsText.length))
-        let lineAnchor = max(0, min(caret > 0 ? caret - 1 : caret, nsText.length))
-        let lineRange = nsText.lineRange(for: NSRange(location: lineAnchor, length: 0))
-        var line = nsText.substring(with: lineRange)
-        if line.hasSuffix("\n") { line.removeLast() }
-        let caretOffsetInLine = max(0, caret - lineRange.location)
-
-        if let heading = parseHeadingForHierarchy(in: line) {
-            let content = heading.content
-            let oldPrefixLength = heading.prefixLength
-
-            if isShift {
-                if heading.level == 1 {
-                    return true
-                }
-                let newPrefix = String(repeating: "#", count: heading.level - 1) + " "
-                replaceCurrentLineForHierarchy(
-                    textStorage: textStorage,
-                    lineRange: lineRange,
-                    oldPrefixLength: oldPrefixLength,
-                    newPrefix: newPrefix,
-                    content: content,
-                    caretOffsetInLine: caretOffsetInLine
-                )
-                return true
-            }
-
-            if heading.level == 6 {
-                replaceCurrentLineForHierarchy(
-                    textStorage: textStorage,
-                    lineRange: lineRange,
-                    oldPrefixLength: oldPrefixLength,
-                    newPrefix: "- ",
-                    content: content,
-                    caretOffsetInLine: caretOffsetInLine
-                )
-                return true
-            }
-
-            let newPrefix = String(repeating: "#", count: heading.level + 1) + " "
-            replaceCurrentLineForHierarchy(
-                textStorage: textStorage,
-                lineRange: lineRange,
-                oldPrefixLength: oldPrefixLength,
-                newPrefix: newPrefix,
-                content: content,
-                caretOffsetInLine: caretOffsetInLine
-            )
-            return true
-        }
-
-        if let bullet = parseBulletForHierarchy(in: line) {
-            let oldPrefixLength = bullet.prefixLength
-            let content = bullet.content
-
-            if isShift {
-                if bullet.indentSpaces == 0 {
-                    replaceCurrentLineForHierarchy(
-                        textStorage: textStorage,
-                        lineRange: lineRange,
-                        oldPrefixLength: oldPrefixLength,
-                        newPrefix: "###### ",
-                        content: content,
-                        caretOffsetInLine: caretOffsetInLine
-                    )
-                    return true
-                }
-
-                let newIndent = max(0, bullet.indentSpaces - 2)
-                let newPrefix = String(repeating: " ", count: newIndent) + "- "
-                replaceCurrentLineForHierarchy(
-                    textStorage: textStorage,
-                    lineRange: lineRange,
-                    oldPrefixLength: oldPrefixLength,
-                    newPrefix: newPrefix,
-                    content: content,
-                    caretOffsetInLine: caretOffsetInLine
-                )
-                return true
-            }
-
-            let newPrefix = String(repeating: " ", count: bullet.indentSpaces + 2) + "- "
-            replaceCurrentLineForHierarchy(
-                textStorage: textStorage,
-                lineRange: lineRange,
-                oldPrefixLength: oldPrefixLength,
-                newPrefix: newPrefix,
-                content: content,
-                caretOffsetInLine: caretOffsetInLine
-            )
-            return true
-        }
-
-        if !isShift, !line.trimmingCharacters(in: .whitespaces).isEmpty {
-            let leadingSpaces = line.prefix { $0 == " " }.count
-            let newPrefix = String(repeating: " ", count: leadingSpaces) + "- "
-            let content = String(line.dropFirst(leadingSpaces))
-            replaceCurrentLineForHierarchy(
-                textStorage: textStorage,
-                lineRange: lineRange,
-                oldPrefixLength: leadingSpaces,
-                newPrefix: newPrefix,
-                content: content,
-                caretOffsetInLine: caretOffsetInLine
-            )
-            return true
-        }
-
-        return false
-    }
-
-    private func applyHierarchyTabActionForSelectedLines(
-        textStorage: NSTextStorage,
-        selection: NSRange,
-        isShift: Bool
-    ) -> Bool {
-        let nsText = string as NSString
-        guard nsText.length > 0 else { return false }
-
-        let safeLocation = max(0, min(selection.location, nsText.length))
-        let safeUpperBound = max(safeLocation, min(selection.location + selection.length, nsText.length))
-        let endAnchor = max(safeLocation, min(nsText.length, safeUpperBound - 1))
-
-        let startLineRange = nsText.lineRange(for: NSRange(location: safeLocation, length: 0))
-        let endLineRange = nsText.lineRange(for: NSRange(location: endAnchor, length: 0))
-        let replaceRange = NSRange(
-            location: startLineRange.location,
-            length: (endLineRange.location + endLineRange.length) - startLineRange.location
-        )
-
-        var cursor = replaceRange.location
-        var rebuilt = ""
-        var handledAny = false
-        var changedAny = false
-
-        while cursor < replaceRange.location + replaceRange.length {
-            let lineRange = nsText.lineRange(for: NSRange(location: cursor, length: 0))
-            let lineWithTerminator = nsText.substring(with: lineRange)
-            let hasTrailingNewline = lineWithTerminator.hasSuffix("\n")
-            let line = hasTrailingNewline ? String(lineWithTerminator.dropLast()) : lineWithTerminator
-
-            let action = hierarchyAction(for: line, isShift: isShift)
-            handledAny = handledAny || action.handled
-            changedAny = changedAny || (action.newLine != line)
-            rebuilt += action.newLine
-            if hasTrailingNewline {
-                rebuilt += "\n"
-            }
-
-            cursor = lineRange.location + lineRange.length
-        }
-
-        guard handledAny else { return false }
-        guard changedAny else { return true }
-
-        textStorage.beginEditing()
-        textStorage.replaceCharacters(in: replaceRange, with: rebuilt)
-        textStorage.endEditing()
-
-        let updatedLength = (rebuilt as NSString).length
-        setSelectedRange(NSRange(location: replaceRange.location, length: updatedLength))
-        didChangeText()
-        return true
-    }
-
-    private func hierarchyAction(for line: String, isShift: Bool) -> (handled: Bool, newLine: String) {
-        if let heading = parseHeadingForHierarchy(in: line) {
-            let content = heading.content
-            if isShift {
-                if heading.level == 1 {
-                    return (true, line)
-                }
-                let newPrefix = String(repeating: "#", count: heading.level - 1) + " "
-                return (true, newPrefix + content)
-            }
-
-            if heading.level == 6 {
-                return (true, "- " + content)
-            }
-
-            let newPrefix = String(repeating: "#", count: heading.level + 1) + " "
-            return (true, newPrefix + content)
-        }
-
-        if let bullet = parseBulletForHierarchy(in: line) {
-            let content = bullet.content
-            if isShift {
-                if bullet.indentSpaces == 0 {
-                    return (true, "###### " + content)
-                }
-                let newIndent = max(0, bullet.indentSpaces - 2)
-                let newPrefix = String(repeating: " ", count: newIndent) + "- "
-                return (true, newPrefix + content)
-            }
-
-            let newPrefix = String(repeating: " ", count: bullet.indentSpaces + 2) + "- "
-            return (true, newPrefix + content)
-        }
-
-        guard !isShift, !line.trimmingCharacters(in: .whitespaces).isEmpty else {
-            return (false, line)
-        }
-        let leadingSpaces = line.prefix { $0 == " " }.count
-        let content = String(line.dropFirst(leadingSpaces))
-        let newPrefix = String(repeating: " ", count: leadingSpaces) + "- "
-        return (true, newPrefix + content)
-    }
-
-    private func replaceCurrentLineForHierarchy(
-        textStorage: NSTextStorage,
-        lineRange: NSRange,
-        oldPrefixLength: Int,
-        newPrefix: String,
-        content: String,
-        caretOffsetInLine: Int
-    ) {
-        let originalLineText = (string as NSString).substring(with: lineRange)
-        let hasTrailingNewline = originalLineText.hasSuffix("\n")
-        let replaceRange: NSRange = hasTrailingNewline
-            ? NSRange(location: lineRange.location, length: max(0, lineRange.length - 1))
-            : lineRange
-
-        let newLine = newPrefix + content
-        let oldContentOffset = max(0, caretOffsetInLine - oldPrefixLength)
-        let newCaretOffset = min((newLine as NSString).length, (newPrefix as NSString).length + oldContentOffset)
-
-        textStorage.beginEditing()
-        textStorage.replaceCharacters(in: replaceRange, with: newLine)
-        textStorage.endEditing()
-
-        setSelectedRange(NSRange(location: replaceRange.location + newCaretOffset, length: 0))
-        didChangeText()
-    }
-
-    private func parseHeadingForHierarchy(in line: String) -> (level: Int, prefixLength: Int, content: String)? {
-        guard let level = parseHeadingLevelForStyling(in: line) else { return nil }
-        let prefixLength = level + 1
-        guard line.count >= prefixLength else {
-            return (level, prefixLength, "")
-        }
-        let start = line.index(line.startIndex, offsetBy: prefixLength)
-        return (level, prefixLength, String(line[start...]))
-    }
-
-    private func parseBulletForHierarchy(in line: String) -> (indentSpaces: Int, prefixLength: Int, content: String)? {
-        let indentCount = line.prefix { $0 == " " }.count
-        let remaining = String(line.dropFirst(indentCount))
-        guard remaining.hasPrefix("- ") else { return nil }
-        let content = String(remaining.dropFirst(2))
-        return (indentCount, indentCount + 2, content)
-    }
-
-    private func applyAutoContinueRule() -> Bool {
-        let nsText = string as NSString
-        let selection = selectedRange()
-        guard selection.length == 0 else { return false }
-
-        let baseLocation = max(0, min(selection.location, nsText.length))
-        let lineAnchor = max(0, min(baseLocation > 0 ? baseLocation - 1 : baseLocation, nsText.length))
-        let lineRange = nsText.lineRange(for: NSRange(location: lineAnchor, length: 0))
-
-        var line = nsText.substring(with: lineRange)
-        if line.hasSuffix("\n") { line.removeLast() }
-
-        guard baseLocation == lineRange.location + (line as NSString).length else { return false }
-        guard let marker = parseMarker(in: line) else { return false }
-
-        if marker.hasContent {
-            let insertion = "\n\(marker.nextMarker)"
-            textStorage?.replaceCharacters(in: selection, with: insertion)
-            setSelectedRange(NSRange(location: baseLocation + (insertion as NSString).length, length: 0))
-            didChangeText()
-            return true
-        }
-
-        let markerRange = NSRange(location: lineRange.location, length: marker.markerLength)
-        textStorage?.replaceCharacters(in: markerRange, with: "")
-        let adjustedLocation = baseLocation - marker.markerLength
-        setSelectedRange(NSRange(location: adjustedLocation, length: 0))
-        didChangeText()
-        return true
-    }
-
-    private func parseMarker(in line: String) -> (nextMarker: String, markerLength: Int, hasContent: Bool)? {
-        if let numbered = parseNumberedMarker(in: line) {
-            return numbered
-        }
-
-        if let bullet = parseFixedMarker(in: line, markerBody: "- ") {
-            return bullet
-        }
-
-        if let quote = parseFixedMarker(in: line, markerBody: "> ") {
-            return quote
-        }
-
-        if let comment = parseCommentMarker(in: line) {
-            return comment
-        }
-
-        return nil
-    }
-
-    private func parseNumberedMarker(in line: String) -> (nextMarker: String, markerLength: Int, hasContent: Bool)? {
-        let chars = Array(line)
-        var index = 0
-
-        while index < chars.count, chars[index] == " " { index += 1 }
-
-        let numberStart = index
-        while index < chars.count, chars[index].isNumber { index += 1 }
-        guard index > numberStart else { return nil }
-        guard index < chars.count, chars[index] == "." else { return nil }
-        guard index + 1 < chars.count, chars[index + 1] == " " else { return nil }
-
-        let number = Int(String(chars[numberStart..<index])) ?? 1
-        let content = String(chars[(index + 2)...]).trimmingCharacters(in: .whitespaces)
-        let indent = String(chars[0..<numberStart])
-        let next = "\(indent)\(number + 1). "
-        return (next, index + 2, !content.isEmpty)
-    }
-
-    private func parseFixedMarker(in line: String, markerBody: String) -> (nextMarker: String, markerLength: Int, hasContent: Bool)? {
-        let indentCount = line.prefix { $0 == " " }.count
-        let indent = String(repeating: " ", count: indentCount)
-        let remaining = String(line.dropFirst(indentCount))
-
-        guard remaining.hasPrefix(markerBody) else { return nil }
-
-        let markerLength = indentCount + markerBody.count
-        let content = String(remaining.dropFirst(markerBody.count)).trimmingCharacters(in: .whitespaces)
-        return (indent + markerBody, markerLength, !content.isEmpty)
-    }
-
-    private func parseCommentMarker(in line: String) -> (nextMarker: String, markerLength: Int, hasContent: Bool)? {
-        let indentCount = line.prefix { $0 == " " }.count
-        let indent = String(repeating: " ", count: indentCount)
-        let remaining = String(line.dropFirst(indentCount))
-
-        guard remaining.hasPrefix("注释") else { return nil }
-
-        var marker = "注释"
-        var offset = 2
-        let chars = Array(remaining)
-
-        if offset < chars.count, [":", "：", ".", "。"].contains(chars[offset]) {
-            marker.append(chars[offset])
-            offset += 1
-        }
-
-        if offset < chars.count, chars[offset] == " " {
-            marker.append(" ")
-            offset += 1
-        } else {
-            marker.append(" ")
-        }
-
-        let content = String(chars.dropFirst(offset)).trimmingCharacters(in: .whitespaces)
-        let markerLength = indentCount + marker.count
-        return (indent + marker, markerLength, !content.isEmpty)
-    }
-}
+// TextKit1实现封存于Archives/MarkdownTextKit1，禁止加入编译或回退。
 
 #endif
 

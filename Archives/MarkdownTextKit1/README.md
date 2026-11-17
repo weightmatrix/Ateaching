@@ -1,0 +1,5 @@
+# 普通Markdown TextKit1封存
+
+2026-11-17从MarkdownEditorView.swift原样封存MarkdownNativeTextEditor及MarkdownTextView。文件扩展名为.swift.txt，位于Xcode同步源码目录外，不参与编译；正式入口无回退开关。禁止重新加入工程或自动启用。完整迁移前状态见GitHub标签codex/pre-126-all-textkit2-20261117。恢复仅用于明确回退时人工核对。
+
+迁移后的普通Markdown源码、历史即时、双栏和TextKit2模式在Mac统一使用现有TK2编辑器；历史即时模式仍隐藏，旧设置可兼容路由。iOS使用UITextView(usingTextLayoutManager:true)。Web为只读渲染，与文本编辑引擎无关。

@@ -1,5 +1,9 @@
 ## 课堂笔记清空现场补充
 
+## #126 普通Markdown全面TK2（V1.2611171609 / 2611171609）
+
+开工前已推送codex/pre-126-all-textkit2-20261117回退标签。移除普通MD生产代码全部旧layoutManager路径；Mac源码/旧即时容器统一TK2并传同一commitBridge，旧实现封存为.swift.txt。iOS显式TK2初始化，并加入无TK2时禁用编辑日志。验证：最终macOS arm64 Debug完整构建、iOS Simulator Debug构建均退出码0；静态路由/无TK1布局调用/封存逐字一致检查通过，生产可见区及同步滚动方法运行后保持TK2检查通过；差异和plist检查通过。早期并行构建因资源争抢主动中止，改独立缓存及限任务数后通过。iOS补充组合态不重装全文属性保护。未安装新版；真人中文输入、撤销、图片和跨端性能仍待设备验收。
+
 ## #126 普通MD性能首步与CodeMirror对照（V1.2611171556 / 2611171556）
 
 开工前已推送GitHub回退标签codex/pre-126-textkit2-20261117（b1fee09）。确认visibleCharacterRange及scrollMarkdownSourceLineToCenter访问layoutManager触发回退，已改TK2 API。正式App首轮macOS构建通过。完成真实455433字节及400KB/2MB/10MB合成文件的TK1/TK2纯文本与CodeMirror/WKWebView对照，结果与限制见实验README及results.json；原文件未修改。结果支持先保留TK2，不能据此宣称正式编辑器端到端已达标。最终验证：macOS arm64 Debug构建退出码0，git差异及plist检查通过；提取生产可见区/同步滚动方法的AppKit测试通过，查询、同步滚动、中文文本替换后保持TK2。CodeMirror打包与WKWebView基准运行通过。未安装正式App，尚未真人IME、双栏高亮、图片公式、撤销和长期iCloud验收。

@@ -1,5 +1,9 @@
 ## 课堂笔记清空现场补充
 
+## #126 普通Markdown全面TK2（V1.2611171609 / 2611171609）
+
+普通Markdown的Mac源码/历史即时入口统一进入既有MarkdownTextKit2PlainTextEditor，共用父页面commitBridge以维持延迟提交、保存与搜索桥接；源码模式仍传sourceStandard样式。iOS全部文本入口使用UITextView(usingTextLayoutManager:true)。原MarkdownNativeTextEditor及MarkdownTextView以.swift.txt封存于Archives/MarkdownTextKit1，不参与编译且无自动回退。运行发现TK2不可用时禁用编辑并记录错误，不降级TK1。Web只读渲染不受影响；本次不迁移NodeMarkdown。
+
 ## #126 普通MD性能首步与CodeMirror对照（V1.2611171556 / 2611171556）
 
 普通Markdown的TK2视图移除可见区和同步滚动两处layoutManager/glyph访问：改用viewportRange及目标TextLayoutFragment，不再触发TK1兼容或全文ensureLayout。源码/即时旧编辑管线尚未整体迁移，整篇预览/Binding仍有进一步优化空间。独立CodeMirror实验位于Experiments/Markdown126，离线本地打包，不接入正式App；可复现内核基准和生产方法提取测试见README。
