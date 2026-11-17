@@ -227,9 +227,18 @@ struct ArchiveView: View {
         } message: {
             Text("将在当前目录新建文件夹，并把所选项目移动进去。")
         }
-        .navigationDestination(item: $markdownNavigationTarget) { target in
-            MarkdownEditorView(fileURL: URL(fileURLWithPath: target.id))
+        #if os(iOS)
+        .fullScreenCover(item: $markdownNavigationTarget) { target in
+            NavigationStack {
+                MarkdownEditorView(fileURL: URL(fileURLWithPath: target.id))
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("关闭") { markdownNavigationTarget = nil }
+                        }
+                    }
+            }
         }
+        #endif
         .navigationDestination(item: $singleListNavigationTarget) { target in
             SingleListDocumentEditorView(fileURL: URL(fileURLWithPath: target.id))
         }

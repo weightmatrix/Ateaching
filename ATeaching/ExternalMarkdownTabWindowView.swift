@@ -252,6 +252,7 @@ enum ExternalMarkdownWindowPresenter {
             backing: .buffered,
             defer: false
         )
+        window.tabbingMode = .disallowed
         window.title = "📝·Markdown·\(standardizedURL.deletingPathExtension().lastPathComponent)"
         window.isReleasedWhenClosed = false
         window.center()
