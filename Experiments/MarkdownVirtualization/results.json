@@ -1,0 +1,47 @@
+{
+  "elapsedMs" : 780,
+  "end" : {
+    "estimatedHeight" : 905889.5,
+    "first" : 9985,
+    "last" : 9999,
+    "mounted" : 15,
+    "rendered" : 88,
+    "total" : 10000,
+    "virtualized" : true
+  },
+  "initial" : {
+    "estimatedHeight" : 903205.375,
+    "first" : 0,
+    "last" : 11,
+    "mounted" : 12,
+    "rendered" : 18,
+    "total" : 10000,
+    "virtualized" : true
+  },
+  "initialMs" : 42,
+  "jump" : {
+    "estimatedHeight" : 904302.625,
+    "first" : 7991,
+    "last" : 8009,
+    "mounted" : 19,
+    "rendered" : 46,
+    "total" : 10000,
+    "virtualized" : true
+  },
+  "passed" : [
+    "bounded DOM",
+    "source jump",
+    "scroll anchor",
+    "offscreen patch",
+    "document end",
+    "truncation",
+    "code",
+    "formula",
+    "full export",
+    "empty document",
+    "late image height",
+    "width resize",
+    "system print",
+    "select all"
+  ]
+}

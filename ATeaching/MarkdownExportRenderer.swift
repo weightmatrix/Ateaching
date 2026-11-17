@@ -67,6 +67,7 @@ enum MarkdownExportRenderer {
         let renderScript = """
         <script>
         document.addEventListener('DOMContentLoaded', function () {
+            window.markdownRenderer.setVirtualized(false);
             \(patchScript)
         });
         </script>
