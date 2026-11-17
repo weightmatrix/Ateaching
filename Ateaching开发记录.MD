@@ -1,5 +1,9 @@
 ## 课堂笔记清空现场补充
 
+## #126 普通MD性能首步与CodeMirror对照（V1.2611171556 / 2611171556）
+
+开工前已推送GitHub回退标签codex/pre-126-textkit2-20261117（b1fee09）。确认visibleCharacterRange及scrollMarkdownSourceLineToCenter访问layoutManager触发回退，已改TK2 API。正式App首轮macOS构建通过。完成真实455433字节及400KB/2MB/10MB合成文件的TK1/TK2纯文本与CodeMirror/WKWebView对照，结果与限制见实验README及results.json；原文件未修改。结果支持先保留TK2，不能据此宣称正式编辑器端到端已达标。最终验证：macOS arm64 Debug构建退出码0，git差异及plist检查通过；提取生产可见区/同步滚动方法的AppKit测试通过，查询、同步滚动、中文文本替换后保持TK2。CodeMirror打包与WKWebView基准运行通过。未安装正式App，尚未真人IME、双栏高亮、图片公式、撤销和长期iCloud验收。
+
 ## Mac Markdown独立窗口路由修正（V1.2611171518 / 2611171518）
 
 修正前次遗漏：常用MD仍设置navigationTarget，ContentView两套主窗口外壳仍通过navigationDestination显示正文。改为统一独立窗口；未改动文档内容。验证：macOS arm64 Debug完整构建退出码0，差异检查通过。实机确认旧版常用打开MD在主窗口显示返回按钮；已修正所有该路由，运行新构建，并覆盖旧Xcode运行产物（旧App备份/private/tmp/ATeaching-before-md-window-fix.app）。新版UI自动化启动查询超时，未声称已完成双窗口目视验收。

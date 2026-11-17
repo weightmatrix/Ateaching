@@ -1,5 +1,9 @@
 ## 课堂笔记清空现场补充
 
+## #126 普通MD性能首步与CodeMirror对照（V1.2611171556 / 2611171556）
+
+普通Markdown的TK2视图移除可见区和同步滚动两处layoutManager/glyph访问：改用viewportRange及目标TextLayoutFragment，不再触发TK1兼容或全文ensureLayout。源码/即时旧编辑管线尚未整体迁移，整篇预览/Binding仍有进一步优化空间。独立CodeMirror实验位于Experiments/Markdown126，离线本地打包，不接入正式App；可复现内核基准和生产方法提取测试见README。
+
 ## Mac Markdown独立窗口路由修正（V1.2611171518 / 2611171518）
 
 macOS常用MD入口直接调用独立窗口presenter；ContentView两处主窗口MD navigationDestination改为转交独立窗口并清除路由目标。主窗口不再承载Markdown正文导航，档案入口沿用独立窗口。

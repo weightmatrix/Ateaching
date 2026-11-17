@@ -11,3 +11,6 @@ iCloud重复Swift备份/
 
 # Misplaced compiler index cache; never source.
 /ATeaching.xcodeproj/-Xcc/
+
+# Markdown126 experimental dependencies
+Experiments/Markdown126/node_modules/

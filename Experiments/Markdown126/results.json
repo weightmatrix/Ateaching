@@ -1,0 +1,122 @@
+[
+  {
+    "editP50SyncMs" : 13.126291692256927,
+    "editP95SyncMs" : 18.523708343505859,
+    "engine" : "Native TK1 plain",
+    "openMs" : 68.73654168844223,
+    "textKit2" : false,
+    "utf8Bytes" : 455433,
+    "utf16" : 200243
+  },
+  {
+    "editP50SyncMs" : 2.2350833415985107,
+    "editP95SyncMs" : 2.7051666975021362,
+    "engine" : "Native TK2 plain",
+    "openMs" : 1.0634166598320007,
+    "textKit2" : true,
+    "utf8Bytes" : 455433,
+    "utf16" : 200243
+  },
+  {
+    "editP50DispatchMs" : 1,
+    "editP50FrameMs" : 25,
+    "editP95DispatchMs" : 3,
+    "editP95FrameMs" : 47,
+    "engine" : "CodeMirror 6 \/ WKWebView",
+    "openMs" : 203,
+    "renderedLines" : 78,
+    "textKit2" : null,
+    "utf8Bytes" : 455433,
+    "utf16" : 200243
+  },
+  {
+    "editP50SyncMs" : 27.482708275318146,
+    "editP95SyncMs" : 39.339375019073486,
+    "engine" : "Native TK1 plain",
+    "openMs" : 50.322541654109955,
+    "textKit2" : false,
+    "utf8Bytes" : 400014,
+    "utf16" : 219726
+  },
+  {
+    "editP50SyncMs" : 1.7041250467300415,
+    "editP95SyncMs" : 2.6949999928474426,
+    "engine" : "Native TK2 plain",
+    "openMs" : 1.3326666355133057,
+    "textKit2" : true,
+    "utf8Bytes" : 400014,
+    "utf16" : 219726
+  },
+  {
+    "editP50DispatchMs" : 1,
+    "editP50FrameMs" : 25,
+    "editP95DispatchMs" : 2,
+    "editP95FrameMs" : 27,
+    "engine" : "CodeMirror 6 \/ WKWebView",
+    "openMs" : 35,
+    "renderedLines" : 79,
+    "textKit2" : null,
+    "utf8Bytes" : 400014,
+    "utf16" : 219726
+  },
+  {
+    "editP50SyncMs" : 28.973458349704742,
+    "editP95SyncMs" : 30.023833334445953,
+    "engine" : "Native TK1 plain",
+    "openMs" : 50.146541655063629,
+    "textKit2" : false,
+    "utf8Bytes" : 2000070,
+    "utf16" : 1098630
+  },
+  {
+    "editP50SyncMs" : 1.3362083435058594,
+    "editP95SyncMs" : 1.641083300113678,
+    "engine" : "Native TK2 plain",
+    "openMs" : 3.0547083020210266,
+    "textKit2" : true,
+    "utf8Bytes" : 2000070,
+    "utf16" : 1098630
+  },
+  {
+    "editP50DispatchMs" : 1,
+    "editP50FrameMs" : 25,
+    "editP95DispatchMs" : 2,
+    "editP95FrameMs" : 27,
+    "engine" : "CodeMirror 6 \/ WKWebView",
+    "openMs" : 30,
+    "renderedLines" : 79,
+    "textKit2" : null,
+    "utf8Bytes" : 2000070,
+    "utf16" : 1098630
+  },
+  {
+    "editP50SyncMs" : 36.689750075340271,
+    "editP95SyncMs" : 39.777999997138977,
+    "engine" : "Native TK1 plain",
+    "openMs" : 72.924708306789398,
+    "textKit2" : false,
+    "utf8Bytes" : 10000066,
+    "utf16" : 5492994
+  },
+  {
+    "editP50SyncMs" : 2.2103333473205566,
+    "editP95SyncMs" : 3.3951250314712524,
+    "engine" : "Native TK2 plain",
+    "openMs" : 18.668500006198883,
+    "textKit2" : true,
+    "utf8Bytes" : 10000066,
+    "utf16" : 5492994
+  },
+  {
+    "editP50DispatchMs" : 1,
+    "editP50FrameMs" : 25,
+    "editP95DispatchMs" : 2,
+    "editP95FrameMs" : 28,
+    "engine" : "CodeMirror 6 \/ WKWebView",
+    "openMs" : 103,
+    "renderedLines" : 79,
+    "textKit2" : null,
+    "utf8Bytes" : 10000066,
+    "utf16" : 5492994
+  }
+]

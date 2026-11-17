@@ -4853,23 +4853,21 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     }
 
     func scrollMarkdownSourceLineToCenter(_ sourceLine: Int, in scrollView: NSScrollView) {
-        performanceDiagnostics.checkPipeline(self, stage: "同步滚动旧API前")
-        defer { performanceDiagnostics.checkPipeline(self, stage: "同步滚动旧API后") }
+        performanceDiagnostics.checkPipeline(self, stage: "TextKit2同步滚动前")
+        defer { performanceDiagnostics.checkPipeline(self, stage: "TextKit2同步滚动后") }
         let nsText = string as NSString
-        guard nsText.length > 0 else { return }
+        guard nsText.length > 0, let manager = textLayoutManager,
+              let content = manager.textContentManager else { return }
         let lineRange = markdownSourceRange(forLine: max(0, sourceLine), in: nsText)
-        guard lineRange.location != NSNotFound else { return }
-
-        scrollRangeToVisible(NSRange(location: lineRange.location, length: 0))
-        guard let layoutManager, let textContainer else { return }
-        layoutManager.ensureLayout(for: textContainer)
-        var actualRange = NSRange(location: 0, length: 0)
-        let glyphRange = layoutManager.glyphRange(
-            forCharacterRange: NSRange(location: lineRange.location, length: min(1, max(0, nsText.length - lineRange.location))),
-            actualCharacterRange: &actualRange
-        )
-        guard glyphRange.location != NSNotFound else { return }
-        var lineRect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
+        guard lineRange.location != NSNotFound,
+              let location = content.location(content.documentRange.location, offsetBy: lineRange.location) else { return }
+        // 只请求目标段落，不调用TextKit1字形API或对整篇ensureLayout。
+        var targetRect: NSRect?
+        manager.enumerateTextLayoutFragments(from: location, options: [.ensuresLayout]) { fragment in
+            targetRect = fragment.layoutFragmentFrame
+            return false
+        }
+        guard var lineRect = targetRect else { return }
         lineRect.origin.x += textContainerOrigin.x
         lineRect.origin.y += textContainerOrigin.y
 
@@ -5491,14 +5489,14 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     }
 
     private func visibleCharacterRange() -> NSRange? {
-        performanceDiagnostics.checkPipeline(self, stage: "可见范围旧API前")
-        defer { performanceDiagnostics.checkPipeline(self, stage: "可见范围旧API后") }
-        guard let layoutManager, let textContainer else { return nil }
-        let paintRect = visibleRect.insetBy(dx: -16, dy: -240)
-        guard !paintRect.isEmpty else { return nil }
-        let glyphRange = layoutManager.glyphRange(forBoundingRect: paintRect, in: textContainer)
-        guard glyphRange.length > 0 else { return nil }
-        return layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+        performanceDiagnostics.checkPipeline(self, stage: "TextKit2可见范围")
+        guard let manager = textLayoutManager,
+              let content = manager.textContentManager,
+              let range = manager.textViewportLayoutController.viewportRange else { return nil }
+        let start = content.offset(from: content.documentRange.location, to: range.location)
+        let end = content.offset(from: content.documentRange.location, to: range.endLocation)
+        guard start >= 0, end >= start, end <= (textStorage?.length ?? 0) else { return nil }
+        return NSRange(location: start, length: end - start)
     }
 
     private func selectedNeighborhoodRange() -> NSRange {
