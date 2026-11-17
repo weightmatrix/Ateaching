@@ -1,5 +1,9 @@
 ## 课堂笔记清空现场补充
 
+## Mac Markdown独立窗口路由修正（V1.2611171518 / 2611171518）
+
+macOS常用MD入口直接调用独立窗口presenter；ContentView两处主窗口MD navigationDestination改为转交独立窗口并清除路由目标。主窗口不再承载Markdown正文导航，档案入口沿用独立窗口。
+
 ## 档案Markdown独立页面（V1.2611171439 / 2611171439）
 
 档案Markdown入口：macOS继续使用独立NSWindow，并设置tabbingMode为disallowed，避免并入主窗口；iOS从navigationDestination改为独立fullScreenCover/NavigationStack，通过关闭按钮结束，保留主档案导航状态。

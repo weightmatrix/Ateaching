@@ -1,5 +1,9 @@
 ## 课堂笔记清空现场补充
 
+## Mac Markdown独立窗口路由修正（V1.2611171518 / 2611171518）
+
+修正前次遗漏：常用MD仍设置navigationTarget，ContentView两套主窗口外壳仍通过navigationDestination显示正文。改为统一独立窗口；未改动文档内容。验证：macOS arm64 Debug完整构建退出码0，差异检查通过。实机确认旧版常用打开MD在主窗口显示返回按钮；已修正所有该路由，运行新构建，并覆盖旧Xcode运行产物（旧App备份/private/tmp/ATeaching-before-md-window-fix.app）。新版UI自动化启动查询超时，未声称已完成双窗口目视验收。
+
 ## 档案Markdown独立页面（V1.2611171439 / 2611171439）
 
 核实Mac档案入口已使用presentSingleMarkdownWindow，iOS仍在主NavigationStack推入。改为iOS独立全屏页面，Mac明确禁止窗口标签合并。验证：macOS arm64 Debug及iOS Simulator Debug完整构建均退出码0，git差异与项目plist检查通过。未安装设备，独立页面交互尚待运行验收。

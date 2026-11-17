@@ -83,9 +83,10 @@ struct ContentView: View {
                 }
             }
             #if os(macOS)
-            .navigationDestination(item: $externalMarkdownStore.navigationTarget) { target in
-                MarkdownEditorView(fileURL: target.fileURL)
-                    .id(target.id)
+            .onChange(of: externalMarkdownStore.navigationTarget) { _, target in
+                guard let target else { return }
+                ExternalMarkdownWindowPresenter.presentSingleMarkdownWindow(fileURL: target.fileURL)
+                externalMarkdownStore.navigationTarget = nil
             }
             .background(MacMainWindowAccessor(title: displayTitle))
             #endif
@@ -166,9 +167,10 @@ struct ContentView: View {
                     }
                 }
             }
-            .navigationDestination(item: $externalMarkdownStore.navigationTarget) { target in
-                MarkdownEditorView(fileURL: target.fileURL)
-                    .id(target.id)
+            .onChange(of: externalMarkdownStore.navigationTarget) { _, target in
+                guard let target else { return }
+                ExternalMarkdownWindowPresenter.presentSingleMarkdownWindow(fileURL: target.fileURL)
+                externalMarkdownStore.navigationTarget = nil
             }
             .background(MacMainWindowAccessor(title: displayTitle))
         }

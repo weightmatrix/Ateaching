@@ -258,7 +258,7 @@ struct FrequentDocumentsView: View {
         let ext = url.pathExtension.lowercased()
         let type = (ArchiveStorage.readMetaType(fileURL: url) ?? "").lowercased()
         if ext == "md" {
-            ExternalMarkdownTabStore.shared.navigationTarget = ExternalMarkdownTabItem(fileURL: url)
+            ExternalMarkdownWindowPresenter.presentSingleMarkdownWindow(fileURL: url)
         } else if ext == "nodemarkdown" || ext == "nmd" || type == "nodemarkdown" || type == "nodesmarkdown" || type == "lessonplan" {
             openWindow(id: "nodemarkdown-editor", value: url.path)
         }
