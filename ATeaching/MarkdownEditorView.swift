@@ -4814,6 +4814,12 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
                 return
             }
             lastClipViewBoundsOrigin = currentOrigin
+            if let previousOrigin, let event = NSApp.currentEvent, event.type == .scrollWheel {
+                let movement = currentOrigin.y - previousOrigin.y
+                if (event.scrollingDeltaY > 0 && movement > 64) || (event.scrollingDeltaY < 0 && movement < -64) {
+                    textView?.recordScrollJump(stage: "wheelOpposite", previousY: previousOrigin.y)
+                }
+            }
             recordDiagnostic38Count("滚动视口通知")
             if let previousOrigin {
                 recordDiagnostic38Count(
@@ -5078,6 +5084,22 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     var isApplyingQuickInputReplacement = false
     var isApplyingMarkdownStyle = false
     var isRestoringAttachmentSource = false
+    private var lastScrollJumpDiagnosticAt: TimeInterval = 0
+    func recordScrollJump(stage: String, previousY: CGFloat) {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastScrollJumpDiagnosticAt >= 0.25 else { return }
+        lastScrollJumpDiagnosticAt = now
+        let event = NSApp.currentEvent.flatMap { $0.type == .scrollWheel ? $0 : nil }
+        let viewport = textLayoutManager?.textViewportLayoutController.viewportRange
+        let content = textLayoutManager?.textContentManager
+        let viewportStart = viewport.flatMap { range in content.map { $0.offset(from: $0.documentRange.location, to: range.location) } }
+        let viewportEnd = viewport.flatMap { range in content.map { $0.offset(from: $0.documentRange.location, to: range.endLocation) } }
+        TeachingDebugLogStore.append(
+            "view=\(ObjectIdentifier(self)) stage=\(stage) beforeY=\(previousY) afterY=\(enclosingScrollView?.contentView.bounds.origin.y ?? -1) frame=\(frame) visible=\(visibleRect) viewportUTF16=\(String(describing: viewportStart))..\(String(describing: viewportEnd)) selection=\(selectedRange()) chars=\(textStorage?.length ?? 0) wheelY=\(event?.scrollingDeltaY ?? 0) phase=\(String(describing: event?.phase)) momentum=\(String(describing: event?.momentumPhase)) styling=\(isApplyingMarkdownStyle) marked=\(hasActiveMarkedText) stack=\(Thread.callStackSymbols.prefix(14).joined(separator: " | "))",
+            category: "Markdown.ScrollJump", force: true
+        )
+    }
+
     private var cachedSourceProjection: String?
     private var sourceStorageObserver: NSObjectProtocol?
 
@@ -5371,6 +5393,13 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     }
 
     func applyMarkdownStyleToVisibleRange(style: MarkdownDocumentStyle) {
+        let scrollYBeforeStyle = enclosingScrollView?.contentView.bounds.origin.y
+        defer {
+            if let before = scrollYBeforeStyle,
+               let after = enclosingScrollView?.contentView.bounds.origin.y, abs(after - before) > 32 {
+                recordScrollJump(stage: "visibleStyleMovedViewport", previousY: before)
+            }
+        }
         let diagnosticStart = MarkdownTextKit2Diagnostic38.now()
         defer { onDiagnostic38Duration?("滚动可见区样式", MarkdownTextKit2Diagnostic38.milliseconds(since: diagnosticStart)) }
         let profileStart = MarkdownEditorPerformanceProbe.start()
