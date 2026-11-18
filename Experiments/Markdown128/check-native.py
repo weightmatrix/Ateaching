@@ -22,6 +22,7 @@ enum MarkdownTextKit2Diagnostic38 {
  override var undoManager: UndoManager? { isolatedUndo }
  var cachedSourceProjection: String?
  var sourceStorageObserver: NSObjectProtocol?
+ var viewportWheelIntent:(time:TimeInterval,delta:CGFloat,characters:Int)?
 '''+method('    override func didChangeText()')+'\n'+method('    func seedSourceProjection(')+'\n'+method('    private func observeSourceStorage()')+'\n'+projection+'''
 }
 '''+r'''

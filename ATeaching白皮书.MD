@@ -1,3 +1,9 @@
+## Mac普通Markdown滚动反弹修复（V1.2611181420 / 2611181420）
+
+确认直接触发链：14:02完整栈为NSTextViewportLayoutController.layoutViewport→NSTextView.textViewportLayoutControllerDidLayout→NSClipView.scrollToPoint。以指定文档只读副本构造原生TK2滚轮回放，即使冻结滚动样式或预先设置全文样式仍能反弹，不能归咎于滚动样式刷新。采用有边界的兼容处理：保留super正常排版，仅当最近0.8秒存在滚轮意图、字符数未变、非组合态，且super完成后的物理位移与滚轮方向相反超过0.5pt，恢复该回调进入时的视口位置并按当前文档边界约束。键盘/鼠标操作、显式scrollRangeToVisible、源码行跳转、实际编辑与外部源码加载退出保护。不是拦截所有程序滚动，不调用TK1或强制全文布局。保留限频诊断及viewportCorrectionSuppressed事件，便于真机验收。
+
+隔离测试提取生产回调与导航/编辑退出逻辑，使用真实AppKit/TK2及CGEvent滚轮、文档副本。原生对照稳定画面3次反弹，保护路径两轮向上回放均0，向下回放0且未触发无关校正；显式导航/编辑退出断言通过。观察通知中仍能看到super临时位移及随后恢复，不应把这个中间值算成呈现后的反弹。参见Experiments/MarkdownScrollRebound；这验证兼容处理，不声称解释Apple内部锚点算法或覆盖所有设备。
+
 ## 滚动调用栈防截断（V1.2611181355 / 2611181355）
 
 13:53:59日志确认实际clip位置763→1459，位移696pt。写入器对单条消息截断到4096字符，原先轨迹在前使真正调用栈尾部丢失；现将48层调用栈每6层分条优先写入Markdown.ScrollStack，用traceID关联轨迹。仅实际clip通知检测反弹，排除adjustScroll提议尚未实际滚动造成的误报。未修改滚动行为，根因待完整调用栈确认。macOS arm64 Debug构建退出码0；git差异检查通过。未安装。

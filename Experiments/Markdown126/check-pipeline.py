@@ -9,6 +9,7 @@ visible=method('    private func visibleCharacterRange() -> NSRange? {','    pri
 scroll=method('    func scrollMarkdownSourceLineToCenter(','    private func markdownSourceLineIndex(')
 code='''import AppKit
 @MainActor final class SmokeView: NSTextView {
+ var viewportWheelIntent:(time:TimeInterval,delta:CGFloat,characters:Int)?
 '''+visible+scroll+'''
  func markdownSourceRange(forLine line: Int, in text: NSString) -> NSRange {
   var location = 0

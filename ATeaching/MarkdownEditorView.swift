@@ -4999,6 +4999,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     }
 
     func scrollMarkdownSourceLineToCenter(_ sourceLine: Int, in scrollView: NSScrollView) {
+        viewportWheelIntent = nil
         performanceDiagnostics.checkPipeline(self, stage: "TextKit2同步滚动前")
         defer { performanceDiagnostics.checkPipeline(self, stage: "TextKit2同步滚动后") }
         let nsText = self.textStorage?.mutableString ?? NSMutableString(string: string)
@@ -5088,6 +5089,38 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     var isApplyingQuickInputReplacement = false
     var isApplyingMarkdownStyle = false
     var isRestoringAttachmentSource = false
+    private var viewportWheelIntent: (time: TimeInterval, delta: CGFloat, characters: Int)?
+
+    override func textViewportLayoutControllerDidLayout(_ controller: NSTextViewportLayoutController) {
+        let clip = enclosingScrollView?.contentView
+        let origin = clip?.bounds.origin
+        super.textViewportLayoutControllerDidLayout(controller)
+        guard let intent = viewportWheelIntent,
+              ProcessInfo.processInfo.systemUptime - intent.time < 0.8,
+              intent.characters == textStorage?.length,
+              !hasActiveMarkedText, let clip, let origin else { return }
+        let adjustedY = clip.bounds.minY
+        let movement = adjustedY - origin.y
+        guard (intent.delta > 0 && movement > 0.5) || (intent.delta < 0 && movement < -0.5) else { return }
+        // AppKit's post-layout anchor correction can reverse a wheel scroll even with
+        // immutable text and no styling. Keep the wheel position for this callback only.
+        let maximumY = max(0, frame.height - clip.bounds.height)
+        guard origin.y >= 0, origin.y <= maximumY else { return }
+        clip.setBoundsOrigin(origin)
+        enclosingScrollView?.reflectScrolledClipView(clip)
+        recordScrollJump(stage: "viewportCorrectionSuppressed", previousY: adjustedY)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        viewportWheelIntent = nil
+        super.mouseDown(with: event)
+    }
+
+    override func scrollRangeToVisible(_ range: NSRange) {
+        viewportWheelIntent = nil
+        super.scrollRangeToVisible(range)
+    }
+
     private var scrollDiagnosticEvent: UInt64 = 0
     private var scrollDiagnosticRecent: [String] = []
     private var scrollDiagnosticLastY: CGFloat?
@@ -5126,6 +5159,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     }
 
     override func scrollWheel(with event: NSEvent) {
+        viewportWheelIntent = (ProcessInfo.processInfo.systemUptime, event.scrollingDeltaY, textStorage?.length ?? 0)
         scrollDiagnosticEvent &+= 1
         scrollDiagnosticLastWheelAt = ProcessInfo.processInfo.systemUptime
         scrollDiagnosticWheelDelta = event.scrollingDeltaY
@@ -5174,17 +5208,20 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, self.textStorage?.editedMask.contains(.editedCharacters) == true else { return }
+                self.viewportWheelIntent = nil
                 self.cachedSourceProjection = nil
             }
         }
     }
 
     override func didChangeText() {
+        viewportWheelIntent = nil
         cachedSourceProjection = nil
         super.didChangeText()
     }
 
     func seedSourceProjection(_ source: String) {
+        viewportWheelIntent = nil
         observeSourceStorage()
         cachedSourceProjection = source
     }
@@ -5266,6 +5303,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     }
 
     override func keyDown(with event: NSEvent) {
+        viewportWheelIntent = nil
         if handleMarkdownImagePasteShortcut(event) { return }
         super.keyDown(with: event)
     }

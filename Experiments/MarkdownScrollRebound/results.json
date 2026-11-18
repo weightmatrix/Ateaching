@@ -1,0 +1,22 @@
+[
+  {
+    "mode": "frozen",
+    "direction": "up",
+    "output": "SETTLED y=1248.4727272727268 prev=1209.8545454545451 max=2503.5\nSETTLED y=1237.1272727272724 prev=1200.4727272727268 max=2503.5\nSETTLED y=1222.072727272727 prev=1197.1272727272726 max=2503.5\nRESULT mode=frozen jumps=3 samples=[\"1201.8545454545451->1248.4727272727268\", \"1192.4727272727268->1237.1272727272724\", \"1189.1272727272726->1222.072727272727\"] settledJumps=3 corrections=0"
+  },
+  {
+    "mode": "guarded",
+    "direction": "up",
+    "output": "RESULT mode=guarded jumps=7 samples=[\"1204.5->1251.1181818181817\", \"1188.5->1266.1\", \"980.863636363636->1024.1363636363635\", \"965.0->996.2727272727273\", \"893.8->925.0545454545454\", \"698.2181818181816->741.490909090909\", \"682.0->713.2727272727273\"] settledJumps=0 corrections=16"
+  },
+  {
+    "mode": "guarded",
+    "direction": "down",
+    "output": "RESULT mode=guarded jumps=0 samples=[] settledJumps=0 corrections=0"
+  },
+  {
+    "mode": "guarded",
+    "direction": "up",
+    "output": "RESULT mode=guarded jumps=7 samples=[\"1204.5->1251.1181818181817\", \"1188.5->1266.1\", \"980.863636363636->1024.1363636363635\", \"965.0->996.2727272727273\", \"893.8->925.0545454545454\", \"698.2181818181816->741.490909090909\", \"682.0->713.2727272727273\"] settledJumps=0 corrections=16"
+  }
+]
