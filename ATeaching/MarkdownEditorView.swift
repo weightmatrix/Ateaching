@@ -4815,6 +4815,7 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
             }
             lastClipViewBoundsOrigin = currentOrigin
             if let previousOrigin {
+                textView?.captureViewportTransition(from: previousOrigin.y, to: currentOrigin.y)
                 textView?.recordScrollJump(stage: "viewportSample", previousY: previousOrigin.y)
             }
             if let previousOrigin, let event = NSApp.currentEvent, event.type == .scrollWheel {
@@ -5087,6 +5088,57 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     var isApplyingQuickInputReplacement = false
     var isApplyingMarkdownStyle = false
     var isRestoringAttachmentSource = false
+    private var scrollDiagnosticEvent: UInt64 = 0
+    private var scrollDiagnosticRecent: [String] = []
+    private var scrollDiagnosticLastY: CGFloat?
+    private var scrollDiagnosticLastWheelAt: TimeInterval = 0
+    private var scrollDiagnosticWheelDelta: CGFloat = 0
+    private var scrollDiagnosticLastTraceAt: TimeInterval = 0
+
+    private func captureScrollStep(_ stage: String, before: CGFloat, after: CGFloat, detail: String = "") {
+        let now = ProcessInfo.processInfo.systemUptime
+        let line = "event=\(scrollDiagnosticEvent) t=\(String(format: "%.4f", now)) stage=\(stage) before=\(before) after=\(after) wheel=\(scrollDiagnosticWheelDelta) \(detail)"
+        scrollDiagnosticRecent.append(line)
+        if scrollDiagnosticRecent.count > 24 { scrollDiagnosticRecent.removeFirst() }
+        let previous = scrollDiagnosticLastY ?? before
+        scrollDiagnosticLastY = after
+        if now - scrollDiagnosticLastWheelAt < 0.8, now - scrollDiagnosticLastTraceAt >= 0.2,
+           scrollDiagnosticWheelDelta > 0, after - min(before, previous) > 24 {
+            scrollDiagnosticLastTraceAt = now
+            TeachingDebugLogStore.append(
+                "view=\(ObjectIdentifier(self)) recent=[\(scrollDiagnosticRecent.joined(separator: " | "))] stack=\(Thread.callStackSymbols.prefix(20).joined(separator: " | "))",
+                category: "Markdown.ScrollTrace", force: true
+            )
+            recordScrollJump(stage: "capturedUpwardRebound", previousY: min(before, previous))
+        }
+    }
+
+    func captureViewportTransition(from before: CGFloat, to after: CGFloat) {
+        captureScrollStep("clipNotification", before: before, after: after)
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        scrollDiagnosticEvent &+= 1
+        scrollDiagnosticLastWheelAt = ProcessInfo.processInfo.systemUptime
+        scrollDiagnosticWheelDelta = event.scrollingDeltaY
+        let before = enclosingScrollView?.contentView.bounds.minY ?? -1
+        captureScrollStep("wheelBefore", before: before, after: before)
+        super.scrollWheel(with: event)
+        captureScrollStep("wheelAfter", before: before, after: enclosingScrollView?.contentView.bounds.minY ?? -1)
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.captureScrollStep("wheelNextFrame", before: before, after: self.enclosingScrollView?.contentView.bounds.minY ?? -1)
+        }
+    }
+
+    override func adjustScroll(_ newVisible: NSRect) -> NSRect {
+        let before = enclosingScrollView?.contentView.bounds.minY ?? -1
+        let adjusted = super.adjustScroll(newVisible)
+        captureScrollStep("adjustScroll", before: before, after: adjusted.minY,
+                          detail: "proposed=\(newVisible) adjusted=\(adjusted)")
+        return adjusted
+    }
+
     private var lastScrollJumpDiagnosticAt: [String: TimeInterval] = [:]
     func recordScrollJump(stage: String, previousY: CGFloat) {
         let now = ProcessInfo.processInfo.systemUptime
