@@ -190,6 +190,12 @@ enum MarkdownExportRenderer {
         webView.navigationDelegate = loader
         webView.loadHTMLString(html, baseURL: baseURL ?? Bundle.main.resourceURL)
         try loader.waitSynchronouslyUntilFinished(timeout: 60)
+        let diagramDeadline = Date().addingTimeInterval(15)
+        while Date() < diagramDeadline,
+              let pending = webView.markdownEvaluateJavaScriptSync("window.markdownRenderer.pendingDiagramCount()", timeout: 2) as? Int,
+              pending > 0 {
+            RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.02))
+        }
         _ = webView.markdownEvaluateJavaScriptSync("document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve();", timeout: 10)
         _ = webView.markdownEvaluateJavaScriptSync(
             """

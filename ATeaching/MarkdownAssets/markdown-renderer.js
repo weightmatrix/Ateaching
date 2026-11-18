@@ -258,6 +258,7 @@
                 var cachedHTML = fragmentCache.get(cacheKey);
                 node.innerHTML = cachedHTML || renderMarkdown(block.markdown);
                 if (!cachedHTML) { renderMath(node); rememberFragment(cacheKey, node.innerHTML); }
+                prepareRenderedBlock(node);
                 renderedCount++;
                 node.querySelectorAll('img').forEach(function (img) {
                     img.loading = virtualized ? 'lazy' : 'eager'; img.decoding = 'async';
@@ -278,6 +279,40 @@
             if (Math.abs(corrected - window.scrollY) > 0.5) window.scrollTo(window.scrollX, corrected);
             scheduleViewport();
         }
+    }
+
+    var diagramSequence = 0;
+    var diagramJobs = new Set();
+    var mermaidReady = false;
+    function prepareRenderedBlock(node) {
+        node.querySelectorAll('table').forEach(function (table) {
+            if (table.parentElement.classList.contains('md-table-scroll')) return;
+            var wrapper = document.createElement('div');
+            wrapper.className = 'md-table-scroll';
+            wrapper.tabIndex = 0;
+            table.before(wrapper);
+            wrapper.appendChild(table);
+        });
+        node.querySelectorAll('pre > code.language-mermaid').forEach(function (code) {
+            if (!window.mermaid) return;
+            if (!mermaidReady) {
+                window.mermaid.initialize({startOnLoad: false, securityLevel: 'strict', suppressErrorRendering: true});
+                mermaidReady = true;
+            }
+            var source = code.textContent;
+            var job = window.mermaid.render('md-diagram-' + (++diagramSequence), source).then(function (result) {
+                if (!code.isConnected || !node.contains(code)) return;
+                var diagram = document.createElement('div');
+                diagram.className = 'md-mermaid';
+                diagram.innerHTML = result.svg;
+                code.parentElement.replaceWith(diagram);
+                scheduleViewport();
+            }).catch(function () {
+                if (code.isConnected) code.parentElement.setAttribute('data-mermaid-error', 'true');
+            });
+            diagramJobs.add(job);
+            job.finally(function () { diagramJobs.delete(job); });
+        });
     }
 
     function renderMath(root) {
@@ -351,15 +386,11 @@
     }
 
     function renderMarkdown(markdown) {
-        markdown = normalizeMarkdownSource(markdown);
-        markdown = preserveExplicitNumberedLines(markdown);
+        if (!/^ {0,3}(?:`{3,}|~{3,})/.test(markdown)) markdown = preserveExplicitNumberedLines(markdown);
+        // A marker-only line needs a space too. Fenced code above bypasses this rule.
+        if (/^ {0,3}#{1,6}$/.test(markdown)) return '<p>' + escapeHTML(markdown) + '</p>';
         if (window.marked && typeof window.marked.parse === 'function') {
-            return normalizeRenderedHTML(window.marked.parse(markdown, {
-                gfm: true,
-                breaks: true,
-                pedantic: false,
-                smartypants: false
-            }));
+            return window.marked.parse(markdown, {gfm: true, breaks: true});
         }
         return renderBasicMarkdown(markdown);
     }
@@ -393,14 +424,6 @@
             .replace(/&lt;br\s*\/?&gt;/gi, '<br>');
     }
 
-    function normalizeMarkdownSource(value) {
-        return String(value)
-            .replace(/<(?:strong|stong|b)>([\s\S]*?)<\/(?:strong|stong|b)>/gi, '**$1**')
-            .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
-            .replace(/__([^_\n]+)__/g, '<strong>$1</strong>')
-            .replace(/<br\s*\/?>/gi, '<br>');
-    }
-
     function renderBasicMarkdown(value) {
         return escapeHTML(value)
             .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
@@ -421,7 +444,7 @@
             if (inFence) return line;
             if (line.indexOf('#') === 0) return line;
             var match = /^( *)(.*?\d+)\. +(.*)$/.exec(line);
-            if (!match) return line;
+            if (!match || /^\d{1,9}$/.test(match[2])) return line;
             var indent = match[1].length;
             var marker = match[2] + '. ';
             var body = match[3] || '';
@@ -468,6 +491,8 @@
         diagnostics: function () {
             return { total: blocks.length, mounted: mounted.size, first: renderedFirst, last: renderedLast, rendered: renderedCount, estimatedHeight: sum(blocks.length), virtualized: virtualized };
         },
+        pendingDiagramCount: function () { return diagramJobs.size; },
+        whenDiagramsReady: function () { return Promise.all(Array.from(diagramJobs)); },
         currentCenterSourceLine: currentCenterSourceLine,
         scrollToSourceLine: scrollToSourceLine
     };

@@ -4007,6 +4007,13 @@ func markdownWebBootstrapHTML(style: MarkdownDocumentStyle, preferredScheme: Col
         font-size: \(style.comment.fontSize)px;
         color: \(commentColor);
       }
+      #md-root .md-table-scroll { overflow-x: auto; margin: 0.75em 0; }
+      #md-root table { border-collapse: collapse; width: max-content; min-width: 100%; }
+      #md-root th, #md-root td { border: 1px solid rgba(128,128,128,0.48); padding: 0.35em 0.65em; vertical-align: top; }
+      #md-root th, #md-root tbody tr:nth-child(even) { background: rgba(128,128,128,0.10); }
+      #md-root input[type=checkbox] { margin-inline-end: 0.4em; }
+      #md-root .md-mermaid { overflow-x: auto; }
+      #md-root .md-mermaid svg { display: block; max-width: 100%; height: auto; }
       #md-root pre {
         padding: 10px;
         border-radius: 8px;
@@ -4055,6 +4062,7 @@ func markdownWebBootstrapHTML(style: MarkdownDocumentStyle, preferredScheme: Col
       \(markdownWebScriptTag(fileName: "katex.min.js"))
       \(markdownWebScriptTag(fileName: "auto-render.min.js"))
       \(markdownWebScriptTag(fileName: "marked.min.js"))
+      \(markdownWebScriptTag(fileName: "mermaid.min.js"))
       \(markdownWebScriptTag(fileName: "markdown-renderer.js"))
     </head>
     <body><div id="md-root"></div></body>
@@ -5313,6 +5321,11 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     }
 
     override func paste(_ sender: Any?) {
+        if let source = MarkdownClipboard.source(from: .general), !source.isEmpty {
+            _ = restoreAttachmentSourceTokensForSelectedLine()
+            insertText(source, replacementRange: selectedRange())
+            return
+        }
         if insertPastedMarkdownImageIfAvailable() { return }
         super.paste(sender)
     }
@@ -5326,6 +5339,9 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
               event.charactersIgnoringModifiers?.lowercased() == "v" else {
             return false
         }
+        let pasteboard = NSPasteboard.general
+        guard pasteboard.string(forType: .string)?.isEmpty != false,
+              pasteboard.data(forType: .html) == nil else { return false }
         return insertPastedMarkdownImageIfAvailable()
     }
 

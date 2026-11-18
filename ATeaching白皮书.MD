@@ -1,3 +1,7 @@
+## #128 普通 Markdown 渲染与粘贴（V1.2611181515 / 2611181515）
+
+普通 Markdown Web 预览使用本地 Mermaid 11.16.0，以 strict 模式渲染可见 mermaid 围栏，支持 flowchart 和 erDiagram，失败时保留源码。打印和 PDF 导出加载图表，PDF 等待异步图表处理。GFM 表格保留对齐并支持横向滚动，标准有序列表保留起始编号，代码按字面显示。Mac 剪贴板优先读取显式 Markdown，提供 HTML 时可恢复常见结构。裸 # 标记按正文处理。
+
 ## Mac普通Markdown滚动反弹修复（V1.2611181420 / 2611181420）
 
 确认直接触发链：14:02完整栈为NSTextViewportLayoutController.layoutViewport→NSTextView.textViewportLayoutControllerDidLayout→NSClipView.scrollToPoint。以指定文档只读副本构造原生TK2滚轮回放，即使冻结滚动样式或预先设置全文样式仍能反弹，不能归咎于滚动样式刷新。采用有边界的兼容处理：保留super正常排版，仅当最近0.8秒存在滚轮意图、字符数未变、非组合态，且super完成后的物理位移与滚轮方向相反超过0.5pt，恢复该回调进入时的视口位置并按当前文档边界约束。键盘/鼠标操作、显式scrollRangeToVisible、源码行跳转、实际编辑与外部源码加载退出保护。不是拦截所有程序滚动，不调用TK1或强制全文布局。保留限频诊断及viewportCorrectionSuppressed事件，便于真机验收。

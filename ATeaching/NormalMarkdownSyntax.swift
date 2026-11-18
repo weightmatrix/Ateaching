@@ -169,7 +169,10 @@ nonisolated enum NormalMarkdownSyntax {
         var resolvedLinks: [(range: NSRange, markdown: String)] = []
         func visit(_ node: any Markup) {
             if let heading = node as? Heading, let r = range(node) {
-                result.headings.append(.init(level: heading.level, title: heading.plainText, offset: r.location))
+                let markerLine = lines[max(0, min((heading.range?.lowerBound.line ?? 1) - 1, lines.count - 1))]
+                if markerLine.range(of: #"^ {0,3}#{1,6}\r?$"#, options: .regularExpression) == nil {
+                    result.headings.append(.init(level: heading.level, title: heading.plainText, offset: r.location))
+                }
             }
             if let r = range(node) {
                 if node is Link || node is Image {
