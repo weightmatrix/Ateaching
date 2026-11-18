@@ -379,7 +379,8 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                   let nodeID = nodeIDByTextView[ObjectIdentifier(textView)],
                   let row = state.row(for: nodeID),
                   let oldNode = state.node(at: row) else { return }
-            guard !textView.isApplyingQuickInputReplacement else { return }
+            guard !textView.isApplyingQuickInputReplacement,
+                  !textView.hasActiveInputMethodComposition else { return }
             recordFontDiagnostic(textView, nodeID: nodeID, stage: "输入后")
             let isHistoryReplay = editorUndoManager.isUndoing || editorUndoManager.isRedoing
             defer {
@@ -411,9 +412,8 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             // 快捷输入只作用于当前 Node 文本，检查与替换都在单块内完成；未命中时不再重复读正文。
             let quickInputEdit: NodeMarkdownTextKit2QuickInputEdit?
             let quickInputStart = NodeMarkdownDiagnostic114.now()
-            if !textView.hasActiveInputMethodComposition,
-               textView.undoManager?.isUndoing != true,
-               textView.undoManager?.isRedoing != true {
+            if !isHistoryReplay {
+                textView.quickInputSettings = owner.quickInputSettings
                 quickInputEdit = textView.applyQuickInputIfNeeded(documentStyle: owner.documentStyle)
             } else {
                 quickInputEdit = nil
@@ -633,6 +633,12 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             textView.onRequestSave = { [weak self] in
                 self?.flushActiveNodeForSave()
                 self?.owner.onRequestSave?()
+            }
+            textView.onInputMethodCommit = { [weak self, weak textView] _ in
+                guard let self, let textView,
+                      self.nodeIDByTextView[ObjectIdentifier(textView)] == node.id else { return }
+                // Native change notifications can arrive before the IME transaction closes.
+                self.textDidChange(Notification(name: NSText.didChangeNotification, object: textView))
             }
             textView.onTransientLayoutChange = { [weak self, weak textView] in
                 guard let self, let textView else { return }
