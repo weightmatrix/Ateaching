@@ -1,0 +1,14 @@
+[
+  {
+    "localPackageAverageMs" : 0.031917916494421661,
+    "nodes" : 100
+  },
+  {
+    "localPackageAverageMs" : 0.031029166420921683,
+    "nodes" : 5000
+  },
+  {
+    "localPackageAverageMs" : 0.033887083409354091,
+    "nodes" : 20000
+  }
+]

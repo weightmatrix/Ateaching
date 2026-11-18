@@ -265,11 +265,13 @@ nonisolated struct NodeMarkdownDocument: Hashable, Codable {
     mutating func touchChangedH3Packages(
         comparedTo previousDocument: NodeMarkdownDocument,
         affectedRowIndex: Int?,
+        currentStructuralIndex: NodeMarkdownDocumentIndex? = nil,
+        previousStructuralIndex: NodeMarkdownDocumentIndex? = nil,
         at timestamp: Date = Date()
     ) -> Set<String> {
         guard let affectedRowIndex else { return [] }
-        let currentIndex = NodeMarkdownDocumentIndex(nodes: nodes)
-        let previousStructureIndex = NodeMarkdownDocumentIndex(nodes: previousDocument.nodes)
+        let currentIndex = currentStructuralIndex ?? NodeMarkdownDocumentIndex(nodes: nodes)
+        let previousStructureIndex = previousStructuralIndex ?? NodeMarkdownDocumentIndex(nodes: previousDocument.nodes)
 
         var candidateIndexes: Set<Int> = []
         if nodes.indices.contains(affectedRowIndex) {

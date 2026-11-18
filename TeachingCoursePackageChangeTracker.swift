@@ -267,6 +267,44 @@ final class TeachingCoursePackageChangeTracker {
         )
     }
 
+    /// Same-structure edit: only this node's owning package can change.
+    /// Structural edits still use the full reconciliation below.
+    func recordNodeMutation(
+        previousDocument: NodeMarkdownDocument,
+        currentDocument: NodeMarkdownDocument,
+        row: Int,
+        structuralIndex: NodeMarkdownDocumentIndex
+    ) -> Int {
+        guard let ownerRow = structuralIndex.owningH3Row(for: row),
+              currentDocument.nodes.indices.contains(ownerRow) else { return localPendingCount() }
+        let root = currentDocument.nodes[ownerRow]
+        let id = root.id.uuidString
+        guard let range = structuralIndex.packageRange(rootID: root.id) else { return localPendingCount() }
+        if isNewPackageRoot(root) {
+            dirtyPackageIDs.remove(id)
+            addNewPackage(nodeID: id)
+            return localPendingCount()
+        }
+        removeNewPackage(h3NodeID: id)
+        guard hasCompleteSourceLink(root) else {
+            dirtyPackageIDs.remove(id)
+            return localPendingCount()
+        }
+        let currentDigest = TeachingCoursePackageContentSignature.digest(Array(currentDocument.nodes[range]))
+        if baselineDigestByH3ID[id] == nil {
+            let previousRoot = previousDocument.nodes[ownerRow]
+            baselineDigestByH3ID[id] = hasCompleteSourceLink(previousRoot)
+                ? TeachingCoursePackageContentSignature.digest(Array(previousDocument.nodes[range]))
+                : currentDigest
+        }
+        if baselineDigestByH3ID[id] == currentDigest {
+            dirtyPackageIDs.remove(id)
+        } else {
+            dirtyPackageIDs.insert(id)
+        }
+        return localPendingCount()
+    }
+
     func recordDocumentMutation(
         previousDocument: NodeMarkdownDocument,
         currentDocument: NodeMarkdownDocument,

@@ -315,6 +315,38 @@ nonisolated enum NodeMarkdownImageResourceManager {
         return deleteManagedImageFiles(atPaths: removedRefs, notebookFileURL: notebookFileURL)
     }
 
+    /// A single node's reference delta. Shared references stay live; removed owned images
+    /// enter the existing undo stash rather than being permanently deleted.
+    @MainActor
+    static func reconcileNodeImages(
+        previousNode: NodeMarkdownNode,
+        currentNode: NodeMarkdownNode,
+        previousDocument: NodeMarkdownDocument,
+        currentDocument: NodeMarkdownDocument,
+        notebookFileURL: URL,
+        index: inout NodeMarkdownImageReferenceIndex?
+    ) {
+        let previous = imagePaths(in: previousNode.text, notebookFileURL: notebookFileURL)
+        let current = imagePaths(in: currentNode.text, notebookFileURL: notebookFileURL)
+        guard previous != current else { return }
+        if index == nil {
+            index = NodeMarkdownImageReferenceIndex(document: previousDocument, notebookFileURL: notebookFileURL)
+        }
+        guard let index else { return }
+        let removed = index.replace(previous: previous, current: current).filter {
+            isDocumentOwnedTemporaryImagePath($0, previousDocument: previousDocument,
+                                             currentDocument: currentDocument, notebookFileURL: notebookFileURL)
+        }
+        _ = restoreStashedImages(atOriginalPaths: current, notebookFileURL: notebookFileURL)
+        _ = deleteManagedImageFiles(atPaths: Set(removed), notebookFileURL: notebookFileURL)
+    }
+
+    nonisolated static func imagePaths(in text: String, notebookFileURL: URL) -> Set<String> {
+        Set(parseImageTokens(in: text).compactMap {
+            resolvedImageURL(relativePath: $0.relativePath, notebookFileURL: notebookFileURL)?.standardizedFileURL.path
+        })
+    }
+
     static func isManagedImageURL(_ url: URL, notebookFileURL: URL) -> Bool {
         let standardizedURL = url.standardizedFileURL
         guard managedImageExtensions.contains(standardizedURL.pathExtension.lowercased()) else { return false }
@@ -1157,3 +1189,29 @@ enum NodeMarkdownImageAssetService {
     }
 }
 #endif
+
+/// Session-local counts, rebuilt after any whole-document replacement/structural edit.
+/// Each node contributes at most one reference per physical path.
+@MainActor
+final class NodeMarkdownImageReferenceIndex {
+    private var counts: [String: Int] = [:]
+
+    init(document: NodeMarkdownDocument, notebookFileURL: URL) {
+        for node in document.nodes {
+            for path in NodeMarkdownImageResourceManager.imagePaths(in: node.text, notebookFileURL: notebookFileURL) {
+                counts[path, default: 0] += 1
+            }
+        }
+    }
+
+    func replace(previous: Set<String>, current: Set<String>) -> Set<String> {
+        var unreferenced: Set<String> = []
+        for path in previous.subtracting(current) {
+            let count = max(0, (counts[path] ?? 0) - 1)
+            if count == 0 { counts.removeValue(forKey: path); unreferenced.insert(path) }
+            else { counts[path] = count }
+        }
+        for path in current.subtracting(previous) { counts[path, default: 0] += 1 }
+        return unreferenced
+    }
+}

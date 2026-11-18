@@ -39,6 +39,20 @@ private final class NodeMarkdownPackageCutClipboard {
     }
 }
 
+@MainActor
+private final class NodeMarkdownPersistFlight {
+    let id = UUID()
+    let document: NodeMarkdownDocument
+    let meta: NodeMarkdownFileMeta
+    let task: Task<Result<NodeMarkdownPersistResult, Error>, Never>
+
+    init(document: NodeMarkdownDocument, meta: NodeMarkdownFileMeta, url: URL) {
+        self.document = document
+        self.meta = meta
+        task = Task { await NodeMarkdownFileManager.persistToDiskAndPrepare(document: document, meta: meta, to: url) }
+    }
+}
+
 // MARK: - NodeMarkdown编辑器页面 - v1 - 独立Web渲染骨架并预留后续原生编辑覆盖层
 struct NodeMarkdownEditorView: View {
     @State private var deletionProgress: (done: Int, total: Int)?
@@ -108,6 +122,12 @@ struct NodeMarkdownEditorView: View {
     @State private var showPendingCutGuardAlert = false
     @State private var pendingCutGuardMessage = ""
     @State private var packageChangeTracker = TeachingCoursePackageChangeTracker()
+    @State private var persistFlight: NodeMarkdownPersistFlight?
+    @State private var imageReferenceIndex: NodeMarkdownImageReferenceIndex?
+    @State private var pendingCloudCheckTask: Task<Void, Never>?
+    @State private var isPackageSyncRunning = false
+    @State private var pendingPackageSync = false
+
     @State private var showClassUpdateSheet = false
     @State private var showNewPackagePlacementSheet = false
     @State private var classUpdatePreview = TeachingCourseUpdatePreview(dirtyPackageCount: 0, newPackageCount: 0, chapterTargets: [])
@@ -235,6 +255,9 @@ struct NodeMarkdownEditorView: View {
         .onChange(of: isSaveTaskRunning) { _, running in
             if !running { applyLatestCloudReloadIfReady() }
         }
+        .onChange(of: persistFlight?.id) { _, flightID in
+            if flightID == nil { applyLatestCloudReloadIfReady() }
+        }
         .onChange(of: isNotebookWriteOperationInProgress) { _, running in
             TeachingDebugLogStore.append("writeLock=\(running) loading=\(isLoading) whiteboard=\(isWhiteboardPresented) annotation=\(annotationController.isActive)", category: "NodeMarkdown.InputGate", force: true)
             if !running { applyLatestCloudReloadIfReady() }
@@ -269,16 +292,8 @@ struct NodeMarkdownEditorView: View {
                sourceID == editorInstanceID {
                 return
             }
-            guard !isLoading else { return }
-            guard saveState == .clean,
-                  documentRevision == persistedDocumentRevision,
-                  !hasUncommittedLegacyDraft,
-                  !isNotebookWriteOperationInProgress else {
-                statusMessage = "检测到外部文件变化；当前编辑内容优先，未自动重载。"
-                return
-            }
-            reloadFromDisk()
-            refreshPendingClassUpdateCount()
+            pendingLatestCloudReload = true
+            applyLatestCloudReloadIfReady()
         }
         .onReceive(NotificationCenter.default.publisher(for: .teachingRequestCloseNotebook)) { notification in
             guard let targetPath = notification.userInfo?["filePath"] as? String else { return }
@@ -651,18 +666,52 @@ struct NodeMarkdownEditorView: View {
     }
 
     private func applyLatestCloudReloadIfReady() {
-        guard pendingLatestCloudReload, !isLoading, !isSaveTaskRunning, !isNotebookWriteOperationInProgress else { return }
-        do {
-            let data = try TeachingCloudFileAccess.read(fileURL)
-            pendingLatestCloudReload = false
-            let cloudChanged = TeachingCloudFileAccess.digest(data) != fileMeta.diskDigest
-            TeachingDebugLogStore.append("trigger=applyLatestCloudReloadIfReady changed=\(cloudChanged) revision=\(documentRevision)/\(persistedDocumentRevision) rows=\(document.nodes.count)", category: "NodeMarkdown.ReloadTrigger", force: true)
-            guard cloudChanged else { return }
-            pendingRealtimeCoursePushTask?.cancel()
-            persistedDocumentRevision = documentRevision
-            saveState = .clean
-            reloadFromDisk()
-        } catch { statusMessage = "最新文件尚未就绪：\(error.localizedDescription)" }
+        guard pendingLatestCloudReload, pendingCloudCheckTask == nil,
+              !isLoading, !isSaveTaskRunning, persistFlight == nil, !isNotebookWriteOperationInProgress,
+              !isPackageSyncRunning, saveState == .clean,
+              documentRevision == persistedDocumentRevision, !hasUncommittedLegacyDraft else { return }
+        pendingLatestCloudReload = false
+        let targetURL = fileURL
+        let checkedRevision = documentRevision
+        let checkedGeneration = diskLoadGeneration
+        pendingCloudCheckTask = Task {
+            var allowsImmediateRetry = true
+            defer {
+                pendingCloudCheckTask = nil
+                if pendingLatestCloudReload && allowsImmediateRetry { applyLatestCloudReloadIfReady() }
+            }
+            let result = await Task.detached(priority: .utility) {
+                Result { try NodeMarkdownFileManager.read(fileURL: targetURL) }
+            }.value
+            guard diskLoadGeneration == checkedGeneration, documentRevision == checkedRevision,
+                  !isLoading, !isSaveTaskRunning, persistFlight == nil, !isNotebookWriteOperationInProgress,
+                  !isPackageSyncRunning, saveState == .clean,
+                  documentRevision == persistedDocumentRevision, !hasUncommittedLegacyDraft else {
+                pendingLatestCloudReload = true
+                return
+            }
+            switch result {
+            case .success(let loaded):
+                let changed = loaded.1.diskDigest != fileMeta.diskDigest
+                TeachingDebugLogStore.append("changed=\(changed) rows=\(loaded.0.nodes.count) action=comparePersistedNotification", category: "NodeMarkdown.ReloadTrigger", force: true)
+                guard changed else { return }
+                var parsed = loaded.0
+                _ = parsed.ensureTrailingBlankLine(defaultLevel: 1)
+                if documentsHaveSameEditorLayout(document, parsed) {
+                    let activeID = activeEditorRowIndex.flatMap { document.nodes.indices.contains($0) ? document.nodes[$0].id : nil }
+                    applyMetadataOnlyNotebookReload(parsedDocument: parsed, parsedMeta: loaded.1,
+                                                    previousDocument: document, preserveActiveNodeID: activeID)
+                } else {
+                    reloadFromDisk(reason: "externalContentChanged")
+                }
+                refreshPendingClassUpdateCount()
+            case .failure(let error):
+                // Keep the request for a later readiness/state event; do not busy-loop.
+                pendingLatestCloudReload = true
+                allowsImmediateRetry = false
+                statusMessage = "最新文件尚未就绪：\(error.localizedDescription)"
+            }
+        }
     }
 
     private func reloadFromDisk(reason: String = #function) {
@@ -717,6 +766,7 @@ struct NodeMarkdownEditorView: View {
             }
 
             loadDiagnostic("installBegin")
+            imageReferenceIndex = nil
             document = parsedDocument
             documentIndex.rebuild(from: parsedDocument.nodes)
             fileMeta = loaded.1
@@ -1008,6 +1058,7 @@ struct NodeMarkdownEditorView: View {
     }
 
     private func handleSaveStateChange(oldValue: MarkdownSaveState, newValue: MarkdownSaveState) {
+        if newValue == .clean { applyLatestCloudReloadIfReady() }
         guard newValue == .dirty else { return }
         scheduleRealtimeCourseUpdatePush()
     }
@@ -1075,11 +1126,7 @@ struct NodeMarkdownEditorView: View {
                 }
 
                 trace.mark("prepare")
-                let result = await NodeMarkdownFileManager.persistToDiskAndPrepare(
-                    document: documentSnapshot,
-                    meta: metaSnapshot,
-                    to: targetURL
-                )
+                let result = await persistSnapshot(documentSnapshot, meta: metaSnapshot)
                 trace.mark("diskPersistIncludingWait")
                 switch result {
                 case .success(let persist):
@@ -1092,6 +1139,7 @@ struct NodeMarkdownEditorView: View {
                         saveState = .dirty
                         continue
                     }
+                    imageReferenceIndex = nil
                     document = persist.document
                     saveState = .clean
                     statusMessage = ""
@@ -1114,6 +1162,28 @@ struct NodeMarkdownEditorView: View {
             }
             saveState = .clean
         }
+    }
+
+    private func persistSnapshot(
+        _ snapshot: NodeMarkdownDocument, meta: NodeMarkdownFileMeta
+    ) async -> Result<NodeMarkdownPersistResult, Error> {
+        var effectiveMeta = meta
+        while let flight = persistFlight {
+            if flight.document == snapshot && flight.meta == effectiveMeta {
+                return await flight.task.value
+            }
+            let previousResult = await flight.task.value
+            if case .success(let persist) = previousResult,
+               effectiveMeta.diskDigest == flight.meta.diskDigest {
+                effectiveMeta.diskDigest = persist.diskDigest
+                effectiveMeta.diskPath = fileURL.standardizedFileURL.path
+            }
+            if persistFlight?.id == flight.id { persistFlight = nil }
+        }
+        let flight = NodeMarkdownPersistFlight(document: snapshot, meta: effectiveMeta, url: fileURL)
+        persistFlight = flight
+        defer { if persistFlight?.id == flight.id { persistFlight = nil } }
+        return await flight.task.value
     }
 
     private func persistCurrentDocumentToDiskForSync(cleanForFinalization: Bool = false) async throws {
@@ -1144,11 +1214,7 @@ struct NodeMarkdownEditorView: View {
         let documentSnapshot = document
 
         trace.mark("prepare")
-        let result = await NodeMarkdownFileManager.persistToDiskAndPrepare(
-            document: documentSnapshot,
-            meta: metaSnapshot,
-            to: fileURL
-        )
+        let result = await persistSnapshot(documentSnapshot, meta: metaSnapshot)
         trace.mark("diskPersistIncludingWait")
         if case .success(let persist) = result {
             metaSnapshot.diskDigest = persist.diskDigest
@@ -1164,6 +1230,7 @@ struct NodeMarkdownEditorView: View {
         switch result {
         case .success(let persist):
             if documentRevision == revisionSnapshot {
+                imageReferenceIndex = nil
                 document = persist.document
             }
             persistedDocumentRevision = revisionSnapshot
@@ -1218,13 +1285,23 @@ struct NodeMarkdownEditorView: View {
 
     private func syncDirtyPackagesAfterClassSave() {
         guard let student = resolveStudentForNotebook() else { return }
+        guard !isPackageSyncRunning else { pendingPackageSync = true; return }
+        isPackageSyncRunning = true
         Task(priority: .userInitiated) {
+            defer {
+                isPackageSyncRunning = false
+                if pendingPackageSync {
+                    pendingPackageSync = false
+                    syncDirtyPackagesAfterClassSave()
+                } else {
+                    applyLatestCloudReloadIfReady()
+                }
+            }
             do {
                 // Command+S只落盘当前Node快照，不清洗并重载整篇随堂笔记。
                 // 同步引擎在每个H3包写回母本前已经统一调用cleanPackage，
                 // 因此这里再执行cleanDocument只会改变编辑器行布局并使视野跳动。
                 // 下课和关闭仍走cleanForFinalization=true，负责最终整篇整理。
-                try await persistCurrentDocumentToDiskForSync(cleanForFinalization: false)
                 let summary = try await Task.detached(priority: .userInitiated) {
                     try await TeachingCoursePackageSyncExecutor.syncDirtyPackages(
                         student: student,
@@ -1415,6 +1492,7 @@ struct NodeMarkdownEditorView: View {
         _ = parsed.restoreMissingH3SourceLinks(from: previousDocument)
         let touchedH3IDs = parsed.touchChangedH3Packages(comparedTo: previousDocument)
         parsed.propagateChildMtimeToH3Roots()
+        imageReferenceIndex = nil
         document = parsed
         synchronizeDocumentIndex(
             previousDocument: previousDocument,
@@ -1462,6 +1540,7 @@ struct NodeMarkdownEditorView: View {
         parsed.propagateChildMtimeToH3Roots()
 
         trace.mark("H3Maintenance")
+        imageReferenceIndex = nil
         document = parsed
         synchronizeDocumentIndex(
             previousDocument: previousDocument,
@@ -1523,6 +1602,8 @@ struct NodeMarkdownEditorView: View {
                   parseGeneration == textKitParseGeneration,
                   latestLegacyDocumentSnapshot?.sessionID == snapshot.sessionID,
                   latestLegacyDocumentSnapshot?.revision == snapshot.revision else { return }
+
+            imageReferenceIndex = nil
 
             document = parsed
             synchronizeDocumentIndex(
@@ -1613,9 +1694,9 @@ struct NodeMarkdownEditorView: View {
                level == 3,
                sourceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                sourceFile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                _ = packageChangeTracker.recordDocumentMutation(
-                    previousDocument: previousDocument,
-                    currentDocument: previousDocument
+                _ = packageChangeTracker.recordNodeMutation(
+                    previousDocument: previousDocument, currentDocument: previousDocument,
+                    row: rowIndex, structuralIndex: documentIndex
                 )
                 refreshLocalPackageListsAndLight()
             }
@@ -1641,7 +1722,9 @@ struct NodeMarkdownEditorView: View {
         )
         _ = updatedDocument.touchChangedH3Packages(
             comparedTo: previousDocument,
-            affectedRowIndex: rowIndex
+            affectedRowIndex: rowIndex,
+            currentStructuralIndex: updatedIndex,
+            previousStructuralIndex: documentIndex
         )
         trace.mark("mutationAndH3Touch")
         document = updatedDocument
@@ -1651,13 +1734,27 @@ struct NodeMarkdownEditorView: View {
         trace.mark("serialize")
         textKitDraftRowMetadata = makeTextKitRowMetadata(for: updatedDocument)
         trace.mark("rowMetadata")
-        cleanupUnusedImageAssets(previousDocument: previousDocument, currentDocument: updatedDocument)
+        if previousNode.level == level && previousNode.sourceID == sourceID && previousNode.sourceFile == sourceFile {
+            NodeMarkdownImageResourceManager.reconcileNodeImages(
+                previousNode: previousNode, currentNode: updatedDocument.nodes[rowIndex],
+                previousDocument: previousDocument, currentDocument: updatedDocument,
+                notebookFileURL: fileURL, index: &imageReferenceIndex
+            )
+        } else {
+            cleanupUnusedImageAssets(previousDocument: previousDocument, currentDocument: updatedDocument)
+        }
         trace.mark("imageCleanup")
         if isClassSessionEditor {
-            _ = packageChangeTracker.recordDocumentMutation(
-                previousDocument: previousDocument,
-                currentDocument: updatedDocument
-            )
+            if previousNode.level == level {
+                _ = packageChangeTracker.recordNodeMutation(
+                    previousDocument: previousDocument, currentDocument: updatedDocument,
+                    row: rowIndex, structuralIndex: updatedIndex
+                )
+            } else {
+                _ = packageChangeTracker.recordDocumentMutation(
+                    previousDocument: previousDocument, currentDocument: updatedDocument
+                )
+            }
             trace.mark("packageMutation")
             NodeMarkdownDiagnostic26.log(
                 "外层追踪结果 Node=\(NodeMarkdownDiagnostic26.shortID(draft.nodeID)) "
@@ -1705,6 +1802,7 @@ struct NodeMarkdownEditorView: View {
             parsed.propagateChildMtimeToH3Roots()
             await MainActor.run {
                 guard !Task.isCancelled, parseGeneration == textKitParseGeneration else { return }
+                imageReferenceIndex = nil
                 document = parsed
                 synchronizeDocumentIndex(
                     previousDocument: previousDocument,
@@ -1823,6 +1921,7 @@ struct NodeMarkdownEditorView: View {
     }
 
     private func refreshTextKitDraftFromDocument(forceExternalSync: Bool = false) {
+        imageReferenceIndex = nil
         invalidatePendingTextKitParsing()
         textKitDraft = NodeMarkdownPlainTextCodec.serialize(document: document)
         textKitDraftRowMetadata = textKitRowMetadata
@@ -2237,6 +2336,7 @@ struct NodeMarkdownEditorView: View {
         for node in summary.insertedNodes.lazy.filter({ $0.level == 3 }).prefix(8) {
             TeachingH3InsertDiagnostic123.record("op=\(diagnosticID) stage=父页面回放H3 node=\(node.id) level=\(node.level) chars=\(node.text.utf16.count)")
         }
+        imageReferenceIndex = nil
         document = newDocument
         synchronizeDocumentIndex(
             previousDocument: previousDocument,
@@ -2312,6 +2412,7 @@ struct NodeMarkdownEditorView: View {
                 )
                 return
             }
+            imageReferenceIndex = nil
             document = parsedDocument
             synchronizeDocumentIndex(
                 previousDocument: previousDocument,
@@ -2372,6 +2473,7 @@ struct NodeMarkdownEditorView: View {
         previousDocument: NodeMarkdownDocument,
         preserveActiveNodeID: UUID?
     ) {
+        imageReferenceIndex = nil
         document = parsedDocument
         // 正文和结构没有变化，索引与textKitDraft保持原样；只发布不可见的同步元数据。
         textKitDraftRowMetadata = makeTextKitRowMetadata(for: parsedDocument)
@@ -3175,6 +3277,7 @@ struct NodeMarkdownEditorView: View {
                     "教案剪切 source=\(fileURL.path) range=\(packageRange) nodes=\(pendingCutPackageNodes.count) h3=\(pendingCutPackageNodes.filter { $0.level == 3 }.map { $0.id.uuidString })"
                 )
             } catch {
+                imageReferenceIndex = nil
                 document = previousDocument
                 documentIndex.rebuild(from: document.nodes)
                 pendingCutPackageNodes = []
@@ -3240,6 +3343,7 @@ struct NodeMarkdownEditorView: View {
                     )
                 }
             } catch {
+                imageReferenceIndex = nil
                 document = previousDocument
                 documentIndex.rebuild(from: document.nodes)
                 try? NodeMarkdownFileManager.write(document: previousDocument, meta: fileMeta, to: fileURL)
@@ -3304,6 +3408,7 @@ struct NodeMarkdownEditorView: View {
 
         let reducedIndex = NodeMarkdownDocumentIndex(nodes: document.nodes)
         guard let reducedTargetRow = reducedIndex.row(for: targetID) else {
+            imageReferenceIndex = nil
             document = previousDocument
             documentIndex.rebuild(from: document.nodes)
             statusMessage = "移动失败：找不到目标节点。"
@@ -3316,6 +3421,7 @@ struct NodeMarkdownEditorView: View {
             insertIndex = reducedTargetRow + 1
         } else {
             guard let reducedTargetRange = reducedIndex.subtreeRange(startingAt: reducedTargetRow) else {
+                imageReferenceIndex = nil
                 document = previousDocument
                 documentIndex.rebuild(from: document.nodes)
                 statusMessage = "移动失败：找不到目标节点。"
@@ -3674,6 +3780,7 @@ struct NodeMarkdownEditorView: View {
     }
 
     private func cleanupUnusedImageAssets(previousDocument: NodeMarkdownDocument, currentDocument: NodeMarkdownDocument) {
+        imageReferenceIndex = nil
         _ = NodeMarkdownImageResourceManager.restoreReferencedStashedImages(
             currentDocument: currentDocument,
             notebookFileURL: fileURL
