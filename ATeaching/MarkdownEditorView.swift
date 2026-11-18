@@ -5102,11 +5102,19 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         if scrollDiagnosticRecent.count > 24 { scrollDiagnosticRecent.removeFirst() }
         let previous = scrollDiagnosticLastY ?? before
         scrollDiagnosticLastY = after
-        if now - scrollDiagnosticLastWheelAt < 0.8, now - scrollDiagnosticLastTraceAt >= 0.2,
+        if stage == "clipNotification", now - scrollDiagnosticLastWheelAt < 0.8, now - scrollDiagnosticLastTraceAt >= 0.2,
            scrollDiagnosticWheelDelta > 0, after - min(before, previous) > 24 {
             scrollDiagnosticLastTraceAt = now
+            let traceID = String(UUID().uuidString.prefix(8))
+            let frames = Array(Thread.callStackSymbols.prefix(48))
+            for start in stride(from: 0, to: frames.count, by: 6) {
+                TeachingDebugLogStore.append(
+                    "trace=\(traceID) event=\(scrollDiagnosticEvent) frames=\(start)..\(min(start + 6, frames.count) - 1) \(frames[start..<min(start + 6, frames.count)].joined(separator: " | "))",
+                    category: "Markdown.ScrollStack", force: true
+                )
+            }
             TeachingDebugLogStore.append(
-                "view=\(ObjectIdentifier(self)) recent=[\(scrollDiagnosticRecent.joined(separator: " | "))] stack=\(Thread.callStackSymbols.prefix(20).joined(separator: " | "))",
+                "trace=\(traceID) view=\(ObjectIdentifier(self)) recent=[\(scrollDiagnosticRecent.joined(separator: " | "))]",
                 category: "Markdown.ScrollTrace", force: true
             )
             recordScrollJump(stage: "capturedUpwardRebound", previousY: min(before, previous))
