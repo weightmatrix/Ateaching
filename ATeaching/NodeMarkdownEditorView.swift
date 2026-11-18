@@ -70,6 +70,7 @@ struct NodeMarkdownEditorView: View {
     @State private var documentIndex = NodeMarkdownDocumentIndex()
     @State private var fileMeta = NodeMarkdownFileMeta()
     @State private var isLoading = false
+    @State private var diskLoadSucceeded = false
     @State private var statusMessage = ""
     @State private var rowsSnapshot = ""
     @State private var isLargeFileMode = false
@@ -727,6 +728,7 @@ struct NodeMarkdownEditorView: View {
             TeachingDebugLogStore.append("file=\(fileURL.lastPathComponent) generation=\(loadGeneration) stage=\(stage) elapsedMs=\(Int((ProcessInfo.processInfo.systemUptime - diagnosticStart) * 1000))", category: "NodeMarkdown.LoadStage", force: true)
         }
         loadDiagnostic("begin")
+        diskLoadSucceeded = false
         isLoading = true
         statusMessage = ""
         let targetURL = fileURL
@@ -791,6 +793,7 @@ struct NodeMarkdownEditorView: View {
             preferredSchemeOverride = nil
             loadedFileSizeBytes = fileSizeBytes
             isLargeFileMode = fileSizeBytes >= largeFileThreshold
+            diskLoadSucceeded = true
             isLoading = false
             loadDiagnostic("installed nodes=\(document.nodes.count)")
             documentRevision = 0
@@ -3262,6 +3265,10 @@ struct NodeMarkdownEditorView: View {
         if isLessonPlanEditor {
             do {
                 try NodeMarkdownIdentityPolicy.validateForPersistence(document)
+                guard diskLoadSucceeded, !isLoading else {
+                    presentPendingCutGuard(message: "文档尚未成功读取，禁止覆盖原文件。")
+                    return
+                }
                 try NodeMarkdownFileManager.write(document: document, meta: fileMeta, to: fileURL)
                 fileMeta.diskDigest = TeachingCloudFileAccess.digest(Data(NodeMarkdownFileManager.serialize(document: document, meta: fileMeta).utf8))
                 fileMeta.diskPath = fileURL.standardizedFileURL.path
@@ -3332,6 +3339,10 @@ struct NodeMarkdownEditorView: View {
         if let sharedPayload {
             do {
                 try NodeMarkdownIdentityPolicy.validateForPersistence(document)
+                guard diskLoadSucceeded, !isLoading else {
+                    presentPendingCutGuard(message: "文档尚未成功读取，禁止覆盖原文件。")
+                    return
+                }
                 try NodeMarkdownFileManager.write(document: document, meta: fileMeta, to: fileURL)
                 fileMeta.diskDigest = TeachingCloudFileAccess.digest(Data(NodeMarkdownFileManager.serialize(document: document, meta: fileMeta).utf8))
                 fileMeta.diskPath = fileURL.standardizedFileURL.path
@@ -3818,6 +3829,11 @@ struct NodeMarkdownEditorView: View {
     }
 
     private func canPersistCurrentDocument() -> Bool {
+        guard diskLoadSucceeded, !isLoading else {
+            TeachingDebugLogStore.append("blocked file=\(fileURL.lastPathComponent) loaded=\(diskLoadSucceeded) loading=\(isLoading) nodes=\(document.nodes.count)", category: "NodeMarkdown.UnloadedWriteBlocked", force: true)
+            presentPendingCutGuard(message: "随堂笔记尚未成功读取，禁止保存或同步，原文件未覆盖。请等待iCloud文件就绪后重新打开。")
+            return false
+        }
         TeachingDebugLogStore.append("file=\(fileURL.lastPathComponent) nodes=\(document.nodes.count) loading=\(isLoading) generation=\(diskLoadGeneration) revision=\(documentRevision)/\(persistedDocumentRevision) saving=\(isSaveTaskRunning)", category: "NodeMarkdown.PersistGate", force: true)
         guard pendingCutPackageNodes.isEmpty else {
             presentPendingCutGuard(message: "存在未粘贴的剪切包，不能保存。请先粘贴或回退剪切。")
@@ -3861,6 +3877,10 @@ struct NodeMarkdownEditorView: View {
         if isLessonPlanEditor {
             do {
                 try NodeMarkdownIdentityPolicy.validateForPersistence(document)
+                guard diskLoadSucceeded, !isLoading else {
+                    presentPendingCutGuard(message: "文档尚未成功读取，禁止覆盖原文件。")
+                    return
+                }
                 try NodeMarkdownFileManager.write(document: document, meta: fileMeta, to: fileURL)
                 fileMeta.diskDigest = TeachingCloudFileAccess.digest(Data(NodeMarkdownFileManager.serialize(document: document, meta: fileMeta).utf8))
                 fileMeta.diskPath = fileURL.standardizedFileURL.path
