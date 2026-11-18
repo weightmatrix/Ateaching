@@ -1,0 +1,80 @@
+[
+  {
+    "case" : "paragraph",
+    "ms" : 2.8872083639726043,
+    "parsedUTF16" : 43,
+    "reusedUnits" : 1999
+  },
+  {
+    "case" : "unicode",
+    "ms" : 0.5666666547767818,
+    "parsedUTF16" : 38,
+    "reusedUnits" : 1999
+  },
+  {
+    "case" : "split",
+    "ms" : 49.012500036042184,
+    "parsedUTF16" : 49011,
+    "reusedUnits" : 0
+  },
+  {
+    "case" : "reference",
+    "ms" : 61.842833354603499,
+    "parsedUTF16" : 49035,
+    "reusedUnits" : 0
+  },
+  {
+    "case" : "fence",
+    "ms" : 1.4020833768881857,
+    "parsedUTF16" : 0,
+    "reusedUnits" : 2000
+  },
+  {
+    "case" : "math",
+    "ms" : 44.148458342533559,
+    "parsedUTF16" : 49010,
+    "reusedUnits" : 0
+  },
+  {
+    "case" : "heading",
+    "ms" : 1.2136249570176005,
+    "parsedUTF16" : 12,
+    "reusedUnits" : 1999
+  },
+  {
+    "case" : "list",
+    "ms" : 49.313958326820284,
+    "parsedUTF16" : 49016,
+    "reusedUnits" : 0
+  },
+  {
+    "case" : "html",
+    "ms" : 49.599291698541492,
+    "parsedUTF16" : 49019,
+    "reusedUnits" : 0
+  },
+  {
+    "bytes" : 400015,
+    "case" : "large-edit",
+    "fullMs" : 740.57554168393835,
+    "ms" : 5.472125019878149,
+    "parsedUTF16" : 44,
+    "reusedUnits" : 14285
+  },
+  {
+    "bytes" : 2000047,
+    "case" : "large-edit",
+    "fullMs" : 1578.0200833687559,
+    "ms" : 20.030416664667428,
+    "parsedUTF16" : 44,
+    "reusedUnits" : 71429
+  },
+  {
+    "bytes" : 10000039,
+    "case" : "large-edit",
+    "fullMs" : 6502.4939166614786,
+    "ms" : 82.425541651900858,
+    "parsedUTF16" : 44,
+    "reusedUnits" : 357143
+  }
+]

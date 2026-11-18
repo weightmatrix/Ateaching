@@ -6,8 +6,35 @@ nonisolated enum NormalMarkdownSyntax {
     struct HeadingInfo: Sendable { let level: Int; let title: String; let offset: Int }
     struct Span: Sendable { enum Kind: Sendable, Equatable { case code, strong, emphasis, link }; let range: NSRange; let kind: Kind }
     struct Block: Sendable { let source: String; let preview: String; let startLine: Int }
+    struct Unit: Sendable {
+        enum Kind: Sendable, Equatable { case paragraph, heading, code, other }
+        var range: NSRange
+        var startLine: Int
+        let kind: Kind
+    }
     struct Snapshot: Sendable {
+        var units: [Unit] = []
+        var requiresFullParse = false
+        var parsedUTF16 = 0
+        var reusedUnits = 0
+        var lineStarts: [Int] = []
         var headings: [HeadingInfo] = []
+        func headingLevel(at offset: Int) -> Int? {
+            var low = 0, high = headings.count
+            while low < high {
+                let mid = (low + high) / 2
+                if headings[mid].offset < offset { low = mid + 1 } else { high = mid }
+            }
+            return low < headings.count && headings[low].offset == offset ? headings[low].level : nil
+        }
+        func lineIndex(at offset: Int) -> Int {
+            var low = 0, high = lineStarts.count
+            while low < high {
+                let mid = (low + high) / 2
+                if lineStarts[mid] <= offset { low = mid + 1 } else { high = mid }
+            }
+            return max(0, low - 1)
+        }
         var spans: [Span] = []
         var literalRanges: [NSRange] = []
         var blocks: [Block] = []
@@ -70,20 +97,30 @@ nonisolated enum NormalMarkdownSyntax {
     private final class SyntaxCache: @unchecked Sendable {
         let lock = NSLock()
         let values = NSCache<NSString, Cached>()
+        var previousLarge: (source: String, snapshot: Snapshot)?
         init() { values.countLimit = 8; values.totalCostLimit = 24 * 1024 * 1024 }
     }
     private static let cache = SyntaxCache()
 
-    static func parse(_ source: String) -> Snapshot {
+    static func parse(_ source: String, useIncremental: Bool = true) -> Snapshot {
         let key = source as NSString
         cache.lock.lock()
-        if let cached = cache.values.object(forKey: key) {
+        if useIncremental, let cached = cache.values.object(forKey: key) {
             cache.lock.unlock()
-            return cached.wait()
+            let snapshot = cached.wait()
+            remember(source, snapshot: snapshot)
+            return snapshot
         }
         let entry = Cached()
-        cache.values.setObject(entry, forKey: key, cost: max(1, key.length * 6))
+        if useIncremental { cache.values.setObject(entry, forKey: key, cost: max(1, key.length * 6)) }
+        let previous = useIncremental ? cache.previousLarge : nil
         cache.lock.unlock()
+        if key.length >= 16_384, let previous,
+           let incremental = incrementallyParse(source, previousSource: previous.source, previous: previous.snapshot) {
+            entry.complete(incremental)
+            remember(source, snapshot: incremental)
+            return incremental
+        }
         let nsSource = source as NSString
         let sourceLength = nsSource.length
         let document = Document(parsing: source)
@@ -121,6 +158,14 @@ nonisolated enum NormalMarkdownSyntax {
             return NSRange(location: a, length: max(0, b - a))
         }
         var result = Snapshot()
+        result.lineStarts = utf16Starts.filter { $0 <= sourceLength }
+        result.parsedUTF16 = sourceLength
+        result.requiresFullParse = source.range(of: #"(?m)^ {0,3}\[[^\]\n]+\]:"#, options: .regularExpression) != nil
+        for child in document.children {
+            guard let r = range(child) else { continue }
+            let kind: Unit.Kind = child is Paragraph ? .paragraph : child is Heading ? .heading : child is CodeBlock ? .code : .other
+            result.units.append(.init(range: r, startLine: max(0, (child.range?.lowerBound.line ?? 1) - 1), kind: kind))
+        }
         var resolvedLinks: [(range: NSRange, markdown: String)] = []
         func visit(_ node: any Markup) {
             if let heading = node as? Heading, let r = range(node) {
@@ -157,6 +202,7 @@ nonisolated enum NormalMarkdownSyntax {
         if let opening = mathStart {
             mathRanges.append((NSRange(location: utf16Starts[opening.line], length: sourceLength - utf16Starts[opening.line]), opening.line))
         }
+        if !mathRanges.isEmpty { result.requiresFullParse = true }
         var headingMathIndex = 0
         result.headings.removeAll { heading in
             while headingMathIndex < mathRanges.count, NSMaxRange(mathRanges[headingMathIndex].range) <= heading.offset { headingMathIndex += 1 }
@@ -222,6 +268,127 @@ nonisolated enum NormalMarkdownSyntax {
         result.spanMaxEnds = result.spans.map { maxEnd = max(maxEnd, NSMaxRange($0.range)); return maxEnd }
         result.literalRanges.sort { $0.location < $1.location }
         entry.complete(result)
+        if useIncremental { remember(source, snapshot: result) }
         return result
     }
+    private static func remember(_ source: String, snapshot: Snapshot) {
+        guard source.utf8.count >= 16_384 else { return }
+        cache.lock.lock()
+        // Keep one bounded lineage; switching documents only loses reuse, never correctness.
+        if source.utf8.count <= 24 * 1024 * 1024 { cache.previousLarge = (source, snapshot) }
+        cache.lock.unlock()
+    }
+
+    private static func incrementallyParse(_ source: String, previousSource: String, previous: Snapshot) -> Snapshot? {
+        guard !previous.requiresFullParse, previous.units.count == previous.blocks.count else { return nil }
+        var old = previousSource, next = source
+        old.makeContiguousUTF8(); next.makeContiguousUTF8()
+        let difference: (Int, Int)? = old.utf8.withContiguousStorageIfAvailable { a in
+            next.utf8.withContiguousStorageIfAvailable { b -> (Int, Int) in
+                var prefix = 0, suffix = 0
+                let count = min(a.count, b.count)
+                while prefix + 4096 <= count,
+                      memcmp(a.baseAddress! + prefix, b.baseAddress! + prefix, 4096) == 0 { prefix += 4096 }
+                while prefix < count, a[prefix] == b[prefix] { prefix += 1 }
+                // Never split a UTF8 scalar when converting the edit to UTF16 coordinates.
+                while prefix > 0, prefix < b.count, b[prefix] & 0xC0 == 0x80 { prefix -= 1 }
+                let remaining = count - prefix
+                while suffix + 4096 <= remaining,
+                      memcmp(a.baseAddress! + a.count - suffix - 4096, b.baseAddress! + b.count - suffix - 4096, 4096) == 0 { suffix += 4096 }
+                while suffix < remaining, a[a.count - suffix - 1] == b[b.count - suffix - 1] { suffix += 1 }
+                while suffix > 0, b[b.count - suffix] & 0xC0 == 0x80 { suffix -= 1 }
+                return (prefix, suffix)
+            }!
+        }
+        guard let (prefix, suffix) = difference else { return nil }
+        let start8 = old.utf8.index(old.utf8.startIndex, offsetBy: prefix)
+        let end8 = old.utf8.index(old.utf8.endIndex, offsetBy: -suffix)
+        guard let start = String.Index(start8, within: old), let end = String.Index(end8, within: old) else { return nil }
+        let edit = NSRange(start..<end, in: old)
+        let nsSource = source as NSString, oldLength = (previousSource as NSString).length
+        let delta = nsSource.length - oldLength
+        // Strictly inside one top-level block: changes at boundaries can merge/split blocks.
+        guard let index = previous.units.firstIndex(where: {
+            edit.location > $0.range.location && NSMaxRange(edit) < NSMaxRange($0.range)
+        }) else { return nil }
+        let unit = previous.units[index]
+        guard unit.kind != .other, unit.range.length + delta > 0 else { return nil }
+        let raw = nsSource.substring(with: NSRange(location: unit.range.location, length: unit.range.length + delta))
+        let originalRaw = previous.blocks[index].source
+        var local: Snapshot
+        var parserWork = (raw as NSString).length
+        // A fenced code body's ordinary text has no inline semantics. Reuse its literal
+        // range only when the delimiters remain identical and no interior fence is added.
+        let originalLines = originalRaw.components(separatedBy: "\n")
+        let changedLines = raw.components(separatedBy: "\n")
+        let stableFence = unit.kind == .code && originalLines.count >= 2
+            && originalLines.first == changedLines.first && originalLines.last == changedLines.last
+            && raw.range(of: #"^ {0,3}(`{3,}|~{3,})"#, options: .regularExpression) != nil
+            && changedLines.dropFirst().dropLast().allSatisfy {
+                $0.range(of: #"^ {0,3}(`{3,}|~{3,})"#, options: .regularExpression) == nil
+            }
+        let plainPattern = #"[`*_<>\[\]\\$~|&\r\n#!+.):=\-]"#
+        let stablePlain = unit.kind == .paragraph
+            && raw.range(of: plainPattern, options: .regularExpression) == nil
+            && originalRaw.range(of: plainPattern, options: .regularExpression) == nil
+        if stableFence || stablePlain {
+            local = Snapshot()
+            local.units = [.init(range: NSRange(location: 0, length: (raw as NSString).length), startLine: 0, kind: unit.kind)]
+            local.blocks = [.init(source: raw, preview: raw, startLine: 0)]
+            if stableFence { local.literalRanges = [local.units[0].range] }
+            parserWork = 0
+        } else {
+            // Never recursively parse the same single-block document.
+            guard raw.utf8.count < source.utf8.count else { return nil }
+            local = parse(raw)
+        }
+        guard !local.requiresFullParse, local.units.count == 1, local.blocks.count == 1,
+              local.units[0].kind == unit.kind else { return nil }
+        if unit.kind == .code {
+            guard originalLines.first == changedLines.first, originalLines.last == changedLines.last else { return nil }
+        }
+        let oldEnd = NSMaxRange(unit.range)
+        let lineDelta = raw.utf8.reduce(into: 0) { if $1 == 10 { $0 += 1 } }
+            - previous.blocks[index].source.utf8.reduce(into: 0) { if $1 == 10 { $0 += 1 } }
+        var result = previous
+        let unitEnd = unit.range.location + (raw as NSString).length
+        var localLineStarts = [Int]()
+        var position = unit.range.location
+        for line in raw.components(separatedBy: "\n").dropLast() {
+            position += line.utf16.count + 1
+            if position <= unitEnd { localLineStarts.append(position) }
+        }
+        result.lineStarts = previous.lineStarts.filter { $0 <= unit.range.location }
+            + localLineStarts
+            + previous.lineStarts.filter { $0 > oldEnd }.map { $0 + delta }
+        result.parsedUTF16 = parserWork
+        result.reusedUnits = previous.units.count - 1
+        result.headings = previous.headings.filter { !NSLocationInRange($0.offset, unit.range) }.map {
+            HeadingInfo(level: $0.level, title: $0.title, offset: $0.offset >= oldEnd ? $0.offset + delta : $0.offset)
+        } + local.headings.map { HeadingInfo(level: $0.level, title: $0.title, offset: $0.offset + unit.range.location) }
+        func shifted(_ range: NSRange) -> NSRange {
+            NSRange(location: range.location >= oldEnd ? range.location + delta : range.location, length: range.length)
+        }
+        result.spans = previous.spans.filter { NSIntersectionRange($0.range, unit.range).length == 0 }.map {
+            Span(range: shifted($0.range), kind: $0.kind)
+        } + local.spans.map { Span(range: NSRange(location: $0.range.location + unit.range.location, length: $0.range.length), kind: $0.kind) }
+        result.literalRanges = previous.literalRanges.filter { NSIntersectionRange($0, unit.range).length == 0 }.map(shifted)
+            + local.literalRanges.map { NSRange(location: $0.location + unit.range.location, length: $0.length) }
+        for i in (index + 1)..<result.units.count {
+            result.units[i].range.location += delta
+            result.units[i].startLine += lineDelta
+            let block = result.blocks[i]
+            result.blocks[i] = .init(source: block.source, preview: block.preview, startLine: block.startLine + lineDelta)
+        }
+        result.units[index] = .init(range: NSRange(location: unit.range.location, length: unit.range.length + delta), startLine: unit.startLine, kind: unit.kind)
+        let block = local.blocks[0]
+        result.blocks[index] = .init(source: block.source, preview: block.preview, startLine: unit.startLine)
+        result.headings.sort { $0.offset < $1.offset }
+        result.spans.sort { $0.range.location < $1.range.location }
+        result.literalRanges.sort { $0.location < $1.location }
+        var maxEnd = 0
+        result.spanMaxEnds = result.spans.map { maxEnd = max(maxEnd, NSMaxRange($0.range)); return maxEnd }
+        return result
+    }
+
 }

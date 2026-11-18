@@ -753,6 +753,8 @@ enum MarkdownFontResolver {
 @MainActor
 final class MarkdownTextKit2CommitBridge: ObservableObject {
     @Published private(set) var revision = 0
+    @Published private(set) var sourceRevision = 0
+    func notePublishedSource() { sourceRevision &+= 1 }
     private(set) var hasPendingChanges = false
     var commitHandler: (() -> Void)?
     private var pendingRevisionWorkItem: DispatchWorkItem?
@@ -946,7 +948,7 @@ struct MarkdownEditorView: View {
             pendingAutoSaveWorkItem = nil
             saveBeforeClosing()
         }
-        .task(id: markdownText) {
+        .task(id: textKit2CommitBridge.sourceRevision) {
             let source = markdownText
             try? await Task.sleep(nanoseconds: 250_000_000)
             guard !Task.isCancelled else { return }
@@ -955,6 +957,7 @@ struct MarkdownEditorView: View {
             syntaxHeadings = syntax.headings.map { MarkdownHeading(level: $0.level, title: $0.title, utf16Offset: $0.offset) }
         }
         .onChange(of: markdownText) { _, newValue in
+            textKit2CommitBridge.notePublishedSource()
             let profileStart = MarkdownEditorPerformanceProbe.start()
             if newValue != lastSavedText {
                 if saveState != .saving {
@@ -3352,7 +3355,8 @@ struct MarkdownIOSStyledTextEditor: UIViewRepresentable {
         func flushBinding() {
             pendingBinding?.cancel()
             pendingBinding = nil
-            guard let textView, textView.markedTextRange == nil else { return }
+            guard commitBridge?.hasPendingChanges == true,
+                  let textView, textView.markedTextRange == nil else { return }
             let value = textView.text ?? ""
             lastAppliedText = value
             text = value
@@ -4391,6 +4395,7 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
         textView.onDiagnostic38SlowSample = { [weak coordinator = context.coordinator] in coordinator?.recordDiagnostic38SlowSample($0) }
         textView.performanceDiagnostics.checkPipeline(textView, stage: "创建后")
         context.coordinator.resetClipViewBoundsOrigin(scrollView.contentView.bounds.origin)
+        textView.seedSourceProjection(text)
         context.coordinator.lastSourceSnapshot = text
         context.coordinator.lastObservedBindingText = text
         NotificationCenter.default.addObserver(
@@ -4440,6 +4445,7 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
             context.coordinator.cancelPendingBindingSync()
             let selectedRange = textView.selectedRange()
             textView.string = text
+            textView.seedSourceProjection(text)
             context.coordinator.lastSourceSnapshot = text
             let maxLocation = (text as NSString).length
             textView.setSelectedRange(NSRange(location: min(selectedRange.location, maxLocation), length: 0))
@@ -4899,6 +4905,69 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
     }
 }
 
+/// Decode only requested visible resources on a utility worker. The source token remains
+/// editable while loading. File signatures are checked off-main; cache size is bounded.
+@MainActor
+private final class MarkdownImageDecodeCache {
+    static let shared = MarkdownImageDecodeCache()
+    private final class Entry: NSObject {
+        let image: NSImage
+        let signature: String
+        var expires = ProcessInfo.processInfo.systemUptime + 2
+        init(image: NSImage, signature: String) { self.image = image; self.signature = signature }
+    }
+    private struct Decoded: @unchecked Sendable {
+        let image: CGImage?
+        let signature: String
+    }
+    private let cache = NSCache<NSString, Entry>()
+    private var pending: [String: [ObjectIdentifier: () -> Void]] = [:]
+    private var failedUntil: [String: Double] = [:]
+    init() { cache.countLimit = 128; cache.totalCostLimit = 64 * 1024 * 1024 }
+
+    func image(at url: URL, width: CGFloat, owner: AnyObject, onReady: @escaping () -> Void) -> NSImage? {
+        let pixels = min(4096, max(256, Int(min(2048, max(120, width))) * 2))
+        let key = url.standardizedFileURL.path + "#" + String(pixels)
+        let entry = cache.object(forKey: key as NSString)
+        let now = ProcessInfo.processInfo.systemUptime
+        if let entry, entry.expires > now { return entry.image }
+        if let until = failedUntil[key], until > now { return entry?.image }
+        let ownerID = ObjectIdentifier(owner)
+        if pending[key] != nil { pending[key]?[ownerID] = onReady; return entry?.image }
+        pending[key] = [ownerID: onReady]
+        let previousSignature = entry?.signature
+        Task {
+            let result = await Task.detached(priority: .utility) { () -> Decoded? in
+                guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path) else { return nil }
+                let signature = "\(attrs[.modificationDate] ?? "")/\(attrs[.size] ?? "")"
+                if signature == previousSignature { return Decoded(image: nil, signature: signature) }
+                guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+                      let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                        kCGImageSourceCreateThumbnailFromImageAlways: true,
+                        kCGImageSourceCreateThumbnailWithTransform: true,
+                        kCGImageSourceThumbnailMaxPixelSize: pixels,
+                        kCGImageSourceShouldCacheImmediately: true
+                      ] as CFDictionary) else { return nil }
+                return Decoded(image: image, signature: signature)
+            }.value
+            let callbacks = pending.removeValue(forKey: key) ?? [:]
+            if let result {
+                failedUntil.removeValue(forKey: key)
+                if let decoded = result.image {
+                    let image = NSImage(cgImage: decoded, size: NSSize(width: decoded.width, height: decoded.height))
+                    cache.setObject(Entry(image: image, signature: result.signature), forKey: key as NSString,
+                                    cost: decoded.bytesPerRow * decoded.height)
+                    for callback in callbacks.values { callback() }
+                } else { entry?.expires = ProcessInfo.processInfo.systemUptime + 2 }
+            } else {
+                if failedUntil.count >= 128 { failedUntil.removeAll() }
+                failedUntil[key] = ProcessInfo.processInfo.systemUptime + 2
+            }
+        }
+        return entry?.image
+    }
+}
+
 final class MarkdownTextKit2PlainTextView: NSTextView {
     private enum MarkdownBlockKind {
         case heading
@@ -4950,6 +5019,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         let nsText = self.textStorage?.mutableString ?? NSMutableString(string: string)
         guard nsText.length > 0 else { return 0 }
         let safeLocation = max(0, min(location, nsText.length))
+        if let semanticSnapshot { return semanticSnapshot.lineIndex(at: safeLocation) }
         var lineIndex = 0
         var cursor = 0
         while cursor < safeLocation {
@@ -4966,6 +5036,10 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     }
 
     private func markdownSourceRange(forLine targetLine: Int, in nsText: NSString) -> NSRange {
+        if let starts = semanticSnapshot?.lineStarts, targetLine < starts.count {
+            let location = starts[max(0, targetLine)]
+            return nsText.lineRange(for: NSRange(location: min(location, nsText.length), length: 0))
+        }
         let diagnosticStart = MarkdownTextKit2Diagnostic38.now()
         defer {
             onDiagnostic38Duration?("外部预览行逐行定位", MarkdownTextKit2Diagnostic38.milliseconds(since: diagnosticStart))
@@ -5004,8 +5078,32 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     var isApplyingQuickInputReplacement = false
     var isApplyingMarkdownStyle = false
     var isRestoringAttachmentSource = false
+    private var cachedSourceProjection: String?
+    private var sourceStorageObserver: NSObjectProtocol?
+
+    private func observeSourceStorage() {
+        guard sourceStorageObserver == nil, let textStorage else { return }
+        sourceStorageObserver = NotificationCenter.default.addObserver(
+            forName: NSTextStorage.didProcessEditingNotification, object: textStorage, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.textStorage?.editedMask.contains(.editedCharacters) == true else { return }
+                self.cachedSourceProjection = nil
+            }
+        }
+    }
+
+    override func didChangeText() {
+        cachedSourceProjection = nil
+        super.didChangeText()
+    }
+
+    func seedSourceProjection(_ source: String) {
+        observeSourceStorage()
+        cachedSourceProjection = source
+    }
+
     private var semanticSnapshot: NormalMarkdownSyntax.Snapshot?
-    private var semanticHeadings: [Int: Int] = [:]
     private var semanticWork: DispatchWorkItem?
     private var semanticGeneration = 0
 
@@ -5014,7 +5112,6 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         semanticGeneration += 1
         let generation = semanticGeneration
         semanticSnapshot = nil
-        semanticHeadings = [:]
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             let source = self.markdownSourceStringPreservingAttachments()
@@ -5023,7 +5120,6 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
                 DispatchQueue.main.async {
                     guard let self, generation == self.semanticGeneration else { return }
                     self.semanticSnapshot = snapshot
-                    self.semanticHeadings = Dictionary(snapshot.headings.map { ($0.offset, $0.level) }, uniquingKeysWith: { first, _ in first })
                     if !self.hasActiveMarkedText, let style = self.currentDocumentStyle { self.applyMarkdownStyleToVisibleRange(style: style) }
                 }
             }
@@ -5132,6 +5228,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     }
 
     deinit {
+        if let sourceStorageObserver { NotificationCenter.default.removeObserver(sourceStorageObserver) }
         cancelIdleMarkdownStyleCompletion()
         cancelPendingAttachmentStyleWork()
         cancelPendingSearchHighlightWork()
@@ -5692,6 +5789,20 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         let nsText = textStorage.mutableString
         let actualLineRange = totalLength == 0 ? NSRange(location: 0, length: 0) : nsText.lineRange(for: safeRange)
         let selectedRange = selectedRange()
+        if actualLineRange.length > 32_768 {
+            // A huge paragraph must not cause a whole-paragraph attribute reset per keystroke.
+            let center = min(max(actualLineRange.location, selectedRange.location), NSMaxRange(actualLineRange))
+            let start = max(actualLineRange.location, center - 4_096)
+            let end = min(NSMaxRange(actualLineRange), start + 8_192)
+            let bounded = nsText.rangeOfComposedCharacterSequences(for: NSRange(location: start, length: end - start))
+            if layers.contains(.block) || layers.contains(.inline) {
+                isApplyingMarkdownStyle = true
+                textStorage.addAttributes(bodyAttributes(for: style.body), range: bounded)
+                isApplyingMarkdownStyle = false
+            }
+            onDiagnostic38Count?("超长段落局部属性UTF16", bounded.length)
+            return
+        }
         isApplyingMarkdownStyle = true
         textStorage.beginEditing()
         if layers.contains(.block) || layers.contains(.inline) {
@@ -5754,7 +5865,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         let roleStyle: MarkdownRoleStyle
         if isSemanticLiteral(at: lineRange.location) {
             roleStyle = style.body
-        } else if let headingLevel = semanticHeadings[lineRange.location] ?? parseHeadingLevelForStyling(in: rawLine) {
+        } else if let headingLevel = semanticSnapshot?.headingLevel(at: lineRange.location) ?? parseHeadingLevelForStyling(in: rawLine) {
             roleStyle = style.headingStyle(level: headingLevel)
             applyRoleStyle(roleStyle, to: textStorage, range: lineRange)
         } else if parseCommentLine(rawLine) != nil {
@@ -6163,7 +6274,10 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         style: MarkdownDocumentStyle
     ) -> Bool {
         guard let imageURL = resolvedMarkdownImageURL(from: sourcePath),
-              let image = NSImage(contentsOf: imageURL),
+              let image = MarkdownImageDecodeCache.shared.image(at: imageURL, width: targetWidth, owner: self, onReady: { [weak self] in
+                  guard let self, !self.hasActiveMarkedText, let style = self.currentDocumentStyle else { return }
+                  self.applyMarkdownStyleToVisibleRange(style: style)
+              }),
               image.size.width > 0,
               image.size.height > 0 else {
             return false
@@ -6216,6 +6330,8 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     }
 
     func markdownSourceStringPreservingAttachments() -> String {
+        observeSourceStorage()
+        if let cachedSourceProjection { return cachedSourceProjection }
         let diagnosticStart = MarkdownTextKit2Diagnostic38.now()
         defer {
             onDiagnostic38Duration?("全文源码字符串生成", MarkdownTextKit2Diagnostic38.milliseconds(since: diagnosticStart))
@@ -6223,34 +6339,35 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         }
         guard let textStorage else { return string }
         if textStorage.mutableString.range(of: "\u{fffc}").location == NSNotFound {
-            return textStorage.string
+            let source = textStorage.string
+            cachedSourceProjection = source
+            return source
         }
-        return markdownSourceStringPreservingAttachments(in: NSRange(location: 0, length: textStorage.length))
+        let source = markdownSourceStringPreservingAttachments(in: NSRange(location: 0, length: textStorage.length))
+        cachedSourceProjection = source
+        return source
     }
 
     private func markdownSourceStringPreservingAttachments(in range: NSRange) -> String {
         guard let textStorage else { return string }
-        let nsText = textStorage.mutableString
-        var output = ""
-        let safeLocation = max(0, min(range.location, textStorage.length))
-        let safeEnd = max(safeLocation, min(NSMaxRange(range), textStorage.length))
-        var index = safeLocation
-        while index < safeEnd {
-            var effectiveRange = NSRange(location: 0, length: 0)
-            let attributes = textStorage.attributes(at: index, effectiveRange: &effectiveRange)
-            let clippedRange = NSIntersectionRange(effectiveRange, NSRange(location: safeLocation, length: safeEnd - safeLocation))
-            if let token = attributes[markdownTextKit2AttachmentSourceTokenKey] as? String,
-               attributes[.attachment] != nil {
-                output.append(token)
-                index = min(safeEnd, max(index + 1, effectiveRange.location + max(1, (token as NSString).length)))
-                continue
+        let safeRange = NSIntersectionRange(range, NSRange(location: 0, length: textStorage.length))
+        guard safeRange.length > 0 else { return "" }
+        let output = NSMutableString(string: textStorage.mutableString.substring(with: safeRange))
+        var replacements: [(NSRange, String)] = []
+        textStorage.enumerateAttribute(markdownTextKit2AttachmentSourceTokenKey, in: safeRange) { value, tokenRange, _ in
+            guard let token = value as? String else { return }
+            let length = (token as NSString).length
+            guard length > 0 else { return }
+            var cursor = tokenRange.location
+            while cursor < NSMaxRange(tokenRange) {
+                let anchor = textStorage.mutableString.range(of: "\u{FFFC}", range: NSRange(location: cursor, length: NSMaxRange(tokenRange) - cursor))
+                guard anchor.location != NSNotFound, anchor.location + length <= NSMaxRange(safeRange) else { break }
+                replacements.append((NSRange(location: anchor.location - safeRange.location, length: length), token))
+                cursor = anchor.location + length
             }
-            if clippedRange.length > 0 {
-                output.append(nsText.substring(with: clippedRange))
-            }
-            index = max(index + 1, NSMaxRange(effectiveRange))
         }
-        return output
+        for (range, token) in replacements.reversed() { output.replaceCharacters(in: range, with: token) }
+        return output as String
     }
 
     private func markdownImageWidth(from tagText: String) -> CGFloat? {
@@ -6272,9 +6389,17 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     }
 
     #if canImport(SwiftMath)
+    private static let formulaImageCache: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        cache.countLimit = 96
+        cache.totalCostLimit = 32 * 1024 * 1024
+        return cache
+    }()
     private func markdownFormulaImage(latex: String, isDisplay: Bool, textColor: NSColor, fontSize: CGFloat) -> NSImage? {
         let normalized = NodeMarkdownFormulaLatexNormalizer.normalize(latex)
         let color = textColor.usingColorSpace(.deviceRGB) ?? textColor
+        let key = "\(normalized)|\(isDisplay)|\(fontSize)|\(color.description)" as NSString
+        if let cached = Self.formulaImageCache.object(forKey: key) { return cached }
         let imageBuilder = MTMathImage(
             latex: normalized,
             fontSize: fontSize * MarkdownTextKit2InlineAttachment.renderScale,
@@ -6284,6 +6409,9 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         )
         let result = imageBuilder.asImage()
         guard result.0 == nil else { return nil }
+        if let image = result.1 {
+            Self.formulaImageCache.setObject(image, forKey: key, cost: Int(image.size.width * image.size.height * 4))
+        }
         return result.1
     }
     #endif

@@ -1,0 +1,10 @@
+{
+  "giantMiddle" : 146,
+  "passed" : [
+    "existing virtualization regression",
+    "giant code middle\/window\/full export",
+    "giant paragraph tail\/window\/full export",
+    "cached formula remount",
+    "giant rich paragraph formatting\/entities"
+  ]
+}

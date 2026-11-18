@@ -19,6 +19,123 @@
     var renderedFirst = -1, renderedLast = -1;
     var resizeObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(function () { scheduleViewport(); }) : null;
     var renderedCount = 0;
+    var fragmentCache = new Map(), fragmentCacheCost = 0;
+    function rememberFragment(key, html) {
+        if (html.length > 262144) return;
+        if (fragmentCache.has(key)) { fragmentCacheCost -= fragmentCache.get(key).length; fragmentCache.delete(key); }
+        fragmentCache.set(key, html); fragmentCacheCost += html.length;
+        while (fragmentCache.size > 96 || fragmentCacheCost > 2 * 1024 * 1024) {
+            var oldest = fragmentCache.keys().next().value;
+            fragmentCacheCost -= fragmentCache.get(oldest).length; fragmentCache.delete(oldest);
+        }
+    }
+    // Huge code/text blocks keep their source in memory and materialize only nearby chunks.
+    // Rich/nested blocks retain the complete parser path rather than cutting Markdown delimiters.
+    function richParagraphChunks(markdown) {
+        if (/\$|\\[([]/.test(markdown) || !window.marked || typeof window.marked.lexer !== 'function') return null;
+        var tokens = window.marked.lexer(markdown, {gfm:true, breaks:true});
+        if (tokens.length !== 1 || tokens[0].type !== 'paragraph') return null;
+        var chunks = [], current = '', length = 0;
+        function flush() { if (current) chunks.push(current); current = ''; length = 0; }
+        function walk(values, wrappers) {
+            for (var i = 0; i < values.length; i++) {
+                var token = values[i], tag;
+                if (token.type === 'strong' || token.type === 'em' || token.type === 'del' || token.type === 'link') {
+                    tag = token.type === 'link' ? ['<a href="' + escapeHTML(token.href || '').replace(/"/g,'&quot;') + '">','</a>']
+                        : ['<' + token.type + '>','</' + token.type + '>'];
+                    if (!walk(token.tokens || [], wrappers.concat([tag]))) return false;
+                } else if (token.type === 'text' || token.type === 'escape' || token.type === 'codespan' || token.type === 'br') {
+                    if (token.tokens) { if (!walk(token.tokens, wrappers)) return false; continue; }
+                    var text = token.text || (token.type === 'br' ? '\n' : '');
+                    for (var start = 0; start < text.length;) {
+                        var end = Math.min(text.length, start + 2048);
+                        if (end < text.length && text.charCodeAt(end - 1) >= 0xD800 && text.charCodeAt(end - 1) <= 0xDBFF) end--;
+                        var raw = text.slice(start,end);
+                        // Marked already resolves Markdown escapes. Escape HTML text once.
+                        var entity = document.createElement('textarea');
+                        entity.innerHTML = raw;
+                        var html = escapeHTML(entity.value).replace(/\n/g,'<br>');
+                        if (token.type === 'codespan') html = '<code>' + html + '</code>';
+                        for (var w = wrappers.length - 1; w >= 0; w--) html = wrappers[w][0] + html + wrappers[w][1];
+                        current += html; length += raw.length; start = end;
+                        if (length >= 4096) flush();
+                    }
+                } else return false; // raw HTML/images retain their complete semantic block
+            }
+            return true;
+        }
+        if (!walk(tokens[0].tokens || [], [])) return null;
+        flush(); return chunks.length ? chunks : null;
+    }
+    function hugeBlock(markdown) {
+        if (markdown.length < 32768) return null;
+        var fence = /^( {0,3})(`{3,}|~{3,})([^\n]*)\n([\s\S]*)$/.exec(markdown);
+        var body, code = false;
+        if (fence) {
+            var closing = new RegExp('\\n {0,3}' + fence[2][0] + '{' + fence[2].length + ',}[ \t]*$');
+            body = fence[4].replace(closing, ''); code = true;
+        } else if (!/[`*_<>\[\]\\$~|&]/.test(markdown) && !/^ {0,3}(?:#|>|[-+]|[0-9]+[.)]) /m.test(markdown)) {
+            body = markdown;
+        } else {
+            var rich = richParagraphChunks(markdown);
+            return rich ? {chunks:rich, starts:[], code:false, html:true, heights:[], offsets:[], width:-1} : null;
+        }
+        var chunks = [], starts = [], cursor = 0, line = 0;
+        while (cursor < body.length) {
+            var end = Math.min(body.length, cursor + 4096);
+            if (end < body.length) {
+                var newline = body.lastIndexOf('\n', end);
+                if (newline > cursor) end = newline + 1;
+                if (body.charCodeAt(end - 1) >= 0xD800 && body.charCodeAt(end - 1) <= 0xDBFF) end--;
+            }
+            var part = body.slice(cursor, end);
+            chunks.push(part); starts.push(line);
+            line += (part.match(/\n/g) || []).length;
+            cursor = end;
+        }
+        return { chunks: chunks, starts: starts, code: code, heights: [], offsets: [], width: -1, lineHeight: 0 };
+    }
+    function renderHuge(node, block) {
+        var huge = block.huge;
+        if (!virtualized || !huge) return false;
+        var metrics = estimationMetrics(), width = ensureRoot().clientWidth;
+        if (huge.width !== width) {
+            huge.width = width; huge.offsets = [0]; huge.heights = [];
+            huge.chunks.forEach(function (chunk) {
+                var height = estimate(chunk, metrics);
+                huge.heights.push(height); huge.offsets.push(huge.offsets[huge.offsets.length - 1] + height);
+            });
+        }
+        var top = node.getBoundingClientRect().top;
+        var lower = Math.max(0, -top - 1000), upper = -top + window.innerHeight + 1000;
+        var first = 0, last = huge.chunks.length - 1;
+        while (first < last && huge.offsets[first + 1] < lower) first++;
+        last = first;
+        while (last + 1 < huge.chunks.length && huge.offsets[last] < upper) last++;
+        if (node.dataset.hugeWindow === first + ':' + last + ':' + width && node.dataset.hash === block.hash) return true;
+        node.dataset.hash = block.hash; node.dataset.hugeWindow = first + ':' + last + ':' + width;
+        node.replaceChildren();
+        var before = document.createElement('div'), after = document.createElement('div');
+        before.style.height = huge.offsets[first] + 'px'; before.setAttribute('aria-hidden','true'); node.appendChild(before);
+        var measured = [];
+        for (var i = first; i <= last; i++) {
+            var element = document.createElement(huge.code ? 'pre' : 'div');
+            element.style.margin = '0'; element.style.whiteSpace = 'pre-wrap'; element.style.overflowWrap = 'anywhere';
+            element.style.lineHeight = metrics.lineHeight + 'px';
+            if (huge.code) {
+                var code = document.createElement('code'); code.textContent = huge.chunks[i]; element.appendChild(code);
+            } else if (huge.html) element.innerHTML = huge.chunks[i];
+            else element.textContent = huge.chunks[i];
+            element.dataset.hugeChunk = String(i); node.appendChild(element); measured.push([i, element]);
+        }
+        node.appendChild(after);
+        measured.forEach(function (pair) { huge.heights[pair[0]] = Math.max(1, pair[1].getBoundingClientRect().height); });
+        huge.offsets = [0]; huge.heights.forEach(function (height) { huge.offsets.push(huge.offsets[huge.offsets.length - 1] + height); });
+        before.style.height = huge.offsets[first] + 'px';
+        after.style.height = (huge.offsets[huge.heights.length] - huge.offsets[last + 1]) + 'px';
+        return true;
+    }
+
 
     function rebuildHeights() {
         tree = new Array(heights.length + 1).fill(0);
@@ -133,12 +250,17 @@
             node.style.display = virtualized ? 'flow-root' : 'block';
             var block = blocks[i];
             node.dataset.sourceLineStart = String(block.startLine || 0);
-            if (node.dataset.hash !== block.hash) {
+            if (renderHuge(node, block)) continue;
+            if (node.dataset.hash !== block.hash || node.dataset.hugeWindow) {
+                delete node.dataset.hugeWindow;
                 node.dataset.hash = block.hash;
-                node.innerHTML = renderMarkdown(block.markdown);
-                renderMath(node);
+                var cacheKey = block.markdown;
+                var cachedHTML = fragmentCache.get(cacheKey);
+                node.innerHTML = cachedHTML || renderMarkdown(block.markdown);
+                if (!cachedHTML) { renderMath(node); rememberFragment(cacheKey, node.innerHTML); }
                 renderedCount++;
                 node.querySelectorAll('img').forEach(function (img) {
+                    img.loading = virtualized ? 'lazy' : 'eager'; img.decoding = 'async';
                     img.addEventListener('load', scheduleViewport, { once: true });
                     img.addEventListener('error', scheduleViewport, { once: true });
                 });
@@ -180,13 +302,22 @@
     function changeVirtualization(enabled) {
         var saved = blocks.length ? anchor() : null;
         virtualized = !!enabled;
+        mounted.forEach(function (node, index) { if (blocks[index] && blocks[index].huge) node.dataset.hash = ''; });
         renderViewport(saved);
     }
     function currentCenterSourceLine() {
         if (!blocks.length) return 0;
         if (!virtualized) return blocks[fullIndexAtClientY(window.innerHeight * 0.5)].startLine || 0;
-        var index = indexAt(Math.max(0, window.scrollY + window.innerHeight * 0.5 - contentTop()));
-        return blocks[index].startLine || 0;
+        var center = Math.max(0, window.scrollY + window.innerHeight * 0.5 - contentTop());
+        var index = indexAt(center), block = blocks[index], huge = block.huge;
+        if (virtualized && huge && huge.code && huge.offsets.length > 1) {
+            var local = center - sum(index), chunk = 0;
+            while (chunk + 1 < huge.chunks.length && huge.offsets[chunk + 1] <= local) chunk++;
+            var lineCount = (huge.chunks[chunk].match(/\n/g) || []).length;
+            var fraction = Math.max(0, Math.min(1, (local - huge.offsets[chunk]) / huge.heights[chunk]));
+            return (block.startLine || 0) + 1 + huge.starts[chunk] + Math.floor(lineCount * fraction);
+        }
+        return block.startLine || 0;
     }
 
     function scrollToSourceLine(sourceLine) {
@@ -201,8 +332,15 @@
         window.markdownRenderer.isApplyingExternalScroll = true;
         window.scrollTo(0, Math.max(0, contentTop() + sum(index) - window.innerHeight * 0.5));
         renderViewport();
-        var node = mounted.get(index);
-        if (node) {
+        var node = mounted.get(index), huge = blocks[index].huge;
+        if (virtualized && huge && huge.code && huge.offsets.length > 1) {
+            var localLine = Math.max(0, targetLine - (blocks[index].startLine || 0) - 1), chunk = 0;
+            while (chunk + 1 < huge.starts.length && huge.starts[chunk + 1] <= localLine) chunk++;
+            var count = Math.max(1, (huge.chunks[chunk].match(/\n/g) || []).length);
+            var fraction = Math.min(1, (localLine - huge.starts[chunk]) / count);
+            window.scrollTo(0, Math.max(0, contentTop() + sum(index) + huge.offsets[chunk] + fraction * huge.heights[chunk] - window.innerHeight * 0.5));
+            renderViewport();
+        } else if (node) {
             var rect = node.getBoundingClientRect();
             window.scrollTo(0, Math.max(0, window.scrollY + rect.top + rect.height * 0.5 - window.innerHeight * 0.5));
             renderViewport();
@@ -313,7 +451,7 @@
                     var height = estimate(patch.markdown, metrics);
                     if (countChanged) heights[index] = height; else setHeight(index, height);
                 }
-                blocks[index] = { hash: hash, markdown: patch.markdown || '', startLine: patch.startLine || 0 };
+                blocks[index] = { hash: hash, markdown: patch.markdown || '', startLine: patch.startLine || 0, huge: hugeBlock(patch.markdown || '') };
             }
             if (countChanged) rebuildHeights();
             if (saved && total && renderedFirst >= 0) {
