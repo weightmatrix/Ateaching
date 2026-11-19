@@ -5125,9 +5125,9 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
               !hasActiveMarkedText, let clip, let origin else { return }
         let adjustedY = clip.bounds.minY
         let movement = adjustedY - origin.y
-        guard (intent.delta > 0 && movement > 0.5) || (intent.delta < 0 && movement < -0.5) else { return }
-        // AppKit's post-layout anchor correction can reverse a wheel scroll even with
-        // immutable text and no styling. Keep the wheel position for this callback only.
+        let reversesWheel = (intent.delta > 0 && movement > 0.5) || (intent.delta < 0 && movement < -0.5)
+        let jumpsViewport = intent.delta != 0 && abs(movement) >= max(120, clip.bounds.height / 3)
+        guard reversesWheel || jumpsViewport else { return }
         let maximumY = max(0, frame.height - clip.bounds.height)
         guard origin.y >= 0, origin.y <= maximumY else { return }
         clip.setBoundsOrigin(origin)
