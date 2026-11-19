@@ -5159,9 +5159,13 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         if scrollDiagnosticRecent.count > 24 { scrollDiagnosticRecent.removeFirst() }
         let previous = scrollDiagnosticLastY ?? before
         scrollDiagnosticLastY = after
+        let movement = after - before
+        let reverse = (scrollDiagnosticWheelDelta > 0 && after - min(before, previous) > 24)
+            || (scrollDiagnosticWheelDelta < 0 && max(before, previous) - after > 24)
+        let viewportHeight = enclosingScrollView?.contentView.bounds.height ?? 0
+        let largeStep = viewportHeight > 0 && abs(movement) >= max(120, viewportHeight / 3)
         if stage == "clipNotification", now - scrollDiagnosticLastWheelAt < 0.8, now - scrollDiagnosticLastTraceAt >= 0.2,
-           ((scrollDiagnosticWheelDelta > 0 && after - min(before, previous) > 24)
-            || (scrollDiagnosticWheelDelta < 0 && max(before, previous) - after > 24)) {
+           reverse || largeStep {
             scrollDiagnosticLastTraceAt = now
             let traceID = String(UUID().uuidString.prefix(8))
             let frames = Array(Thread.callStackSymbols.prefix(48))
@@ -5172,10 +5176,10 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
                 )
             }
             TeachingDebugLogStore.append(
-                "trace=\(traceID) view=\(ObjectIdentifier(self)) recent=[\(scrollDiagnosticRecent.joined(separator: " | "))]",
+                "trace=\(traceID) view=\(ObjectIdentifier(self)) reason=\(largeStep ? "largeStep" : "reverse") movement=\(movement) height=\(frame.height) recent=[\(scrollDiagnosticRecent.joined(separator: " | "))]",
                 category: "Markdown.ScrollTrace", force: true
             )
-            recordScrollJump(stage: "capturedUpwardRebound", previousY: min(before, previous))
+            recordScrollJump(stage: largeStep ? "capturedLargeScrollStep" : "capturedReverseScrollStep", previousY: before)
         }
     }
 
