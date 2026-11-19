@@ -3806,6 +3806,7 @@ final class MarkdownWebRenderCoordinator: NSObject {
         let configuration = WKWebViewConfiguration()
         #if os(macOS)
         configuration.userContentController.add(self, name: "markdownScrollSync")
+        configuration.userContentController.add(self, name: "markdownScrollTrace")
         #endif
         let instance = WKWebView(frame: .zero, configuration: configuration)
         self.webView = instance
@@ -3818,6 +3819,7 @@ final class MarkdownWebRenderCoordinator: NSObject {
         renderGeneration += 1
         #if os(macOS)
         webView?.configuration.userContentController.removeScriptMessageHandler(forName: "markdownScrollSync")
+        webView?.configuration.userContentController.removeScriptMessageHandler(forName: "markdownScrollTrace")
         #endif
         webView?.navigationDelegate = nil
         webView = nil
@@ -3934,6 +3936,20 @@ extension MarkdownWebRenderCoordinator: WKNavigationDelegate {
 #if os(macOS)
 extension MarkdownWebRenderCoordinator: WKScriptMessageHandler {
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        if message.name == "markdownScrollTrace" {
+            guard message.frameInfo.isMainFrame, let webView = message.webView,
+                  let fields = message.body as? [String: Any] else { return }
+            let numericKeys = ["from", "target", "actual", "wheel", "height", "viewport", "estimated", "first", "last", "blocks", "correctionAge"]
+            let values = numericKeys.compactMap { key in (fields[key] as? NSNumber).map { "\(key)=\($0)" } }
+            let stages = ["measure", "sourceJump", "codeJump", "centerJump", "patch", "resize", "reverse"]
+            let stage = (fields["stage"] as? String).flatMap { stages.contains($0) ? $0 : nil } ?? "unknown"
+            let correction = fields["correction"] as? [String: Any]
+            let reason = (correction?["reason"] as? String).flatMap { stages.contains($0) ? $0 : nil } ?? "none"
+            let target = correction?["target"] as? NSNumber
+            TeachingDebugLogStore.append("view=\(ObjectIdentifier(webView)) stage=\(stage) lastCorrection=\(reason) lastTarget=\(target?.stringValue ?? "-") " + values.joined(separator: " "),
+                                         category: "Markdown.WebScroll", force: true)
+            return
+        }
         guard message.name == "markdownScrollSync" else { return }
         let line: Int?
         if let number = message.body as? NSNumber {
@@ -5144,7 +5160,8 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         let previous = scrollDiagnosticLastY ?? before
         scrollDiagnosticLastY = after
         if stage == "clipNotification", now - scrollDiagnosticLastWheelAt < 0.8, now - scrollDiagnosticLastTraceAt >= 0.2,
-           scrollDiagnosticWheelDelta > 0, after - min(before, previous) > 24 {
+           ((scrollDiagnosticWheelDelta > 0 && after - min(before, previous) > 24)
+            || (scrollDiagnosticWheelDelta < 0 && max(before, previous) - after > 24)) {
             scrollDiagnosticLastTraceAt = now
             let traceID = String(UUID().uuidString.prefix(8))
             let frames = Array(Thread.callStackSymbols.prefix(48))

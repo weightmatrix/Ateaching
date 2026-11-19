@@ -276,7 +276,7 @@
             var corrected = contentTop() + sum(saved.index) + saved.offset;
             if (!virtualized && mounted.has(saved.index)) corrected = window.scrollY + mounted.get(saved.index).getBoundingClientRect().top + saved.offset;
             // Preserve the current source-block anchor while estimated heights become exact.
-            if (Math.abs(corrected - window.scrollY) > 0.5) window.scrollTo(window.scrollX, corrected);
+            if (Math.abs(corrected - window.scrollY) > 0.5) diagnosticScrollTo(window.scrollX, corrected, 'measure');
             scheduleViewport();
         }
     }
@@ -365,7 +365,7 @@
         }
         var index = Math.max(0, low - 1);
         window.markdownRenderer.isApplyingExternalScroll = true;
-        window.scrollTo(0, Math.max(0, contentTop() + sum(index) - window.innerHeight * 0.5));
+        diagnosticScrollTo(0, Math.max(0, contentTop() + sum(index) - window.innerHeight * 0.5), 'sourceJump');
         renderViewport();
         var node = mounted.get(index), huge = blocks[index].huge;
         if (virtualized && huge && huge.code && huge.offsets.length > 1) {
@@ -373,11 +373,11 @@
             while (chunk + 1 < huge.starts.length && huge.starts[chunk + 1] <= localLine) chunk++;
             var count = Math.max(1, (huge.chunks[chunk].match(/\n/g) || []).length);
             var fraction = Math.min(1, (localLine - huge.starts[chunk]) / count);
-            window.scrollTo(0, Math.max(0, contentTop() + sum(index) + huge.offsets[chunk] + fraction * huge.heights[chunk] - window.innerHeight * 0.5));
+            diagnosticScrollTo(0, Math.max(0, contentTop() + sum(index) + huge.offsets[chunk] + fraction * huge.heights[chunk] - window.innerHeight * 0.5), 'codeJump');
             renderViewport();
         } else if (node) {
             var rect = node.getBoundingClientRect();
-            window.scrollTo(0, Math.max(0, window.scrollY + rect.top + rect.height * 0.5 - window.innerHeight * 0.5));
+            diagnosticScrollTo(0, Math.max(0, window.scrollY + rect.top + rect.height * 0.5 - window.innerHeight * 0.5), 'centerJump');
             renderViewport();
         }
         window.requestAnimationFrame(function () {
@@ -481,7 +481,7 @@
                 var last = Math.min(renderedLast, total - 1);
                 topSpacer.style.height = sum(Math.min(renderedFirst, total)) + 'px';
                 bottomSpacer.style.height = Math.max(0, sum(total) - sum(last + 1)) + 'px';
-                window.scrollTo(0, Math.max(0, contentTop() + sum(Math.min(saved.index, total - 1)) + saved.offset));
+                diagnosticScrollTo(0, Math.max(0, contentTop() + sum(Math.min(saved.index, total - 1)) + saved.offset), 'patch');
             }
             renderViewport();
         },
@@ -520,8 +520,42 @@
         }
     });
 
+    var wheelAt = -Infinity, wheelDelta = 0, lastScrollY = 0, lastReport = -Infinity;
+    var lastCorrection = null;
+    function reportScroll(stage, from, target) {
+        var now = performance.now();
+        var handler = window.webkit?.messageHandlers?.markdownScrollTrace;
+        if (!handler || now - wheelAt > 900 || now - lastReport < 250) return;
+        lastReport = now;
+        handler.postMessage({
+            stage: stage, from: from, target: target, actual: window.scrollY,
+            wheel: wheelDelta, height: document.documentElement.scrollHeight,
+            viewport: window.innerHeight, estimated: sum(blocks.length),
+            first: renderedFirst, last: renderedLast, blocks: blocks.length,
+            correctionAge: lastCorrection ? now - lastCorrection.time : -1,
+            correction: lastCorrection
+        });
+    }
+    function diagnosticScrollTo(x, y, reason) {
+        var before = window.scrollY;
+        lastCorrection = {reason: reason, from: before, target: y, time: performance.now()};
+        window.scrollTo(x, y);
+        if (Math.abs(y - before) > 24 || (wheelDelta > 0 && y < before - 2)) {
+            reportScroll(reason, before, y);
+        }
+    }
+    window.addEventListener('wheel', function (event) {
+        wheelAt = performance.now();
+        wheelDelta = event.deltaY;
+        lastScrollY = window.scrollY;
+    }, {passive: true});
     var markdownScrollSyncTimer = null;
     window.addEventListener('scroll', function () {
+        var y = window.scrollY;
+        if ((wheelDelta > 0 && y < lastScrollY - 12) || (wheelDelta < 0 && y > lastScrollY + 12)) {
+            reportScroll('reverse', lastScrollY, y);
+        }
+        lastScrollY = y;
         scheduleViewport();
         if (window.markdownRenderer.isApplyingExternalScroll) return;
         if (!window.webkit || !window.webkit.messageHandlers || !window.webkit.messageHandlers.markdownScrollSync) return;
@@ -540,7 +574,7 @@
                 topSpacer.style.height = sum(renderedFirst) + 'px';
                 bottomSpacer.style.height = Math.max(0, sum(blocks.length) - sum(renderedLast + 1)) + 'px';
             }
-            window.scrollTo(0, Math.max(0, contentTop() + sum(saved.index) + saved.offset));
+            diagnosticScrollTo(0, Math.max(0, contentTop() + sum(saved.index) + saved.offset), 'resize');
         }
         renderViewport(saved);
     }, { passive: true });
