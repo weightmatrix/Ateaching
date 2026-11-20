@@ -826,6 +826,9 @@ struct MarkdownEditorView: View {
     @State private var searchGeneration = 0
     @State private var syntaxHeadings: [MarkdownHeading] = []
     @StateObject private var textKit2CommitBridge = MarkdownTextKit2CommitBridge()
+    #if os(macOS)
+    @StateObject private var viewportBridge: MarkdownDualScrollSyncBridge
+    #endif
     @ObservedObject private var screenCastAnnotationHub = ScreenCastAnnotationHub.shared
     @State private var pendingScreenCastPublishTask: Task<Void, Never>?
 
@@ -834,7 +837,11 @@ struct MarkdownEditorView: View {
 
     init(fileURL: URL) {
         self.fileURL = fileURL
-        _renderMode = State(initialValue: Self.restoredRenderMode())
+        let mode = Self.restoredRenderMode()
+        _renderMode = State(initialValue: mode)
+        #if os(macOS)
+        _viewportBridge = StateObject(wrappedValue: MarkdownDualScrollSyncBridge(syncsPanes: mode == .dual))
+        #endif
     }
 
     var body: some View {
@@ -916,6 +923,9 @@ struct MarkdownEditorView: View {
                 ScreenCastStrokeOverlay(strokes: screenCastAnnotationHub.strokes)
             }
             .id("markdown-display-\(renderMode.rawValue)-\(documentStyleRefreshToken)")
+            #if os(macOS)
+            .environment(\.markdownViewportBridge, viewportBridge)
+            #endif
         }
         .navigationTitle(windowTitle)
         .toolbar {
@@ -1236,7 +1246,12 @@ struct MarkdownEditorView: View {
         Menu {
             ForEach(MarkdownRenderMode.visibleCases) { mode in
                 Button {
+                    guard renderMode != mode else { return }
                     textKit2CommitBridge.commitPendingText()
+                    #if os(macOS)
+                    viewportBridge.switchMode(syncsPanes: mode == .dual)
+                    targetUTF16Offset = nil
+                    #endif
                     renderMode = mode
                 } label: {
                     HStack {
@@ -2444,60 +2459,29 @@ struct MarkdownDualRenderModeView: View {
     let searchQuery: String
     let activeSearchRange: NSRange?
     let commitBridge: MarkdownTextKit2CommitBridge
-    #if os(macOS)
-    @StateObject private var scrollSyncBridge = MarkdownDualScrollSyncBridge()
-    #endif
 
     var body: some View {
         HStack(spacing: 0) {
-            Group {
-            #if os(macOS)
-                MarkdownTextKit2PlainModeView(
-                    markdownText: $markdownText,
-                    targetUTF16Offset: $targetUTF16Offset,
-                    preferredScheme: preferredScheme,
-                    workingDirectoryURL: workingDirectoryURL,
-                    documentStyle: documentStyle,
-                    quickInputSettings: quickInputSettings,
-                    searchQuery: searchQuery,
-                    activeSearchRange: activeSearchRange,
-                    scrollSyncBridge: scrollSyncBridge,
-                    commitBridge: commitBridge
-                )
-            #else
-                MarkdownTextKit2PlainModeView(
-                    markdownText: $markdownText,
-                    targetUTF16Offset: $targetUTF16Offset,
-                    preferredScheme: preferredScheme,
-                    workingDirectoryURL: workingDirectoryURL,
-                    documentStyle: documentStyle,
-                    quickInputSettings: quickInputSettings,
-                    searchQuery: searchQuery,
-                    activeSearchRange: activeSearchRange,
-                    commitBridge: commitBridge
-                )
-            #endif
-            }
+            MarkdownTextKit2PlainModeView(
+                markdownText: $markdownText,
+                targetUTF16Offset: $targetUTF16Offset,
+                preferredScheme: preferredScheme,
+                workingDirectoryURL: workingDirectoryURL,
+                documentStyle: documentStyle,
+                quickInputSettings: quickInputSettings,
+                searchQuery: searchQuery,
+                activeSearchRange: activeSearchRange,
+                commitBridge: commitBridge
+            )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             Divider()
 
-            Group {
-            #if os(macOS)
-                MarkdownWebRenderModeView(
-                    markdownText: markdownText,
-                    preferredScheme: preferredScheme,
-                    documentStyle: documentStyle,
-                    scrollSyncBridge: scrollSyncBridge
-                )
-            #else
-                MarkdownWebRenderModeView(
-                    markdownText: markdownText,
-                    preferredScheme: preferredScheme,
-                    documentStyle: documentStyle
-                )
-            #endif
-            }
+            MarkdownWebRenderModeView(
+                markdownText: markdownText,
+                preferredScheme: preferredScheme,
+                documentStyle: documentStyle
+            )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
@@ -2515,7 +2499,7 @@ struct MarkdownTextKit2PlainModeView: View {
     let activeSearchRange: NSRange?
     let commitBridge: MarkdownTextKit2CommitBridge
     #if os(macOS)
-    let scrollSyncBridge: MarkdownDualScrollSyncBridge?
+    @Environment(\.markdownViewportBridge) private var viewportBridge
     #endif
 
     init(
@@ -2527,7 +2511,6 @@ struct MarkdownTextKit2PlainModeView: View {
         quickInputSettings: MarkdownQuickInputSettings,
         searchQuery: String,
         activeSearchRange: NSRange?,
-        scrollSyncBridge: MarkdownDualScrollSyncBridge? = nil,
         commitBridge: MarkdownTextKit2CommitBridge
     ) {
         self._markdownText = markdownText
@@ -2539,9 +2522,6 @@ struct MarkdownTextKit2PlainModeView: View {
         self.searchQuery = searchQuery
         self.activeSearchRange = activeSearchRange
         self.commitBridge = commitBridge
-        #if os(macOS)
-        self.scrollSyncBridge = scrollSyncBridge
-        #endif
     }
 
     var body: some View {
@@ -2554,7 +2534,7 @@ struct MarkdownTextKit2PlainModeView: View {
             quickInputSettings: quickInputSettings,
             searchQuery: searchQuery,
             activeSearchRange: activeSearchRange,
-            scrollSyncBridge: scrollSyncBridge,
+            scrollSyncBridge: viewportBridge,
             commitBridge: commitBridge
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -2577,21 +2557,17 @@ struct MarkdownWebRenderModeView: View {
     let preferredScheme: ColorScheme?
     let documentStyle: MarkdownDocumentStyle
     #if os(macOS)
-    let scrollSyncBridge: MarkdownDualScrollSyncBridge?
+    @Environment(\.markdownViewportBridge) private var viewportBridge
     #endif
 
     init(
         markdownText: String,
         preferredScheme: ColorScheme?,
-        documentStyle: MarkdownDocumentStyle,
-        scrollSyncBridge: MarkdownDualScrollSyncBridge? = nil
+        documentStyle: MarkdownDocumentStyle
     ) {
         self.markdownText = markdownText
         self.preferredScheme = preferredScheme
         self.documentStyle = documentStyle
-        #if os(macOS)
-        self.scrollSyncBridge = scrollSyncBridge
-        #endif
     }
 
     var body: some View {
@@ -2600,7 +2576,7 @@ struct MarkdownWebRenderModeView: View {
             markdownText: markdownText,
             preferredScheme: preferredScheme,
             documentStyle: documentStyle,
-            scrollSyncBridge: scrollSyncBridge
+            scrollSyncBridge: viewportBridge
         )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(8)
@@ -3675,25 +3651,46 @@ enum MarkdownDualScrollSource {
 }
 
 final class MarkdownDualScrollSyncBridge: ObservableObject {
-    @Published private(set) var token: Int = 0
-    private(set) var source: MarkdownDualScrollSource = .textKit2
-    private(set) var sourceLine: Int = 0
+    let updates = PassthroughSubject<Void, Never>()
+    private(set) var token = 0
+    private(set) var modeEpoch = 0
+    private(set) var source: MarkdownDualScrollSource?
+    private(set) var sourceLine: Int?
+    private(set) var syncsPanes: Bool
+    var readNativeLine: (() -> Int?)?
 
-    func publish(source: MarkdownDualScrollSource, sourceLine: Int) {
-        let clampedLine = max(0, sourceLine)
-        if Thread.isMainThread {
-            commit(source: source, sourceLine: clampedLine)
-        } else {
-            DispatchQueue.main.async { [weak self] in
-                self?.commit(source: source, sourceLine: clampedLine)
-            }
-        }
+    init(syncsPanes: Bool) {
+        self.syncsPanes = syncsPanes
     }
 
-    private func commit(source: MarkdownDualScrollSource, sourceLine: Int) {
-        self.source = source
-        self.sourceLine = sourceLine
+    func switchMode(syncsPanes: Bool) {
+        if source != .web, let line = readNativeLine?() { sourceLine = line }
+        readNativeLine = nil
+        modeEpoch &+= 1
         token &+= 1
+        source = nil
+        self.syncsPanes = syncsPanes
+    }
+
+    func publish(source: MarkdownDualScrollSource, sourceLine: Int, epoch: Int) {
+        guard epoch == modeEpoch else { return }
+        let line = max(0, sourceLine)
+        guard self.sourceLine != line || self.source != source else { return }
+        self.source = source
+        self.sourceLine = line
+        token &+= 1
+        if syncsPanes { updates.send(()) }
+    }
+}
+
+private struct MarkdownViewportBridgeKey: EnvironmentKey {
+    static let defaultValue: MarkdownDualScrollSyncBridge? = nil
+}
+
+private extension EnvironmentValues {
+    var markdownViewportBridge: MarkdownDualScrollSyncBridge? {
+        get { self[MarkdownViewportBridgeKey.self] }
+        set { self[MarkdownViewportBridgeKey.self] = newValue }
     }
 }
 #endif
@@ -3795,10 +3792,17 @@ final class MarkdownWebRenderCoordinator: NSObject {
     #if os(macOS)
     private weak var scrollSyncBridge: MarkdownDualScrollSyncBridge?
     private var lastAppliedScrollSyncToken: Int = -1
+    private var scrollSyncSubscription: AnyCancellable?
+    private var scrollModeEpoch: Int?
 
     init(scrollSyncBridge: MarkdownDualScrollSyncBridge? = nil) {
         self.scrollSyncBridge = scrollSyncBridge
+        self.scrollModeEpoch = scrollSyncBridge?.modeEpoch
         super.init()
+        scrollSyncSubscription = scrollSyncBridge?.updates.receive(on: DispatchQueue.main).sink { [weak self] in
+            guard let self, let webView = self.webView else { return }
+            self.applyExternalScrollSyncIfNeeded(on: webView)
+        }
     }
     #endif
 
@@ -3818,6 +3822,7 @@ final class MarkdownWebRenderCoordinator: NSObject {
         pendingWorkItem = nil
         renderGeneration += 1
         #if os(macOS)
+        scrollSyncSubscription?.cancel()
         webView?.configuration.userContentController.removeScriptMessageHandler(forName: "markdownScrollSync")
         webView?.configuration.userContentController.removeScriptMessageHandler(forName: "markdownScrollTrace")
         #endif
@@ -3838,15 +3843,17 @@ final class MarkdownWebRenderCoordinator: NSObject {
         latestRequestedSource = source
         #if os(macOS)
         self.scrollSyncBridge = scrollSyncBridge
-        applyExternalScrollSyncIfNeeded(on: webView)
         #endif
         let newStyleSignature = markdownWebStyleSignature(style)
         let newSchemeSignature = preferredScheme == .dark ? "dark" : "light"
 
-        if forceBootstrap || !bootstrapLoaded || newStyleSignature != styleSignature || newSchemeSignature != schemeSignature {
+        if forceBootstrap || newStyleSignature != styleSignature || newSchemeSignature != schemeSignature {
             styleSignature = newStyleSignature
             schemeSignature = newSchemeSignature
             bootstrapLoaded = false
+            #if os(macOS)
+            lastAppliedScrollSyncToken = -1
+            #endif
             pendingScript = nil
             cachedBlocks = []
             lastSource = ""
@@ -3941,7 +3948,7 @@ extension MarkdownWebRenderCoordinator: WKScriptMessageHandler {
                   let fields = message.body as? [String: Any] else { return }
             let numericKeys = ["from", "target", "actual", "wheel", "height", "viewport", "estimated", "first", "last", "blocks", "correctionAge"]
             let values = numericKeys.compactMap { key in (fields[key] as? NSNumber).map { "\(key)=\($0)" } }
-            let stages = ["measure", "sourceJump", "codeJump", "centerJump", "patch", "resize", "reverse"]
+            let stages = ["measure", "sourceJump", "codeJump", "centerJump", "patch", "resize", "reverse", "suppressed"]
             let stage = (fields["stage"] as? String).flatMap { stages.contains($0) ? $0 : nil } ?? "unknown"
             let correction = fields["correction"] as? [String: Any]
             let reason = (correction?["reason"] as? String).flatMap { stages.contains($0) ? $0 : nil } ?? "none"
@@ -3960,15 +3967,16 @@ extension MarkdownWebRenderCoordinator: WKScriptMessageHandler {
             line = nil
         }
         guard let line else { return }
-        scrollSyncBridge?.publish(source: .web, sourceLine: line)
+        guard let scrollModeEpoch else { return }
+        scrollSyncBridge?.publish(source: .web, sourceLine: line, epoch: scrollModeEpoch)
     }
 
     private func applyExternalScrollSyncIfNeeded(on webView: WKWebView) {
-        guard let bridge = scrollSyncBridge,
-              bridge.source == .textKit2,
+        guard bootstrapLoaded, let bridge = scrollSyncBridge, bridge.modeEpoch == scrollModeEpoch,
+              bridge.source != .web || lastAppliedScrollSyncToken == -1,
+              let line = bridge.sourceLine,
               bridge.token != lastAppliedScrollSyncToken else { return }
         lastAppliedScrollSyncToken = bridge.token
-        let line = max(0, bridge.sourceLine)
         webView.evaluateJavaScript("window.markdownRenderer && window.markdownRenderer.scrollToSourceLine && window.markdownRenderer.scrollToSourceLine(\(line));")
     }
 }
@@ -4408,6 +4416,10 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
         scrollView.documentView = textView
         context.coordinator.textView = textView
         context.coordinator.scrollView = scrollView
+        context.coordinator.connectViewportBridge()
+        textView.onUserWheel = { [weak coordinator = context.coordinator] in
+            coordinator?.noteUserWheel()
+        }
         context.coordinator.textContentStorage = textContentStorage
         context.coordinator.textLayoutManager = textLayoutManager
         context.coordinator.textContainer = textContainer
@@ -4442,6 +4454,7 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ nsView: NSScrollView, coordinator: Coordinator) {
+        coordinator.disconnectViewportBridge()
         coordinator.parent.commitBridge.commitPendingText()
         coordinator.parent.commitBridge.commitHandler = nil
         NotificationCenter.default.removeObserver(coordinator)
@@ -4522,7 +4535,7 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
             context.coordinator.lastConsumedTargetOffset = nil
         }
 
-        context.coordinator.applyExternalScrollSyncIfNeeded()
+        context.coordinator.scheduleInitialViewportRestore()
 
         MarkdownEditorPerformanceProbe.end(
             "MarkdownTextKit2PlainTextEditor.updateNSView",
@@ -4549,6 +4562,10 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
         private var scrollSyncWorkItem: DispatchWorkItem?
         private var typingScrollSyncWorkItem: DispatchWorkItem?
         private var lastAppliedScrollSyncToken: Int = -1
+        private var scrollSyncSubscription: AnyCancellable?
+        private var scrollModeEpoch: Int?
+        private var viewportRestoreScheduled = false
+        private var viewportConnected = false
         private var suppressScrollSyncUntil = Date.distantPast
         private var pendingBindingSourceText: String?
         private var pendingBindingNeedsTextViewSnapshot = false
@@ -4565,6 +4582,43 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
 
         func resetClipViewBoundsOrigin(_ origin: NSPoint) {
             lastClipViewBoundsOrigin = origin
+        }
+
+        func connectViewportBridge() {
+            guard let bridge = parent.scrollSyncBridge else { return }
+            viewportConnected = true
+            scrollModeEpoch = bridge.modeEpoch
+            bridge.readNativeLine = { [weak self] in
+                guard let self, self.viewportConnected, let textView = self.textView, let scrollView = self.scrollView else { return nil }
+                return textView.markdownSourceLineIndexAtVisibleCenter(in: scrollView)
+            }
+            scrollSyncSubscription = bridge.updates.receive(on: DispatchQueue.main).sink { [weak self] in
+                self?.applyExternalScrollSyncIfNeeded()
+            }
+        }
+
+        func disconnectViewportBridge() {
+            viewportConnected = false
+            scrollSyncSubscription?.cancel()
+            scrollSyncWorkItem?.cancel()
+            typingScrollSyncWorkItem?.cancel()
+        }
+
+        func noteUserWheel() {
+            suppressScrollSyncUntil = .distantPast
+        }
+
+        func scheduleInitialViewportRestore() {
+            guard viewportConnected, lastAppliedScrollSyncToken == -1,
+                  !viewportRestoreScheduled, let bridge = parent.scrollSyncBridge,
+                  bridge.source != .textKit2, bridge.sourceLine != nil else { return }
+            viewportRestoreScheduled = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.viewportConnected else { return }
+                defer { self.viewportRestoreScheduled = false }
+                self.scrollView?.layoutSubtreeIfNeeded()
+                self.applyExternalScrollSyncIfNeeded()
+            }
         }
 
         func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
@@ -4830,6 +4884,9 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
 
         @objc func clipViewBoundsDidChange(_ notification: Notification) {
             guard let clipView = notification.object as? NSClipView else { return }
+            if clipView.bounds.height > 0 {
+                scheduleInitialViewportRestore()
+            }
             let currentOrigin = clipView.bounds.origin
             let previousOrigin = lastClipViewBoundsOrigin
             if let lastClipViewBoundsOrigin,
@@ -4838,6 +4895,9 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
                 return
             }
             lastClipViewBoundsOrigin = currentOrigin
+            if !viewportRestoreScheduled, Date() >= suppressScrollSyncUntil {
+                scheduleCenterLinePublish(delay: 0.08)
+            }
             if let previousOrigin {
                 textView?.captureViewportTransition(from: previousOrigin.y, to: currentOrigin.y)
                 textView?.recordScrollJump(stage: "viewportSample", previousY: previousOrigin.y)
@@ -4880,29 +4940,32 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
                 textView.applySearchHighlightsToVisibleRange(query: self.lastSearchQuery, activeRange: self.lastSearchActiveRange)
                 self.recordDiagnostic38Duration("滚动搜索高亮", since: searchStart)
                 self.recordDiagnostic38Duration("滚动渲染任务总计", since: workStart)
-                self.scheduleCenterLinePublish(delay: 0.18)
             }
             scrollRenderWorkItem = workItem
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.04, execute: workItem)
         }
 
         func applyExternalScrollSyncIfNeeded() {
-            guard let bridge = parent.scrollSyncBridge,
-                  bridge.source == .web,
+            guard viewportConnected, let bridge = parent.scrollSyncBridge, bridge.modeEpoch == scrollModeEpoch,
+                  bridge.source != .textKit2, let line = bridge.sourceLine,
                   bridge.token != lastAppliedScrollSyncToken,
                   let textView,
-                  let scrollView else { return }
+                  let scrollView, scrollView.contentView.bounds.height > 0,
+                  (textView.textStorage?.length ?? 0) > 0, !textView.hasMarkedText() else { return }
             lastAppliedScrollSyncToken = bridge.token
             suppressScrollSyncUntil = Date().addingTimeInterval(0.55)
-            textView.scrollMarkdownSourceLineToCenter(bridge.sourceLine, in: scrollView)
+            scrollSyncWorkItem?.cancel()
+            scrollSyncWorkItem = nil
+            textView.scrollMarkdownSourceLineToCenter(line, in: scrollView)
         }
 
         func scheduleCenterLinePublish(delay: TimeInterval) {
-            guard parent.scrollSyncBridge != nil else { return }
-            scrollSyncWorkItem?.cancel()
+            guard viewportConnected else { return }
+            if delay < 3, scrollSyncWorkItem != nil { return }
             typingScrollSyncWorkItem?.cancel()
             let scheduledAt = MarkdownTextKit2Diagnostic38.now()
             let workItem = DispatchWorkItem { [weak self] in
+                if delay < 3 { self?.scrollSyncWorkItem = nil }
                 let elapsed = MarkdownTextKit2Diagnostic38.milliseconds(since: scheduledAt)
                 self?.recordDiagnostic38Duration(
                     "预览同步任务超期",
@@ -4922,12 +4985,12 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
         private func publishCenterLine() {
             let diagnosticStart = MarkdownTextKit2Diagnostic38.now()
             defer { recordDiagnostic38Duration("预览中心行发布", since: diagnosticStart) }
-            guard let bridge = parent.scrollSyncBridge,
+            guard viewportConnected, let bridge = parent.scrollSyncBridge, let scrollModeEpoch,
                   let textView,
                   let scrollView,
                   Date() >= suppressScrollSyncUntil else { return }
             let line = textView.markdownSourceLineIndexAtVisibleCenter(in: scrollView)
-            bridge.publish(source: .textKit2, sourceLine: line)
+            bridge.publish(source: .textKit2, sourceLine: line, epoch: scrollModeEpoch)
         }
 
         deinit {
@@ -5114,6 +5177,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     var isApplyingMarkdownStyle = false
     var isRestoringAttachmentSource = false
     private var viewportWheelIntent: (time: TimeInterval, delta: CGFloat, characters: Int)?
+    var onUserWheel: (() -> Void)?
 
     override func textViewportLayoutControllerDidLayout(_ controller: NSTextViewportLayoutController) {
         let clip = enclosingScrollView?.contentView
@@ -5188,6 +5252,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     }
 
     override func scrollWheel(with event: NSEvent) {
+        if event.scrollingDeltaY != 0 { onUserWheel?() }
         viewportWheelIntent = (ProcessInfo.processInfo.systemUptime, event.scrollingDeltaY, textStorage?.length ?? 0)
         scrollDiagnosticEvent &+= 1
         scrollDiagnosticLastWheelAt = ProcessInfo.processInfo.systemUptime
@@ -7016,9 +7081,6 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
 
         super.insertNewline(sender)
         keepInsertionPointComfortablyVisible()
-        DispatchQueue.main.async { [weak self] in
-            self?.keepInsertionPointComfortablyVisible()
-        }
     }
 
     override func deleteBackward(_ sender: Any?) {

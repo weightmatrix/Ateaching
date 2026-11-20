@@ -17,6 +17,7 @@
     var framePending = false;
     var topSpacer, bottomSpacer;
     var renderedFirst = -1, renderedLast = -1;
+    var pendingSourceLine = null;
     var resizeObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(function () { scheduleViewport(); }) : null;
     var renderedCount = 0;
     var fragmentCache = new Map(), fragmentCacheCost = 0;
@@ -356,7 +357,10 @@
     }
 
     function scrollToSourceLine(sourceLine) {
-        if (!blocks.length) return;
+        if (!blocks.length) {
+            pendingSourceLine = sourceLine;
+            return;
+        }
         var targetLine = Math.max(0, parseInt(sourceLine || 0, 10) || 0);
         var low = 0, high = blocks.length;
         while (low < high) {
@@ -364,9 +368,14 @@
             if ((blocks[middle].startLine || 0) <= targetLine) low = middle + 1; else high = middle;
         }
         var index = Math.max(0, low - 1);
+        window.clearTimeout(markdownScrollSyncTimer);
+        markdownScrollSyncTimer = null;
+        var generation = ++externalScrollGeneration;
         window.markdownRenderer.isApplyingExternalScroll = true;
-        diagnosticScrollTo(0, Math.max(0, contentTop() + sum(index) - window.innerHeight * 0.5), 'sourceJump');
-        renderViewport();
+        if (!mounted.has(index)) {
+            diagnosticScrollTo(0, Math.max(0, contentTop() + sum(index) - window.innerHeight * 0.5), 'sourceJump');
+            renderViewport();
+        }
         var node = mounted.get(index), huge = blocks[index].huge;
         if (virtualized && huge && huge.code && huge.offsets.length > 1) {
             var localLine = Math.max(0, targetLine - (blocks[index].startLine || 0) - 1), chunk = 0;
@@ -381,7 +390,9 @@
             renderViewport();
         }
         window.requestAnimationFrame(function () {
-            window.requestAnimationFrame(function () { window.markdownRenderer.isApplyingExternalScroll = false; });
+            window.requestAnimationFrame(function () {
+                if (generation === externalScrollGeneration) window.markdownRenderer.isApplyingExternalScroll = false;
+            });
         });
     }
 
@@ -484,6 +495,11 @@
                 diagnosticScrollTo(0, Math.max(0, contentTop() + sum(Math.min(saved.index, total - 1)) + saved.offset), 'patch');
             }
             renderViewport();
+            if (total && pendingSourceLine !== null) {
+                var target = pendingSourceLine;
+                pendingSourceLine = null;
+                scrollToSourceLine(target);
+            }
         },
         setVirtualized: function (enabled) {
             changeVirtualization(enabled);
@@ -522,6 +538,7 @@
 
     var wheelAt = -Infinity, wheelDelta = 0, lastScrollY = 0, lastReport = -Infinity;
     var lastCorrection = null;
+    var externalScrollGeneration = 0, userScrollAt = -Infinity, pointerDown = false;
     function reportScroll(stage, from, target) {
         var now = performance.now();
         var handler = window.webkit?.messageHandlers?.markdownScrollTrace;
@@ -538,6 +555,14 @@
     }
     function diagnosticScrollTo(x, y, reason) {
         var before = window.scrollY;
+        var movement = y - before;
+        var automatic = reason === 'measure' || reason === 'patch' || reason === 'resize';
+        if (automatic && performance.now() - wheelAt < 800
+            && (Math.abs(movement) >= Math.max(120, window.innerHeight / 3) || movement * wheelDelta < -2)) {
+            reportScroll('suppressed', before, y);
+            return;
+        }
+        if (Math.abs(movement) <= 0.5 && Math.abs(x - window.scrollX) <= 0.5) return;
         lastCorrection = {reason: reason, from: before, target: y, time: performance.now()};
         window.scrollTo(x, y);
         if (Math.abs(y - before) > 24 || (wheelDelta > 0 && y < before - 2)) {
@@ -545,10 +570,20 @@
         }
     }
     window.addEventListener('wheel', function (event) {
+        if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
         wheelAt = performance.now();
+        userScrollAt = wheelAt;
         wheelDelta = event.deltaY;
         lastScrollY = window.scrollY;
     }, {passive: true});
+    window.addEventListener('pointerdown', function () { pointerDown = true; userScrollAt = performance.now(); }, {passive: true});
+    function endPointerScroll() { pointerDown = false; }
+    window.addEventListener('pointerup', endPointerScroll, {passive: true});
+    window.addEventListener('pointercancel', endPointerScroll, {passive: true});
+    window.addEventListener('blur', endPointerScroll);
+    window.addEventListener('keydown', function (event) {
+        if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) userScrollAt = performance.now();
+    });
     var markdownScrollSyncTimer = null;
     window.addEventListener('scroll', function () {
         var y = window.scrollY;
@@ -557,12 +592,16 @@
         }
         lastScrollY = y;
         scheduleViewport();
-        if (window.markdownRenderer.isApplyingExternalScroll) return;
+        if (window.markdownRenderer.isApplyingExternalScroll
+            || (!pointerDown && performance.now() - userScrollAt > 800)) return;
         if (!window.webkit || !window.webkit.messageHandlers || !window.webkit.messageHandlers.markdownScrollSync) return;
-        window.clearTimeout(markdownScrollSyncTimer);
+        if (markdownScrollSyncTimer !== null) return;
         markdownScrollSyncTimer = window.setTimeout(function () {
-            window.webkit.messageHandlers.markdownScrollSync.postMessage(currentCenterSourceLine());
-        }, 180);
+            markdownScrollSyncTimer = null;
+            if (!window.markdownRenderer.isApplyingExternalScroll) {
+                window.webkit.messageHandlers.markdownScrollSync.postMessage(currentCenterSourceLine());
+            }
+        }, 80);
     }, { passive: true });
     window.addEventListener('resize', function () {
         var saved = anchor();

@@ -1,18 +1,23 @@
 import AppKit
 import WebKit
 
-@MainActor final class Runner: NSObject, WKNavigationDelegate {
+@MainActor final class Runner: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     var web: WKWebView!
     var window: NSWindow!
     let root = URL(fileURLWithPath: CommandLine.arguments[1])
     func start() {
         NSApplication.shared.setActivationPolicy(.accessory)
         let config = WKWebViewConfiguration()
+        config.userContentController.add(self, name: "markdownScrollSync")
         config.preferences.setValue(true, forKey: "developerExtrasEnabled")
         window = NSWindow(contentRect:NSRect(x:0,y:0,width:1000,height:750),styleMask:[.titled,.resizable],backing:.buffered,defer:false)
         web=WKWebView(frame:window.contentView!.bounds,configuration:config)
         web.navigationDelegate=self;window.contentView=web;window.orderFrontRegardless()
         web.loadFileURL(root.appendingPathComponent("test.html"),allowingReadAccessTo:root)
+    }
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard let line = message.body as? Int else { return }
+        web.evaluateJavaScript("window.testReportedSourceLines.push(\(line))")
     }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         Task {
