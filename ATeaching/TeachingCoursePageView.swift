@@ -96,6 +96,9 @@ struct TeachingCoursePageView: View {
     @State private var autoFillNavigationTarget: AutoFillNavigationTarget?
     @State private var checklistNavigationTarget: ChecklistNavigationTarget?
     @State private var nodeMarkdownNavigationTarget: NodeMarkdownNavigationTarget?
+    #if os(iOS)
+    @State private var studentFileNodeMarkdownTarget: NodeMarkdownNavigationTarget?
+    #endif
     @State private var courseChecklistPickingTarget: CourseChecklistPickingTarget?
     @State private var initializeProfileSettings = TeachingStudentProfileSettings()
     @State private var initializeSelectionData = TeachingSelectionData.empty
@@ -227,9 +230,30 @@ struct TeachingCoursePageView: View {
                         } message: {
                             Text("文件将移动到“系统/回收站”，并保留来源记录。")
                         }
+                        #if os(iOS)
+                        .navigationDestination(item: $markdownNavigationTarget) { target in
+                            MarkdownEditorView(fileURL: URL(fileURLWithPath: target.id))
+                        }
+                        .navigationDestination(item: $singleListNavigationTarget) { target in
+                            SingleListDocumentEditorView(fileURL: URL(fileURLWithPath: target.id))
+                        }
+                        .navigationDestination(item: $autoFillNavigationTarget) { target in
+                            AutoFillDocumentEditorView(fileURL: URL(fileURLWithPath: target.id))
+                        }
+                        .navigationDestination(item: $checklistNavigationTarget) { target in
+                            ChecklistDocumentEditorView(fileURL: URL(fileURLWithPath: target.id), mode: target.mode)
+                        }
+                        .navigationDestination(item: $studentFileNodeMarkdownTarget) { target in
+                            NodeMarkdownEditorView(
+                                fileURL: URL(fileURLWithPath: target.id),
+                                isReadOnlyRendered: target.isReadOnlyRendered
+                            )
+                        }
+                        #endif
                 }
                 .singleListAdaptivePresentation(minWidth: 760, minHeight: 520)
             }
+            #if os(macOS)
             .navigationDestination(item: $markdownNavigationTarget) { target in
                 MarkdownEditorView(fileURL: URL(fileURLWithPath: target.id))
             }
@@ -242,6 +266,7 @@ struct TeachingCoursePageView: View {
             .navigationDestination(item: $checklistNavigationTarget) { target in
                 ChecklistDocumentEditorView(fileURL: URL(fileURLWithPath: target.id), mode: target.mode)
             }
+            #endif
             #if os(iOS)
             .fullScreenCover(item: $nodeMarkdownNavigationTarget) { target in
                 NavigationStack {
@@ -1028,6 +1053,15 @@ struct TeachingCoursePageView: View {
     }
 
     private func presentStudentFilesSheet() {
+        #if os(iOS)
+        if !showStudentFilesSheet {
+            markdownNavigationTarget = nil
+            singleListNavigationTarget = nil
+            autoFillNavigationTarget = nil
+            checklistNavigationTarget = nil
+            studentFileNodeMarkdownTarget = nil
+        }
+        #endif
         showStudentFilesSheet = true
         if studentFilesRootURL == nil, !isLoadingStudentFiles {
             loadStudentFilesRoot()
@@ -1137,7 +1171,7 @@ struct TeachingCoursePageView: View {
             #if os(macOS)
             openWindow(id: "nodemarkdown-editor", value: entry.url.path)
             #else
-            nodeMarkdownNavigationTarget = NodeMarkdownNavigationTarget(id: entry.url.path)
+            studentFileNodeMarkdownTarget = NodeMarkdownNavigationTarget(id: entry.url.path)
             #endif
         }
     }
