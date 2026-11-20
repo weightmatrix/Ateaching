@@ -675,6 +675,7 @@ struct NodeMarkdownEditorView: View {
         let targetURL = fileURL
         let checkedRevision = documentRevision
         let checkedGeneration = diskLoadGeneration
+        let checkedDigest = fileMeta.diskDigest
         pendingCloudCheckTask = Task {
             var allowsImmediateRetry = true
             defer {
@@ -684,7 +685,7 @@ struct NodeMarkdownEditorView: View {
             let result = await Task.detached(priority: .utility) {
                 Result { try NodeMarkdownFileManager.read(fileURL: targetURL) }
             }.value
-            guard diskLoadGeneration == checkedGeneration, documentRevision == checkedRevision,
+            guard diskLoadGeneration == checkedGeneration, documentRevision == checkedRevision, fileMeta.diskDigest == checkedDigest,
                   !isLoading, !isSaveTaskRunning, persistFlight == nil, !isNotebookWriteOperationInProgress,
                   !isPackageSyncRunning, saveState == .clean,
                   documentRevision == persistedDocumentRevision, !hasUncommittedLegacyDraft else {
@@ -1274,11 +1275,19 @@ struct NodeMarkdownEditorView: View {
         let activeNodeRow = activeNodeID.flatMap { documentIndex.row(for: $0) }
         let precedingNodeRow = precedingNodeID.flatMap { documentIndex.row(for: $0) }
         activeEditorRowIndex = activeNodeRow ?? precedingNodeRow
-        if activeNodeID != nil, activeNodeRow == nil, let precedingNodeRow {
-            legacyDraftCommitController.focusAtEnd(ofRow: precedingNodeRow)
-        }
         if activeEditorRowIndex == nil {
             textKit2FocusLocation = nil
+        }
+        #if os(macOS)
+        if NodeMarkdownFeatureFlags.textKit2EditorEnabled, !isReadOnlyRendered, !document.nodes.isEmpty {
+            refreshTextKitDraftFromDocument()
+            requestInPlaceDocumentSynchronization(document)
+            scheduleSnapshotRebuild()
+            return
+        }
+        #endif
+        if activeNodeID != nil, activeNodeRow == nil, let precedingNodeRow {
+            legacyDraftCommitController.focusAtEnd(ofRow: precedingNodeRow)
         }
         refreshTextKitDraftFromDocument(forceExternalSync: true)
         scheduleSnapshotRebuild()
@@ -2321,26 +2330,19 @@ struct NodeMarkdownEditorView: View {
         preserveActiveNodeID: UUID?,
         diagnosticID: String
     ) {
+        guard let newDocument = summary.writtenDocument, let writtenDigest = summary.writtenDigest else { return }
         let applyStart = TeachingCourseDiagnostic116.now()
         let previousDocument = document
-        var newDocument = document
         TeachingCourseDiagnostic116.record(
             "op=\(diagnosticID) UI回放开始 previousNodes=\(previousDocument.nodes.count) insertedNodes=\(summary.insertedNodes.count) firstRow=\(summary.firstInsertedRowIndex.map(String.init) ?? "nil")"
         )
-        if !summary.insertedNodes.isEmpty {
-            let insertAt = min(
-                summary.firstInsertedRowIndex ?? newDocument.nodes.count,
-                newDocument.nodes.count
-            )
-            newDocument.nodes.insert(contentsOf: summary.insertedNodes, at: insertAt)
-        }
-        _ = newDocument.ensureTrailingBlankLine(defaultLevel: 1)
-
         for node in summary.insertedNodes.lazy.filter({ $0.level == 3 }).prefix(8) {
             TeachingH3InsertDiagnostic123.record("op=\(diagnosticID) stage=父页面回放H3 node=\(node.id) level=\(node.level) chars=\(node.text.utf16.count)")
         }
         imageReferenceIndex = nil
         document = newDocument
+        fileMeta.diskDigest = writtenDigest
+        fileMeta.diskPath = fileURL.standardizedFileURL.path
         synchronizeDocumentIndex(
             previousDocument: previousDocument,
             currentDocument: newDocument,
@@ -2363,20 +2365,7 @@ struct NodeMarkdownEditorView: View {
         )
         textKitDraft = NodeMarkdownPlainTextCodec.serialize(document: newDocument)
         textKitDraftRowMetadata = makeTextKitRowMetadata(for: newDocument)
-        inPlaceEditRequest = NodeMarkdownInPlaceEditRequest(
-            command: .synchronize(
-                nodes: newDocument.nodes.map {
-                    NodeMarkdownTextKit2Node(
-                        id: $0.id,
-                        level: $0.level,
-                        content: NodeMarkdownLegacyAttachmentSourceRepair.repair($0.text),
-                        sourceID: $0.sourceID,
-                        sourceFile: $0.sourceFile
-                    )
-                }
-            ),
-            diagnosticID: diagnosticID
-        )
+        requestInPlaceDocumentSynchronization(newDocument, diagnosticID: diagnosticID)
         TeachingCourseDiagnostic116.record(
             "op=\(diagnosticID) inPlaceRequest已发布 totalDuration=\(String(format: "%.2f", TeachingCourseDiagnostic116.elapsedMilliseconds(since: applyStart)))ms draftUTF16=\((textKitDraft as NSString).length) metadata=\(textKitDraftRowMetadata.count)"
         )
@@ -2393,6 +2382,21 @@ struct NodeMarkdownEditorView: View {
             )
         }
         refreshLocalPackageListsAndLight()
+    }
+
+    private func requestInPlaceDocumentSynchronization(_ document: NodeMarkdownDocument, diagnosticID: String? = nil) {
+        inPlaceEditRequest = NodeMarkdownInPlaceEditRequest(
+            command: .synchronize(nodes: document.nodes.map {
+                NodeMarkdownTextKit2Node(
+                    id: $0.id,
+                    level: $0.level,
+                    content: NodeMarkdownLegacyAttachmentSourceRepair.repair($0.text),
+                    sourceID: $0.sourceID,
+                    sourceFile: $0.sourceFile
+                )
+            }),
+            diagnosticID: diagnosticID
+        )
     }
 
     private func refreshNotebookFromDiskAfterExternalWrite(

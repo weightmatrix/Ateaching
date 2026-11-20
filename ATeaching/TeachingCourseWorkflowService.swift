@@ -80,6 +80,8 @@ struct TeachingCourseInsertSummary: Hashable {
     var canUndo: Bool
     var insertedH3Titles: [String] = []
     var insertedNodes: [NodeMarkdownNode] = []
+    var writtenDocument: NodeMarkdownDocument?
+    var writtenDigest: String?
 }
 
 nonisolated struct TeachingH3PackageDeletionSummary: Hashable {
@@ -812,7 +814,7 @@ nonisolated enum TeachingCourseWorkflowService {
                 TeachingH3InsertDiagnostic123.record("op=\(diagnosticID) stage=写盘前H3 node=\(node.id) sourceID=\(node.sourceID) row=\(firstInsertedRowIndex + offset) level=\(node.level) chars=\(node.text.utf16.count)")
             }
             let writeStart = TeachingCourseDiagnostic116.now()
-            try NodeMarkdownFileManager.write(document: notebookPayload.0, meta: notebookPayload.1, to: notebookURL)
+            let writtenDigest = try NodeMarkdownFileManager.writeReturningDigest(document: notebookPayload.0, meta: notebookPayload.1, to: notebookURL)
             TeachingH3InsertDiagnostic123.record("op=\(diagnosticID) stage=写盘成功 packages=\(packagesToInsert.count) nodes=\(notebookPayload.0.nodes.count)")
             TeachingCourseDiagnostic116.record(
                 "op=\(diagnosticID) 随堂写盘完成 duration=\(String(format: "%.2f", TeachingCourseDiagnostic116.elapsedMilliseconds(since: writeStart)))ms file=\(notebookURL.lastPathComponent)"
@@ -841,7 +843,9 @@ nonisolated enum TeachingCourseWorkflowService {
                 firstInsertedRowIndex: firstInsertedRowIndex,
                 canUndo: true,
                 insertedH3Titles: insertedH3Titles,
-                insertedNodes: packagesToInsert.flatMap { $0 }
+                insertedNodes: packagesToInsert.flatMap { $0 },
+                writtenDocument: notebookPayload.0,
+                writtenDigest: writtenDigest
             )
             TeachingCourseDiagnostic116.record(
                 "op=\(diagnosticID) 学生目录事务即将返回 duration=\(String(format: "%.2f", TeachingCourseDiagnostic116.elapsedMilliseconds(since: transactionStart)))ms inserted=\(summary.insertedPackageCount) skipped=\(summary.skippedPackageCount) insertedNodes=\(summary.insertedNodes.count)"

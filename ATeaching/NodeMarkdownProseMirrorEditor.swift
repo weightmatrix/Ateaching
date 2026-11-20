@@ -1176,6 +1176,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 installExactStaticGeometry(at: row, notifyTable: false)
             }
             let oldReadyCount = readyRowCount
+            let hadBottomMargin = tableView.numberOfRows > oldReadyCount
             let visibleRemovedRows = IndexSet(removedRows.filter { $0 >= 0 && $0 < oldReadyCount })
             let newReadyCount = max(
                 0,
@@ -1187,12 +1188,16 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             readyRowCount = newReadyCount
             initialViewportIsReady = readyRowCount > 0
 
+            var tableRemovals = visibleRemovedRows
+            var tableInsertions = insertedRows
+            if hadBottomMargin && !showsBottomPageMargin { tableRemovals.insert(oldReadyCount) }
+            if !hadBottomMargin && showsBottomPageMargin { tableInsertions.insert(newReadyCount) }
             tableView.beginUpdates()
-            if !visibleRemovedRows.isEmpty {
-                tableView.removeRows(at: visibleRemovedRows, withAnimation: [])
+            if !tableRemovals.isEmpty {
+                tableView.removeRows(at: tableRemovals, withAnimation: [])
             }
-            if !insertedRows.isEmpty {
-                tableView.insertRows(at: insertedRows, withAnimation: [])
+            if !tableInsertions.isEmpty {
+                tableView.insertRows(at: tableInsertions, withAnimation: [])
             }
             tableView.endUpdates()
             let validReloads = IndexSet(rowsToReload.filter { $0 >= 0 && $0 < readyRowCount })
@@ -1393,12 +1398,14 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 return
             }
 
-            let prefix = commonPrefixCount(current, targetNodes)
-            let suffix = commonSuffixCount(current, targetNodes, prefix: prefix)
-            let removed = Array(current[prefix..<(current.count - suffix)])
-            let inserted = Array(targetNodes[prefix..<(targetNodes.count - suffix)])
+            guard let delta = NodeMarkdownExternalRowDelta(current: current, target: targetNodes, readyCount: readyRowCount) else {
+                TeachingCourseDiagnostic116.record("op=\(diagnosticID) TextKit2结构差分回退 reason=保留节点发生变化")
+                fallBackToFullExternalReload()
+                return
+            }
+            let inserted = delta.insertedRows.map { targetNodes[$0] }
             TeachingCourseDiagnostic116.record(
-                "op=\(diagnosticID) TextKit2结构差分 current=\(current.count) target=\(targetNodes.count) prefix=\(prefix) suffix=\(suffix) removed=\(removed.count) inserted=\(inserted.count) ready=\(readyRowCount)"
+                "op=\(diagnosticID) TextKit2结构差分 current=\(current.count) target=\(targetNodes.count) removed=\(delta.removedRows.count) inserted=\(inserted.count) ready=\(readyRowCount)"
             )
 
             beginDiagnostic123(inserted: inserted, operation: diagnosticID)
@@ -1413,34 +1420,8 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                     }
                 }
             }
-            let removedIDs = Set(removed.map(\.id))
-            let insertedIDs = Set(inserted.map(\.id))
-            let survivingIDs = Set(current.map(\.id)).subtracting(removedIDs)
-            let isClean = removedIDs.isDisjoint(with: insertedIDs)
-                && insertedIDs.isDisjoint(with: survivingIDs)
-                && !(removed.isEmpty && inserted.isEmpty)
-            guard isClean else {
-                TeachingCourseDiagnostic116.record(
-                    "op=\(diagnosticID) TextKit2结构差分回退 reason=身份集合不干净 removedIDs=\(removedIDs.count) insertedIDs=\(insertedIDs.count) surviving=\(survivingIDs.count)"
-                )
-                fallBackToFullExternalReload()
-                return
-            }
-
-            var steps: [NodeMarkdownTransactionStep] = []
-            if !removed.isEmpty {
-                steps.append(.deleteNodes(nodeIDs: removed.map(\.id)))
-            }
-            if !inserted.isEmpty {
-                steps.append(.insertNodes(row: prefix, nodes: inserted))
-            }
-            guard !steps.isEmpty else { return }
-
             applyExternalInPlaceStructuralEdit(
-                steps: steps,
-                removedCount: removed.count,
-                insertedCount: inserted.count,
-                anchorRow: prefix,
+                delta: delta,
                 diagnosticID: diagnosticID
             )
             TeachingCourseDiagnostic116.record(
@@ -1449,10 +1430,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
         }
 
         private func applyExternalInPlaceStructuralEdit(
-            steps: [NodeMarkdownTransactionStep],
-            removedCount: Int,
-            insertedCount: Int,
-            anchorRow: Int,
+            delta: NodeMarkdownExternalRowDelta,
             diagnosticID: String
         ) {
             guard let tableView else {
@@ -1460,32 +1438,42 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 fallBackToFullExternalReload()
                 return
             }
-            commitActiveNode(reason: "就地结构更新")
+            let anchor = viewportAnchor(excluding: delta.removedRows)
+            let originalOrigin = tableView.enclosingScrollView?.contentView.bounds.origin
+            caretVisibilityWorkItem?.cancel()
+            pendingNavigationRow = nil
             structuralEditGeneration &+= 1
-            let generation = structuralEditGeneration
+            structuralViewportOrigin = nil
             structuralEditInProgress = true
-            structuralViewportOrigin = tableView.enclosingScrollView?.contentView.bounds.origin
             pendingFocusNodeID = nil
             pendingFocusOffset = nil
-            tableView.window?.makeFirstResponder(tableView)
+            let losesActiveNode = activeNodeID.flatMap { state.row(for: $0) }.map { delta.removedRows.contains($0) } ?? false
+            if losesActiveNode {
+                commitActiveNode(reason: "就地移除活动节点")
+                tableView.window?.makeFirstResponder(tableView)
+            }
+            defer { structuralEditInProgress = false }
 
             let transaction = NodeMarkdownTransaction(
                 baseRevision: state.revision,
-                steps: steps,
+                steps: delta.steps,
+                recordsHistory: !delta.insertedRows.isEmpty,
                 label: "In-Place External Structural Edit"
             )
             guard let result = state.dispatch(transaction) else {
                 TeachingCourseDiagnostic116.record("op=\(diagnosticID) TextKit2结构事务失败 reason=dispatch返回nil")
-                structuralEditInProgress = false
-                structuralViewportOrigin = nil
+                if pendingViewportAnchor == nil { pendingViewportAnchor = anchor }
                 fallBackToFullExternalReload()
                 return
             }
-            registerStructuralUndo(from: nil)
-
-            if anchorRow >= readyRowCount {
+            if transaction.recordsHistory {
+                registerStructuralUndo(from: nil)
+            }
+            let removedRows = IndexSet(delta.removedRows.filter { $0 < readyRowCount })
+            let insertedRows = IndexSet(delta.insertedRows.filter { $0 < delta.targetReadyCount })
+            if removedRows.isEmpty, insertedRows.isEmpty {
                 TeachingCourseDiagnostic116.record(
-                    "op=\(diagnosticID) TextKit2结构应用尾部路径 anchor=\(anchorRow) ready=\(readyRowCount) removed=\(removedCount) inserted=\(insertedCount) stateNodes=\(state.snapshot.nodes.count)"
+                    "op=\(diagnosticID) TextKit2结构应用尾部路径 ready=\(readyRowCount) removed=\(delta.removedRows.count) inserted=\(delta.insertedRows.count) stateNodes=\(state.snapshot.nodes.count)"
                 )
                 // 插入/删除落在尚未测量的尾部，可见行完全不变。只推进精确布局即可，
                 // 不触碰当前表格行，避免把 readyRowCount 清空造成视野跳动。
@@ -1500,22 +1488,16 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                     installExactStaticGeometry(at: row, notifyTable: false)
                 }
                 scheduleExactLayout()
-                structuralEditInProgress = false
-                structuralViewportOrigin = nil
+                if tableView.numberOfRows != numberOfRows(in: tableView) {
+                    tableView.noteNumberOfRowsChanged()
+                }
                 return
             }
 
-            let removedRows = removedCount > 0
-                ? IndexSet(integersIn: anchorRow..<(anchorRow + removedCount))
-                : IndexSet()
-            let insertedRows = insertedCount > 0
-                ? IndexSet(integersIn: anchorRow..<(anchorRow + insertedCount))
-                : IndexSet()
-            let reloadLower = max(0, anchorRow - 1)
-            let reloadUpper = min(state.snapshot.nodes.count, anchorRow + insertedCount + 1)
-            let rowsToReload = reloadLower < reloadUpper
-                ? IndexSet(integersIn: reloadLower..<reloadUpper)
-                : IndexSet()
+            let rowsToReload = IndexSet(result.impact.layoutNodeIDs.compactMap { id in
+                guard id != activeNodeID, let row = state.row(for: id), !insertedRows.contains(row) else { return nil }
+                return row
+            })
 
             applyStructuralTableDelta(
                 result: result,
@@ -1524,15 +1506,10 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 rowsToReload: rowsToReload
             )
             TeachingCourseDiagnostic116.record(
-                "op=\(diagnosticID) TextKit2表格增删完成 anchor=\(anchorRow) removed=\(removedRows.count) inserted=\(insertedRows.count) ready=\(readyRowCount) stateNodes=\(state.snapshot.nodes.count)"
+                "op=\(diagnosticID) TextKit2表格增删完成 removed=\(removedRows.count) inserted=\(insertedRows.count) ready=\(readyRowCount) stateNodes=\(state.snapshot.nodes.count)"
             )
-            restoreStructuralViewport()
-            DispatchQueue.main.async { [weak self] in
-                guard let self, self.structuralEditGeneration == generation else { return }
-                self.restoreStructuralViewport()
-                self.structuralEditInProgress = false
-                self.structuralViewportOrigin = nil
-            }
+            tableView.layoutSubtreeIfNeeded()
+            restoreViewport(anchor: anchor, fallback: originalOrigin)
         }
 
         /// 有界属性采样；字体差异可能来自合法行内样式，只作为线索，不自动纠正。
@@ -1689,32 +1666,6 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             baselineNode = nil
             tableView?.reloadData()
             scheduleExactLayout()
-        }
-
-        private func commonPrefixCount(
-            _ a: [NodeMarkdownTextKit2Node],
-            _ b: [NodeMarkdownTextKit2Node]
-        ) -> Int {
-            var index = 0
-            while index < a.count && index < b.count && a[index] == b[index] {
-                index += 1
-            }
-            return index
-        }
-
-        private func commonSuffixCount(
-            _ a: [NodeMarkdownTextKit2Node],
-            _ b: [NodeMarkdownTextKit2Node],
-            prefix: Int
-        ) -> Int {
-            var index = 0
-            while index < a.count - prefix && index < b.count - prefix {
-                if a[a.count - 1 - index] != b[b.count - 1 - index] {
-                    break
-                }
-                index += 1
-            }
-            return index
         }
 
         private func focus(nodeID: UUID, offset: Int) {
@@ -2140,20 +2091,42 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
         }
 
         private func captureViewportAnchor() {
-            guard pendingViewportAnchor == nil,
-                  let tableView,
-                  let scrollView = tableView.enclosingScrollView else { return }
+            guard pendingViewportAnchor == nil else { return }
+            pendingViewportAnchor = viewportAnchor()
+        }
+
+        private func viewportAnchor(excluding removedRows: IndexSet = []) -> ViewportAnchor? {
+            guard let tableView,
+                  let scrollView = tableView.enclosingScrollView else { return nil }
             let visibleRect = scrollView.contentView.bounds
             let visibleRows = tableView.rows(in: visibleRect)
             guard visibleRows.location != NSNotFound,
-                  visibleRows.location < readyRowCount,
-                  let node = state.node(at: visibleRows.location) else { return }
-            let rowRect = tableView.rect(ofRow: visibleRows.location)
-            pendingViewportAnchor = ViewportAnchor(
+                  visibleRows.location < readyRowCount else { return nil }
+            let first = visibleRows.location
+            let row = (first..<readyRowCount).first { !removedRows.contains($0) }
+                ?? (0..<first).last { !removedRows.contains($0) }
+            guard let row, let node = state.node(at: row) else { return nil }
+            let rowRect = tableView.rect(ofRow: row)
+            return ViewportAnchor(
                 nodeID: node.id,
-                offsetFromRowTop: visibleRect.minY - rowRect.minY,
+                offsetFromRowTop: row == first ? visibleRect.minY - rowRect.minY : 0,
                 fallbackOrigin: visibleRect.origin
             )
+        }
+
+        private func restoreViewport(anchor: ViewportAnchor?, fallback: NSPoint?) {
+            guard let tableView, let scrollView = tableView.enclosingScrollView,
+                  var origin = anchor?.fallbackOrigin ?? fallback else { return }
+            if let anchor, let row = state.row(for: anchor.nodeID), row < readyRowCount {
+                origin.y = tableView.rect(ofRow: row).minY + anchor.offsetFromRowTop
+            }
+            let clip = scrollView.contentView
+            var bounds = clip.bounds
+            bounds.origin = origin
+            let target = clip.constrainBoundsRect(bounds).origin
+            guard target != clip.bounds.origin else { return }
+            clip.setBoundsOrigin(target)
+            scrollView.reflectScrolledClipView(clip)
         }
 
         private func restorePendingViewportAnchorIfPossible() {
@@ -2565,6 +2538,31 @@ private struct VisualState: Equatable {
         match = owner.activeMatchLocationInRow
         editingRow = owner.editingRowIndex
         query = owner.searchQuery
+    }
+}
+
+struct NodeMarkdownExternalRowDelta {
+    let removedRows: IndexSet
+    let insertedRows: IndexSet
+    let targetReadyCount: Int
+    let steps: [NodeMarkdownTransactionStep]
+
+    init?(current: [NodeMarkdownTextKit2Node], target: [NodeMarkdownTextKit2Node], readyCount: Int) {
+        let currentIDs = Set(current.map(\.id))
+        let targetIDs = Set(target.map(\.id))
+        guard currentIDs.count == current.count, targetIDs.count == target.count else { return nil }
+        let survivors = current.filter { targetIDs.contains($0.id) }
+        guard !survivors.isEmpty, survivors == target.filter({ currentIDs.contains($0.id) }) else { return nil }
+        let removed = IndexSet(current.indices.filter { !targetIDs.contains(current[$0].id) })
+        let inserted = IndexSet(target.indices.filter { !currentIDs.contains(target[$0].id) })
+        let publishedIDs = Set(current.prefix(readyCount).map(\.id))
+        let firstUnpublished = target.firstIndex { currentIDs.contains($0.id) && !publishedIDs.contains($0.id) }
+        let lastPublished = target.lastIndex { publishedIDs.contains($0.id) }
+        targetReadyCount = min(firstUnpublished ?? target.count, lastPublished.map { $0 + 1 } ?? 0)
+        removedRows = removed
+        insertedRows = inserted
+        steps = removed.rangeView.map { .deleteNodes(nodeIDs: current[$0].map(\.id)) }
+            + inserted.rangeView.map { .insertNodes(row: $0.lowerBound, nodes: Array(target[$0])) }
     }
 }
 

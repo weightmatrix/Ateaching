@@ -558,16 +558,26 @@ nonisolated struct NodeMarkdownFileManager {
     }
 
     nonisolated static func write(document: NodeMarkdownDocument, meta: NodeMarkdownFileMeta, to fileURL: URL) throws {
+        _ = try validatedWrite(document: document, meta: meta, to: fileURL)
+    }
+
+    nonisolated static func writeReturningDigest(document: NodeMarkdownDocument, meta: NodeMarkdownFileMeta, to fileURL: URL) throws -> String {
+        let data = try validatedWrite(document: document, meta: meta, to: fileURL)
+        return TeachingCloudFileAccess.digest(data)
+    }
+
+    private nonisolated static func validatedWrite(document: NodeMarkdownDocument, meta: NodeMarkdownFileMeta, to fileURL: URL) throws -> Data {
         try NodeMarkdownIdentityPolicy.validateForPersistence(document)
-        try serializeAndWrite(document: document, meta: meta, to: fileURL)
+        return try serializeAndWrite(document: document, meta: meta, to: fileURL)
     }
 
     /// 已通过身份校验后的纯序列化+落盘，避免重复校验。
-    private nonisolated static func serializeAndWrite(document: NodeMarkdownDocument, meta: NodeMarkdownFileMeta, to fileURL: URL) throws {
-        let text = serialize(document: document, meta: meta)
-        TeachingDebugLogStore.append("file=\(fileURL.lastPathComponent) nodes=\(document.nodes.count) outputBytes=\(text.utf8.count) expectedDigestPresent=\(meta.diskDigest != nil)", category: "NodeMarkdown.WriteIntent", force: true)
+    private nonisolated static func serializeAndWrite(document: NodeMarkdownDocument, meta: NodeMarkdownFileMeta, to fileURL: URL) throws -> Data {
+        let data = Data(serialize(document: document, meta: meta).utf8)
+        TeachingDebugLogStore.append("file=\(fileURL.lastPathComponent) nodes=\(document.nodes.count) outputBytes=\(data.count) expectedDigestPresent=\(meta.diskDigest != nil)", category: "NodeMarkdown.WriteIntent", force: true)
         let expected = meta.diskPath == fileURL.standardizedFileURL.path ? meta.diskDigest : nil
-        try TeachingCloudFileAccess.write(Data(text.utf8), to: fileURL, expectedDigest: expected)
+        try TeachingCloudFileAccess.write(data, to: fileURL, expectedDigest: expected)
+        return data
     }
 
     /// 一次遍历完成「补齐H3来源 → 触摸脏H3 → 传播子节点时间戳 → 校验 → 序列化 → 原子写」。
@@ -591,12 +601,12 @@ nonisolated struct NodeMarkdownFileManager {
         }
         persistenceDocument.propagateChildMtimeToH3Roots()
         try NodeMarkdownIdentityPolicy.validateForPersistence(persistenceDocument)
-        try serializeAndWrite(document: persistenceDocument, meta: meta, to: fileURL)
+        let data = try serializeAndWrite(document: persistenceDocument, meta: meta, to: fileURL)
         return NodeMarkdownPersistResult(
             document: persistenceDocument,
             touchedH3IDs: touchedH3IDs,
             restoredH3SourceLinkCount: restoredCount,
-            diskDigest: TeachingCloudFileAccess.digest(Data(serialize(document: persistenceDocument, meta: meta).utf8))
+            diskDigest: TeachingCloudFileAccess.digest(data)
         )
     }
 
