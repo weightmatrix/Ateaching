@@ -4380,6 +4380,7 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
     func makeNSView(context: Context) -> NSScrollView {
         let profileStart = MarkdownEditorPerformanceProbe.start()
         let scrollView = NSScrollView()
+        scrollView.contentView = MarkdownViewportClipView()
         scrollView.hasVerticalScroller = true
         scrollView.borderType = .noBorder
         scrollView.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: 36, right: 0)
@@ -5065,6 +5066,20 @@ private final class MarkdownImageDecodeCache {
     }
 }
 
+private final class MarkdownViewportClipView: NSClipView {
+    var blocksLayoutScrolling = false
+
+    override func scroll(to newOrigin: NSPoint) {
+        guard !blocksLayoutScrolling else { return }
+        super.scroll(to: newOrigin)
+    }
+
+    override func setBoundsOrigin(_ newOrigin: NSPoint) {
+        guard !blocksLayoutScrolling else { return }
+        super.setBoundsOrigin(newOrigin)
+    }
+}
+
 final class MarkdownTextKit2PlainTextView: NSTextView {
     private enum MarkdownBlockKind {
         case heading
@@ -5086,7 +5101,6 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     }
 
     func scrollMarkdownSourceLineToCenter(_ sourceLine: Int, in scrollView: NSScrollView) {
-        viewportWheelIntent = nil
         performanceDiagnostics.checkPipeline(self, stage: "TextKit2同步滚动前")
         defer { performanceDiagnostics.checkPipeline(self, stage: "TextKit2同步滚动后") }
         let nsText = self.textStorage?.mutableString ?? NSMutableString(string: string)
@@ -5176,37 +5190,14 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     var isApplyingQuickInputReplacement = false
     var isApplyingMarkdownStyle = false
     var isRestoringAttachmentSource = false
-    private var viewportWheelIntent: (time: TimeInterval, delta: CGFloat, characters: Int)?
     var onUserWheel: (() -> Void)?
 
     override func textViewportLayoutControllerDidLayout(_ controller: NSTextViewportLayoutController) {
-        let clip = enclosingScrollView?.contentView
-        let origin = clip?.bounds.origin
+        let clip = enclosingScrollView?.contentView as? MarkdownViewportClipView
+        let wasBlocked = clip?.blocksLayoutScrolling ?? false
+        clip?.blocksLayoutScrolling = true
+        defer { clip?.blocksLayoutScrolling = wasBlocked }
         super.textViewportLayoutControllerDidLayout(controller)
-        guard let intent = viewportWheelIntent,
-              ProcessInfo.processInfo.systemUptime - intent.time < 0.8,
-              intent.characters == textStorage?.length,
-              !hasActiveMarkedText, let clip, let origin else { return }
-        let adjustedY = clip.bounds.minY
-        let movement = adjustedY - origin.y
-        let reversesWheel = (intent.delta > 0 && movement > 0.5) || (intent.delta < 0 && movement < -0.5)
-        let jumpsViewport = intent.delta != 0 && abs(movement) >= max(120, clip.bounds.height / 3)
-        guard reversesWheel || jumpsViewport else { return }
-        let maximumY = max(0, frame.height - clip.bounds.height)
-        guard origin.y >= 0, origin.y <= maximumY else { return }
-        clip.setBoundsOrigin(origin)
-        enclosingScrollView?.reflectScrolledClipView(clip)
-        recordScrollJump(stage: "viewportCorrectionSuppressed", previousY: adjustedY)
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        viewportWheelIntent = nil
-        super.mouseDown(with: event)
-    }
-
-    override func scrollRangeToVisible(_ range: NSRange) {
-        viewportWheelIntent = nil
-        super.scrollRangeToVisible(range)
     }
 
     private var scrollDiagnosticEvent: UInt64 = 0
@@ -5253,7 +5244,6 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
 
     override func scrollWheel(with event: NSEvent) {
         if event.scrollingDeltaY != 0 { onUserWheel?() }
-        viewportWheelIntent = (ProcessInfo.processInfo.systemUptime, event.scrollingDeltaY, textStorage?.length ?? 0)
         scrollDiagnosticEvent &+= 1
         scrollDiagnosticLastWheelAt = ProcessInfo.processInfo.systemUptime
         scrollDiagnosticWheelDelta = event.scrollingDeltaY
@@ -5302,20 +5292,17 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, self.textStorage?.editedMask.contains(.editedCharacters) == true else { return }
-                self.viewportWheelIntent = nil
                 self.cachedSourceProjection = nil
             }
         }
     }
 
     override func didChangeText() {
-        viewportWheelIntent = nil
         cachedSourceProjection = nil
         super.didChangeText()
     }
 
     func seedSourceProjection(_ source: String) {
-        viewportWheelIntent = nil
         observeSourceStorage()
         cachedSourceProjection = source
     }
@@ -5397,7 +5384,6 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     }
 
     override func keyDown(with event: NSEvent) {
-        viewportWheelIntent = nil
         if handleMarkdownImagePasteShortcut(event) { return }
         super.keyDown(with: event)
     }
