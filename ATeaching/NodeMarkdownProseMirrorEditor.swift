@@ -316,6 +316,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                   let row = state.row(for: nodeID),
                   let node = state.node(at: row) else { return }
             activateNode(node: node, row: row, in: textView, origin: "textDidBeginEditing")
+            scheduleCaretVisibility(textView: textView, nodeID: nodeID, onlyIfOutsideViewport: true)
         }
 
         func textView(
@@ -469,6 +470,10 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                   let row = state.row(for: nodeID) else { return }
             recordFontDiagnostic(textView, nodeID: nodeID, stage: "选择变化")
             reportFocus(textView: textView, row: row)
+            if !isApplyingModel, !structuralEditInProgress, activeNodeID == nodeID,
+               textView.window?.firstResponder === textView {
+                scheduleCaretVisibility(textView: textView, nodeID: nodeID, onlyIfOutsideViewport: true)
+            }
         }
 
         func textDidEndEditing(_ notification: Notification) {
@@ -1711,7 +1716,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                     restoreStructuralViewport()
                     structuralViewportOrigin = nil
                 }
-                scheduleCaretVisibility(textView: textView, nodeID: nodeID)
+                scheduleCaretVisibility(textView: textView, nodeID: nodeID, onlyIfOutsideViewport: true)
             }
         }
 
@@ -1720,7 +1725,8 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
         private func scheduleCaretVisibility(
             textView: NodeMarkdownTextKit2TextView,
             nodeID: UUID,
-            allowsActiveComposition: Bool = false
+            allowsActiveComposition: Bool = false,
+            onlyIfOutsideViewport: Bool = false
         ) {
             caretVisibilityWorkItem?.cancel()
             let workItem = DispatchWorkItem { [weak self, weak textView] in
@@ -1728,17 +1734,23 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 self.scrollCaretIntoComfortZone(
                     textView: textView,
                     nodeID: nodeID,
-                    allowsActiveComposition: allowsActiveComposition
+                    allowsActiveComposition: allowsActiveComposition,
+                    onlyIfOutsideViewport: onlyIfOutsideViewport
                 )
             }
             caretVisibilityWorkItem = workItem
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.03, execute: workItem)
+            if onlyIfOutsideViewport {
+                DispatchQueue.main.async(execute: workItem)
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.03, execute: workItem)
+            }
         }
 
         private func scrollCaretIntoComfortZone(
             textView: NodeMarkdownTextKit2TextView,
             nodeID: UUID,
-            allowsActiveComposition: Bool
+            allowsActiveComposition: Bool,
+            onlyIfOutsideViewport: Bool
         ) {
             guard textView.window?.firstResponder === textView,
                   nodeIDByTextView[ObjectIdentifier(textView)] == nodeID,
@@ -1763,6 +1775,8 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                let window = textView.window {
                 caretRect = tableView.convert(window.convertFromScreen(screenRect), from: nil)
             }
+            if onlyIfOutsideViewport,
+               caretRect.minY >= viewport.minY, caretRect.maxY <= viewport.maxY { return }
 
             let scrollDelta: CGFloat
             if caretRect.minY < viewport.minY + comfortMargin {
