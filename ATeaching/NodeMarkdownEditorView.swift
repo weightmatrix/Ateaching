@@ -1563,7 +1563,9 @@ struct NodeMarkdownEditorView: View {
         textKitDraft = snapshot.plainText
         textKitDraftRowMetadata = makeTextKitRowMetadata(for: parsed)
         trace.mark("projection")
-        cleanupUnusedImageAssets(previousDocument: previousDocument, currentDocument: parsed)
+        if structuralEditChangesImageReferences(from: previousDocument, to: parsed) {
+            cleanupUnusedImageAssets(previousDocument: previousDocument, currentDocument: parsed)
+        }
         trace.mark("imageCleanup")
         if isClassSessionEditor {
             _ = packageChangeTracker.recordDocumentMutation(
@@ -3796,6 +3798,24 @@ struct NodeMarkdownEditorView: View {
         }
         guard !base.isEmpty else { return snippet }
         return "\(base) \(snippet)"
+    }
+
+    private func structuralEditChangesImageReferences(from previous: NodeMarkdownDocument, to current: NodeMarkdownDocument) -> Bool {
+        var previousText = Dictionary(previous.nodes.map { ($0.id, $0.text) }, uniquingKeysWith: { first, _ in first })
+        var oldPaths = Set<String>()
+        var newPaths = Set<String>()
+        for node in current.nodes {
+            let old = previousText.removeValue(forKey: node.id)
+            guard old != node.text else { continue }
+            if let old {
+                oldPaths.formUnion(NodeMarkdownImageResourceManager.imagePaths(in: old, notebookFileURL: fileURL))
+            }
+            newPaths.formUnion(NodeMarkdownImageResourceManager.imagePaths(in: node.text, notebookFileURL: fileURL))
+        }
+        for text in previousText.values {
+            oldPaths.formUnion(NodeMarkdownImageResourceManager.imagePaths(in: text, notebookFileURL: fileURL))
+        }
+        return oldPaths != newPaths
     }
 
     private func cleanupUnusedImageAssets(previousDocument: NodeMarkdownDocument, currentDocument: NodeMarkdownDocument) {

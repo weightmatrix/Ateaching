@@ -69,7 +69,11 @@ extension NodeMarkdownTextKit2TextView {
             onRequestInsertImage?()
             return
         }
-        super.paste(sender)
+        if NSPasteboard.general.string(forType: .string) != nil {
+            pasteAsPlainText(sender)
+        } else {
+            super.paste(sender)
+        }
     }
 
     /// 纯Command+V粘贴图片与右键“插入图片”共用同一请求入口。
