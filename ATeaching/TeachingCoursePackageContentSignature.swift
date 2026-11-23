@@ -87,6 +87,33 @@ nonisolated enum TeachingCoursePackageContentSignature {
         return result
     }
 
+    struct DigestSnapshot {
+        let document: NodeMarkdownDocument
+        let index: NodeMarkdownDocumentIndex
+        let digests: [String: String]
+
+        init(document: NodeMarkdownDocument, reusing previous: DigestSnapshot? = nil) {
+            self.document = document
+            index = NodeMarkdownDocumentIndex(nodes: document.nodes)
+            var result: [String: String] = [:]
+            for range in index.packageRanges() {
+                let rootID = document.nodes[range.lowerBound].id
+                let key = rootID.uuidString
+                let nodes = document.nodes[range]
+                if let previous, let oldRange = previous.index.packageRange(rootID: rootID),
+                   let oldDigest = previous.digests[key], oldRange.count == range.count,
+                   zip(previous.document.nodes[oldRange], nodes).allSatisfy({
+                       $0.level == $1.level && $0.text.utf8.elementsEqual($1.text.utf8)
+                   }) {
+                    result[key] = oldDigest
+                } else {
+                    result[key] = TeachingCoursePackageContentSignature.digest(Array(nodes))
+                }
+            }
+            digests = result
+        }
+    }
+
     private nonisolated static func canonicalizedImageReferences(
         in text: String,
         documentFileURL: URL

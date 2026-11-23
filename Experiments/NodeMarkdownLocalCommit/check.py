@@ -43,6 +43,7 @@ final class TeachingCoursePackageChangeTracker {
  var newPackageOrderedIDs: [String] = []
  var newPackageIDSet: Set<String> = []
  var baselineDigestByH3ID: [String: String] = [:]
+ var packageDigestSnapshot: TeachingCoursePackageContentSignature.DigestSnapshot?
  var diagnostic26MutationSequence: UInt64 = 0
 '''+ '\n'.join(method(tracker, '    '+name) for name in tracker_names) + '\n}\n'
 support = '''import Foundation
@@ -100,6 +101,11 @@ source += r'''
   let expected = a.touchChangedH3Packages(comparedTo: initial, affectedRowIndex: 1, at: time)
   let actual = b.touchChangedH3Packages(comparedTo: initial, affectedRowIndex: 1, currentStructuralIndex: .init(nodes: after.nodes), previousStructuralIndex: .init(nodes: initial.nodes), at: time)
   precondition(expected == actual && a == b)
+  let old = TeachingCoursePackageContentSignature.DigestSnapshot(document: initial)
+  let incremental = TeachingCoursePackageContentSignature.DigestSnapshot(document: after, reusing: old)
+  precondition(incremental.digests == TeachingCoursePackageContentSignature.digestByH3ID(in: after))
+  let reverted = TeachingCoursePackageContentSignature.DigestSnapshot(document: initial, reusing: incremental)
+  precondition(reverted.digests == old.digests)
  }
  let workspace = try ArchiveStorage.ensureWorkspace()
  let notebook = workspace.appendingPathComponent("student/note.csv")

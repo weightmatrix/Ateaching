@@ -27,6 +27,7 @@ final class TeachingCoursePackageChangeTracker {
     private var newPackageOrderedIDs: [String] = []
     private var newPackageIDSet: Set<String> = []
     private var baselineDigestByH3ID: [String: String] = [:]
+    private var packageDigestSnapshot: TeachingCoursePackageContentSignature.DigestSnapshot?
     private var diagnostic26MutationSequence: UInt64 = 0
 
     func establishBaseline(document: NodeMarkdownDocument) {
@@ -34,7 +35,9 @@ final class TeachingCoursePackageChangeTracker {
         newPackageOrderedIDs.removeAll()
         newPackageIDSet.removeAll()
         activeRowSnapshot = nil
-        baselineDigestByH3ID = TeachingCoursePackageContentSignature.digestByH3ID(in: document)
+        let snapshot = TeachingCoursePackageContentSignature.DigestSnapshot(document: document)
+        packageDigestSnapshot = snapshot
+        baselineDigestByH3ID = snapshot.digests
         reconcileNewPackageList(with: document)
         NodeMarkdownDiagnostic26.log(
             "建立包基线 H3数=\(baselineDigestByH3ID.count) "
@@ -316,8 +319,11 @@ final class TeachingCoursePackageChangeTracker {
         for node in previousDocument.nodes where node.level == 3 {
             previousH3ByID[node.id.uuidString] = node
         }
-        let previousDigests = TeachingCoursePackageContentSignature.digestByH3ID(in: previousDocument)
-        let currentDigests = TeachingCoursePackageContentSignature.digestByH3ID(in: currentDocument)
+        let previousSnapshot = TeachingCoursePackageContentSignature.DigestSnapshot(document: previousDocument, reusing: packageDigestSnapshot)
+        let currentSnapshot = TeachingCoursePackageContentSignature.DigestSnapshot(document: currentDocument, reusing: previousSnapshot)
+        packageDigestSnapshot = currentSnapshot
+        let previousDigests = previousSnapshot.digests
+        let currentDigests = currentSnapshot.digests
         let currentH3Nodes = currentDocument.nodes.filter { $0.level == 3 }
         let currentH3IDs = Set(currentH3Nodes.map { $0.id.uuidString })
         let digestIDs = Set(previousDigests.keys).union(currentDigests.keys)

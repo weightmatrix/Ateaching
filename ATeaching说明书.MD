@@ -1,3 +1,7 @@
+## NodeMarkdown H3 摘要复用（1.2611231651 / 1002）
+
+Mac NodeMarkdown 更改层级、拆分或合并节点时，不重复计算内容没变的 H3 包摘要。同步和新包判定规则不变。
+
 ## Mac NodeMarkdown 结构编辑试验（1.2611231623 / 1001）
 
 Mac NodeMarkdown 普通文字粘贴不再带来源格式，图片粘贴不变。
