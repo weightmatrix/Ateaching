@@ -1157,13 +1157,11 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             pendingFocusOffset = targetOffset
             publishNow()
 
-            restoreStructuralViewport()
             DispatchQueue.main.async { [weak self] in
                 guard let self,
                       self.structuralEditInProgress,
                       self.structuralEditGeneration == generation,
                       self.state.row(for: targetNodeID) == targetRow else { return }
-                self.restoreStructuralViewport()
                 self.fulfillPendingFocusIfPossible()
             }
         }
@@ -1694,8 +1692,11 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 scheduleExactLayout()
                 return
             }
+            tableView.layoutSubtreeIfNeeded()
             let rowRect = tableView.rect(ofRow: row)
-            if !tableView.visibleRect.intersects(rowRect) {
+            let visibleRect = tableView.visibleRect
+            if !visibleRect.intersects(rowRect)
+                || (structuralEditInProgress && rowRect.height <= visibleRect.height && !visibleRect.contains(rowRect)) {
                 tableView.scrollRowToVisible(row)
             }
             tableView.layoutSubtreeIfNeeded()
@@ -1726,10 +1727,13 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 pendingFocusOffset = nil
                 if structuralEditInProgress {
                     structuralEditInProgress = false
-                    restoreStructuralViewport()
                     structuralViewportOrigin = nil
+                    caretVisibilityWorkItem?.cancel()
+                    scrollCaretIntoComfortZone(textView: textView, nodeID: nodeID,
+                                               allowsActiveComposition: false, onlyIfOutsideViewport: true)
+                } else {
+                    scheduleCaretVisibility(textView: textView, nodeID: nodeID, onlyIfOutsideViewport: true)
                 }
-                scheduleCaretVisibility(textView: textView, nodeID: nodeID, onlyIfOutsideViewport: true)
             }
         }
 
@@ -1786,7 +1790,11 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             if !screenRect.isNull,
                screenRect.height > 0,
                let window = textView.window {
-                caretRect = tableView.convert(window.convertFromScreen(screenRect), from: nil)
+                let converted = tableView.convert(window.convertFromScreen(screenRect), from: nil)
+                if converted.minY.isFinite, converted.maxY.isFinite,
+                   converted.maxY > rowRect.minY, converted.minY < rowRect.maxY {
+                    caretRect = converted
+                }
             }
             if onlyIfOutsideViewport,
                caretRect.minY >= viewport.minY, caretRect.maxY <= viewport.maxY { return }
