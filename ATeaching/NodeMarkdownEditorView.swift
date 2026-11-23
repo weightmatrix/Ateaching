@@ -1564,19 +1564,22 @@ struct NodeMarkdownEditorView: View {
         textKitDraftRowMetadata = makeTextKitRowMetadata(for: parsed)
         trace.mark("projection")
         cleanupUnusedImageAssets(previousDocument: previousDocument, currentDocument: parsed)
+        trace.mark("imageCleanup")
         if isClassSessionEditor {
             _ = packageChangeTracker.recordDocumentMutation(
                 previousDocument: previousDocument,
                 currentDocument: parsed,
                 collectNewPackages: false
             )
+            trace.mark("packageMutation")
             refreshLocalPackageListsAndLight()
+            trace.mark("packageListRefresh")
         }
-        trace.mark("cleanupAndPackageTracking")
         markDocumentDirty()
         scheduleSnapshotRebuild()
         trace.mark("dirtyAndSchedule")
         rebuildSearchResults()
+        trace.mark("search")
     }
 
     /// 旧管线结构操作的唯一入口。正文和Node身份已经封装在同一份带版本快照中，
@@ -1780,6 +1783,7 @@ struct NodeMarkdownEditorView: View {
         scheduleSnapshotRebuild()
         trace.mark("dirtyAndSchedule")
         rebuildSearchResults()
+        trace.mark("search")
     }
 
     private func queueTextKitParse(

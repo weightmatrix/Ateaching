@@ -96,7 +96,7 @@ import AppKit
 
 @MainActor
 final class NodeMarkdownDiagnostic114 {
-    private struct Metric {
+    private nonisolated struct Metric: Sendable {
         var totalMilliseconds = 0.0
         var maximumMilliseconds = 0.0
         var count = 0
@@ -108,7 +108,16 @@ final class NodeMarkdownDiagnostic114 {
         }
     }
 
-    // Aggregate in memory; write at most once per two seconds during activity.
+    private nonisolated struct SlowSample: Sendable {
+        let stage: String
+        let milliseconds: Double
+        let details: String
+    }
+
+    private static let summaryQueue = DispatchQueue(label: "ATeaching.NodeMarkdown.Performance", qos: .utility)
+    private static let summarySlots = DispatchSemaphore(value: 8)
+
+    // Aggregate in memory and hand off bounded batches for formatting.
     private static let isEnabled = true
 
     private let sessionID: String
@@ -116,7 +125,7 @@ final class NodeMarkdownDiagnostic114 {
     private var documentUTF16: Int
     private var metrics: [String: Metric] = [:]
     private var counters: [String: Int] = [:]
-    private var slowSamples: [String] = []
+    private var slowSamples: [SlowSample] = []
     private var lastFlushAt = DispatchTime.now().uptimeNanoseconds
 
     init(sessionID: UUID, documentRows: Int, documentUTF16: Int) {
@@ -145,10 +154,14 @@ final class NodeMarkdownDiagnostic114 {
         guard Self.isEnabled, start > 0 else { return }
         let elapsed = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
         metrics[stage, default: Metric()].add(elapsed)
-        if elapsed >= slowThresholdMilliseconds, slowSamples.count < 10 {
-            let resolvedDetails = details()
-            let suffix = resolvedDetails.isEmpty ? "" : " " + resolvedDetails
-            slowSamples.append("\(stage)=\(String(format: "%.2f", elapsed))ms\(suffix)")
+        guard elapsed >= slowThresholdMilliseconds else { return }
+        if slowSamples.count == 8 {
+            guard let weakest = slowSamples.indices.min(by: {
+                slowSamples[$0].milliseconds < slowSamples[$1].milliseconds
+            }), elapsed > slowSamples[weakest].milliseconds else { return }
+            slowSamples[weakest] = SlowSample(stage: stage, milliseconds: elapsed, details: details())
+        } else {
+            slowSamples.append(SlowSample(stage: stage, milliseconds: elapsed, details: details()))
         }
     }
 
@@ -163,21 +176,27 @@ final class NodeMarkdownDiagnostic114 {
         let elapsed = Double(now - lastFlushAt) / 1_000_000_000
         guard force || elapsed >= 2 else { return }
 
-        let metricText = metrics
-            .sorted { lhs, rhs in lhs.value.totalMilliseconds > rhs.value.totalMilliseconds }
-            .prefix(14)
-            .map { name, metric in
-                let average = metric.count > 0 ? metric.totalMilliseconds / Double(metric.count) : 0
-                return "\(name){n=\(metric.count),avg=\(String(format: "%.2f", average)),max=\(String(format: "%.2f", metric.maximumMilliseconds)),sum=\(String(format: "%.2f", metric.totalMilliseconds))ms}"
-            }
-            .joined(separator: ", ")
-        let counterText = counters
-            .sorted { lhs, rhs in lhs.key < rhs.key }
-            .map { "\($0.key)=\($0.value)" }
-            .joined(separator: ", ")
-        let slowText = slowSamples.isEmpty ? "-" : slowSamples.joined(separator: " | ")
-        let message = "[诊断·114] session=\(sessionID) reason=\(reason) rows=\(documentRows) utf16=\(documentUTF16) ready=\(readyRows) metrics=[\(metricText)] counters=[\(counterText)] slow=[\(slowText)]"
-        TeachingDebugLogStore.append(message, category: "诊断·114", force: true)
+        let slots = Self.summarySlots
+        guard slots.wait(timeout: .now()) == .success else { return }
+        Self.summaryQueue.async { [metrics, counters, slowSamples, sessionID, documentRows, documentUTF16] in
+            defer { slots.signal() }
+            let metricText = metrics
+                .sorted { lhs, rhs in lhs.value.totalMilliseconds > rhs.value.totalMilliseconds }
+                .map { name, metric in
+                    let average = metric.count > 0 ? metric.totalMilliseconds / Double(metric.count) : 0
+                    return "\(name){n=\(metric.count),avg=\(String(format: "%.2f", average)),max=\(String(format: "%.2f", metric.maximumMilliseconds)),sum=\(String(format: "%.2f", metric.totalMilliseconds))ms}"
+                }
+                .joined(separator: ", ")
+            let counterText = counters
+                .sorted { lhs, rhs in lhs.key < rhs.key }
+                .map { "\($0.key)=\($0.value)" }
+                .joined(separator: ", ")
+            let slowText = slowSamples.sorted { $0.milliseconds > $1.milliseconds }.map { sample in
+                "\(sample.stage)=\(String(format: "%.2f", sample.milliseconds))ms \(sample.details)"
+            }.joined(separator: " | ")
+            let message = "[诊断·114] session=\(sessionID) reason=\(reason) rows=\(documentRows) utf16=\(documentUTF16) ready=\(readyRows) slow=[\(slowText)] metrics=[\(metricText)] counters=[\(counterText)]"
+            TeachingDebugLogStore.append(message, category: "诊断·114", force: true)
+        }
 
         metrics.removeAll(keepingCapacity: true)
         counters.removeAll(keepingCapacity: true)

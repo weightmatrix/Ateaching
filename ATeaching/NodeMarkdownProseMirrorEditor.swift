@@ -196,10 +196,6 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
         func update(owner: NodeMarkdownProseMirrorRepresentable, scrollView: NSScrollView) {
             let diagnosticStart = NodeMarkdownDiagnostic114.now()
             defer {
-                diagnostic114.updateDocument(
-                    rows: state.snapshot.nodes.count,
-                    utf16: (owner.text as NSString).length
-                )
                 diagnostic114.recordDuration("SwiftUI update", since: diagnosticStart)
                 diagnostic114.recordCount("SwiftUI update次数")
                 diagnostic114.flushIfNeeded(reason: "SwiftUI更新", readyRows: readyRowCount)
@@ -220,11 +216,23 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             if owner.externalTextSyncToken != lastExternalToken {
                 diagnostic114.recordCount("外部同步次数")
                 lastExternalToken = owner.externalTextSyncToken
-                if !matchesCurrentDocument(text: owner.text, rowMetadata: owner.rowMetadata) {
+                defer {
+                    diagnostic114.updateDocument(
+                        rows: state.snapshot.nodes.count,
+                        utf16: (owner.text as NSString).length
+                    )
+                }
+                let compareStart = NodeMarkdownDiagnostic114.now()
+                let matchesDocument = matchesCurrentDocument(text: owner.text, rowMetadata: owner.rowMetadata)
+                diagnostic114.recordDuration("外部同步全文比较", since: compareStart)
+                if !matchesDocument {
                     diagnostic114.recordCount("外部全文重装次数")
                     captureViewportAnchor()
                     commitActiveNode(reason: "外部文档更新")
-                    guard state.replace(text: owner.text, rowMetadata: owner.rowMetadata) else {
+                    let replaceStart = NodeMarkdownDiagnostic114.now()
+                    let replaced = state.replace(text: owner.text, rowMetadata: owner.rowMetadata)
+                    diagnostic114.recordDuration("外部同步全文解析", since: replaceStart)
+                    guard replaced else {
                         lastVisualState = visualState
                         return
                     }
@@ -370,11 +378,6 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) {
             let diagnosticStart = NodeMarkdownDiagnostic114.now()
-            defer {
-                diagnostic114.recordDuration("输入textDidChange", since: diagnosticStart, slowThresholdMilliseconds: 8)
-                diagnostic114.recordCount("输入次数")
-                diagnostic114.flushIfNeeded(reason: "输入", readyRows: readyRowCount)
-            }
             guard !isApplyingModel,
                   let textView = notification.object as? NodeMarkdownTextKit2TextView,
                   let nodeID = nodeIDByTextView[ObjectIdentifier(textView)],
@@ -382,6 +385,16 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                   let oldNode = state.node(at: row) else { return }
             guard !textView.isApplyingQuickInputReplacement,
                   !textView.hasActiveInputMethodComposition else { return }
+            let hasPendingLayout = readyRowCount < state.snapshot.nodes.count
+            defer {
+                diagnostic114.recordDuration(
+                    hasPendingLayout ? "输入回调（布局未完成）" : "输入回调（布局完成）",
+                    since: diagnosticStart,
+                    slowThresholdMilliseconds: 8,
+                    details: "row=\(row)"
+                )
+                diagnostic114.flushIfNeeded(reason: "输入", readyRows: readyRowCount)
+            }
             recordFontDiagnostic(textView, nodeID: nodeID, stage: "输入后")
             let isHistoryReplay = editorUndoManager.isUndoing || editorUndoManager.isRedoing
             defer {
@@ -2084,6 +2097,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
         }
 
         private func viewportDidChange() {
+            let start = NodeMarkdownDiagnostic114.now()
             if let viewport = tableView?.enclosingScrollView?.contentView.bounds {
                 if let previous = lastDiagnosticViewport,
                    previous.size != viewport.size || abs(previous.minY - viewport.minY) > max(1, viewport.height) {
@@ -2093,6 +2107,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             }
             diagnostic114.recordCount("视口变化次数")
             scheduleExactLayout()
+            diagnostic114.recordDuration("滚动视口回调", since: start)
             diagnostic114.flushIfNeeded(reason: "滚动", readyRows: readyRowCount)
         }
 
@@ -2282,25 +2297,30 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             let reusedSpacer = previousReady < count && tableView.numberOfRows > previousReady
             readyRowCount = count
             initialViewportIsReady = true
+            let rowCountStart = NodeMarkdownDiagnostic114.now()
             tableView.noteNumberOfRowsChanged()
+            diagnostic114.recordDuration("布局发布通知行数", since: rowCountStart)
             if reusedSpacer {
                 let rows = IndexSet(integer: previousReady)
+                let spacerStart = NodeMarkdownDiagnostic114.now()
                 tableView.noteHeightOfRows(withIndexesChanged: rows)
                 tableView.reloadData(forRowIndexes: rows, columnIndexes: IndexSet(integer: 0))
+                diagnostic114.recordDuration("布局发布刷新占位行", since: spacerStart)
             }
         }
 
         private func buildExactLayout(generation: UInt64) async {
             guard let tableView else { return }
             let diagnosticStart = NodeMarkdownDiagnostic114.now()
-            let startingRow = readyRowCount
             defer {
                 diagnostic114.recordDuration(
-                    "精确布局任务",
+                    "精确布局墙钟（含让步）",
                     since: diagnosticStart,
-                    slowThresholdMilliseconds: 16,
-                    details: "start=\(startingRow) end=\(readyRowCount)"
+                    slowThresholdMilliseconds: .infinity
                 )
+                if generation == exactLayoutGeneration {
+                    diagnostic114.flushIfNeeded(reason: "布局任务结束", readyRows: readyRowCount, force: true)
+                }
             }
             let width = exactLayoutWidth
             let viewportHeight = tableView.enclosingScrollView?.contentView.bounds.height ?? 0
@@ -2308,6 +2328,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             var unpublishedStart = readyRowCount
             var row = readyRowCount
             while row < state.snapshot.nodes.count, !Task.isCancelled, generation == exactLayoutGeneration {
+                let mainWorkStart = NodeMarkdownDiagnostic114.now()
                 guard let node = state.node(at: row) else { break }
                 let key = exactLayoutKey(for: node.id, width: width)
                 let layout = localLayout(for: node, row: row)
@@ -2332,10 +2353,12 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 accumulatedHeight += geometry.height
                 row += 1
 
-                let completedInitialViewport = !initialViewportIsReady && accumulatedHeight >= viewportHeight
-                let completedBatch = initialViewportIsReady && row - unpublishedStart >= 12
                 let completedDocument = row == state.snapshot.nodes.count
-                if completedInitialViewport || completedBatch || completedDocument {
+                let completedInitialViewport = !initialViewportIsReady
+                    && (accumulatedHeight >= viewportHeight || completedDocument)
+                let completedBatch = initialViewportIsReady && row - unpublishedStart >= 12
+                let published = completedInitialViewport || completedBatch || completedDocument
+                if published {
                     let publishStart = NodeMarkdownDiagnostic114.now()
                     recordLayoutCrashContext("布局发布前", details: "taskGeneration=\(generation) measuredRow=\(row)")
                     publishReadyRows(row, in: tableView)
@@ -2345,9 +2368,24 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                     recordLayoutCrashContext("布局发布后", details: "taskGeneration=\(generation) measuredRow=\(row)")
                     unpublishedStart = row
                     diagnostic114.recordDuration("布局批次发布", since: publishStart)
+                    if completedInitialViewport {
+                        diagnostic114.recordDuration(
+                            "布局启动至首屏（含让步）",
+                            since: diagnosticStart,
+                            slowThresholdMilliseconds: .infinity
+                        )
+                    }
                     diagnostic114.recordCount("布局批次数")
+                }
+                diagnostic114.recordDuration(
+                    "布局单步主线程",
+                    since: mainWorkStart,
+                    slowThresholdMilliseconds: 16,
+                    details: "row=\(row - 1) published=\(published)"
+                )
+                if published {
                     diagnostic114.flushIfNeeded(
-                        reason: completedInitialViewport ? "首屏就绪" : (completedDocument ? "全文布局完成" : "布局批次"),
+                        reason: completedDocument ? "全文布局完成" : (completedInitialViewport ? "首屏就绪" : "布局批次"),
                         readyRows: readyRowCount,
                         force: completedInitialViewport || completedDocument
                     )
@@ -2364,7 +2402,6 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                     recordLayoutCrashContext("布局发布后", details: "taskGeneration=\(generation) measuredRow=\(row)")
                 }
                 exactLayoutTask = nil
-                diagnostic114.flushIfNeeded(reason: "布局任务结束", readyRows: readyRowCount, force: true)
             }
         }
 
@@ -2384,15 +2421,18 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             cancelPendingPublish()
             let snapshot = state.snapshot
             if let onDocumentSnapshot = owner.onDocumentSnapshot {
-                onDocumentSnapshot(
-                    NodeMarkdownLegacyDocumentSnapshot(
-                        sessionID: sessionID,
-                        revision: snapshot.revision,
-                        rows: snapshot.nodes.map {
-                            .init(nodeID: $0.id.uuidString, level: $0.level, content: $0.content, sourceID: $0.sourceID, sourceFile: $0.sourceFile)
-                        }
-                    )
+                let projectionStart = NodeMarkdownDiagnostic114.now()
+                let publishedSnapshot = NodeMarkdownLegacyDocumentSnapshot(
+                    sessionID: sessionID,
+                    revision: snapshot.revision,
+                    rows: snapshot.nodes.map {
+                        .init(nodeID: $0.id.uuidString, level: $0.level, content: $0.content, sourceID: $0.sourceID, sourceFile: $0.sourceFile)
+                    }
                 )
+                diagnostic114.recordDuration("快照构建全部行", since: projectionStart)
+                let callbackStart = NodeMarkdownDiagnostic114.now()
+                onDocumentSnapshot(publishedSnapshot)
+                diagnostic114.recordDuration("快照提交外层", since: callbackStart)
             } else {
                 publishProjectionFallback()
             }
