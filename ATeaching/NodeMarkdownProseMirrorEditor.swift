@@ -1730,7 +1730,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                     structuralViewportOrigin = nil
                     caretVisibilityWorkItem?.cancel()
                     scrollCaretIntoComfortZone(textView: textView, nodeID: nodeID,
-                                               allowsActiveComposition: false, onlyIfOutsideViewport: true)
+                                               allowsActiveComposition: false, onlyIfOutsideViewport: false)
                 } else {
                     scheduleCaretVisibility(textView: textView, nodeID: nodeID, onlyIfOutsideViewport: true)
                 }
