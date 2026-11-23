@@ -1,6 +1,6 @@
 # 开发收尾约定
 
-- 每次重要功能改动同时更新Debug和Release的版本号：MARKETING_VERSION为1.yyMMddHHmm，CURRENT_PROJECT_VERSION为yyMMddHHmm，时间使用Asia/Shanghai；三份文档记录对应版本。
+- 每次重要功能改动同时更新 Debug 和 Release 的版本号：对外的 MARKETING_VERSION 仍为 1.yyMMddHHmm（Asia/Shanghai）；CURRENT_PROJECT_VERSION 从 1000 开始，每次升版加 1。三个文档记录对应的显示版本和构建号。
 
 - 完成用户要求的代码修改后，默认更新三份文档：`ATeaching白皮书.MD`（实现与维护）、`ATeaching说明书.MD`（用户操作）、`Ateaching开发记录.MD`（改动与验证）。
 - 完成适当验证后，默认提交并推送到已配置的 GitHub 远端，不需要用户重复提醒。提交范围围绕本次任务；不要自动夹带不明来源的无关修改。
