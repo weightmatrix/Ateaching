@@ -311,7 +311,9 @@ final class TeachingCoursePackageChangeTracker {
     func recordDocumentMutation(
         previousDocument: NodeMarkdownDocument,
         currentDocument: NodeMarkdownDocument,
-        collectNewPackages: Bool = true
+        collectNewPackages: Bool = true,
+        previousStructuralIndex: NodeMarkdownDocumentIndex? = nil,
+        currentStructuralIndex: NodeMarkdownDocumentIndex? = nil
     ) -> Int {
         diagnostic26MutationSequence &+= 1
         let diagnosticSequence = diagnostic26MutationSequence
@@ -319,8 +321,12 @@ final class TeachingCoursePackageChangeTracker {
         for node in previousDocument.nodes where node.level == 3 {
             previousH3ByID[node.id.uuidString] = node
         }
-        let previousSnapshot = TeachingCoursePackageContentSignature.DigestSnapshot(document: previousDocument, reusing: packageDigestSnapshot)
-        let currentSnapshot = TeachingCoursePackageContentSignature.DigestSnapshot(document: currentDocument, reusing: previousSnapshot)
+        let previousSnapshot = TeachingCoursePackageContentSignature.DigestSnapshot(
+            document: previousDocument, reusing: packageDigestSnapshot, structuralIndex: previousStructuralIndex
+        )
+        let currentSnapshot = TeachingCoursePackageContentSignature.DigestSnapshot(
+            document: currentDocument, reusing: previousSnapshot, structuralIndex: currentStructuralIndex
+        )
         packageDigestSnapshot = currentSnapshot
         let previousDigests = previousSnapshot.digests
         let currentDigests = currentSnapshot.digests

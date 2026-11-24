@@ -3,7 +3,7 @@ Compare incremental package tracking against full reconciliation, exercise real 
 and exercise notification gating/persistence sharing with controlled asynchronous adapters.
 """
 from pathlib import Path
-import re, subprocess, tempfile
+import re, subprocess, tempfile, sys
 repo = Path(__file__).resolve().parents[2]
 def method(src, signature):
     start = src.index(signature)
@@ -107,6 +107,37 @@ source += r'''
   let reverted = TeachingCoursePackageContentSignature.DigestSnapshot(document: initial, reusing: incremental)
   precondition(reverted.digests == old.digests)
  }
+ let timestamp = Date(timeIntervalSince1970: 12345)
+ let independent = TeachingCoursePackageChangeTracker(), shared = TeachingCoursePackageChangeTracker()
+ independent.establishBaseline(document: initial); shared.establishBaseline(document: initial)
+ var promoted = initial; promoted.nodes[1].level = 3
+ var moved = initial; moved.nodes.insert(moved.nodes.remove(at: 1), at: 3)
+ var removed = initial; removed.nodes.removeSubrange(0..<2)
+ var split = initial; split.nodes.insert(.init(level: 4, text: "split"), at: 2)
+ var missingLink = initial; missingLink.nodes[0].sourceFile = ""
+ var previous = initial
+ var cachedIndex = NodeMarkdownDocumentIndex(nodes: initial.nodes)
+ precondition(!cachedIndex.matchesStructure(of: moved.nodes) && !cachedIndex.matchesStructure(of: promoted.nodes))
+ for draft in [promoted, initial, promoted, initial, moved, removed, split, missingLink] {
+  var expected = draft, actual = draft
+  precondition(cachedIndex.matchesStructure(of: previous.nodes))
+  let nextIndex = cachedIndex.matchesStructure(of: draft.nodes) ? cachedIndex : .init(nodes: draft.nodes)
+  _ = expected.restoreMissingH3SourceLinks(from: previous)
+  _ = actual.restoreMissingH3SourceLinks(from: previous)
+  let expectedIDs = expected.touchChangedH3Packages(comparedTo: previous, at: timestamp)
+  let actualIDs = actual.touchChangedH3Packages(comparedTo: previous, at: timestamp, currentStructuralIndex: nextIndex, previousStructuralIndex: cachedIndex)
+  expected.propagateChildMtimeToH3Roots()
+  actual.propagateChildMtimeToH3Roots()
+  precondition(actual == expected && actualIDs == expectedIDs)
+  _ = independent.recordDocumentMutation(previousDocument: previous, currentDocument: expected, collectNewPackages: false)
+  _ = shared.recordDocumentMutation(previousDocument: previous, currentDocument: actual, collectNewPackages: false, previousStructuralIndex: cachedIndex, currentStructuralIndex: nextIndex)
+  assertEquivalent(independent, shared)
+  precondition(independent.packageDigestSnapshot?.digests == shared.packageDigestSnapshot?.digests)
+  for row in actual.nodes.indices {
+   precondition(shared.packageDigestSnapshot?.index.owningH3Row(for: row) == independent.packageDigestSnapshot?.index.owningH3Row(for: row))
+  }
+  previous = actual; cachedIndex = nextIndex
+ }
  let workspace = try ArchiveStorage.ensureWorkspace()
  let notebook = workspace.appendingPathComponent("student/note.csv")
  let image = workspace.appendingPathComponent("系统/暂存/\(newRoot.id.uuidString)/Pic/shared.png")
@@ -156,4 +187,6 @@ try MainActor.assumeIsolated { try tests() }
 with tempfile.TemporaryDirectory(prefix='node-local-') as tmp:
  root=Path(tmp); src=root/'main.swift'; src.write_text(source)
  subprocess.run(['swiftc','-O',str(src),'-o',str(root/'check')],check=True)
- subprocess.run([str(root/'check'),str(root/'workspace'),str(repo/'Experiments/NodeMarkdownLocalCommit/results.json')],check=True)
+ args = [str(root/'check'), str(root/'workspace')]
+ args.append(str(root/'results.json' if '--check-only' in sys.argv else repo/'Experiments/NodeMarkdownLocalCommit/results.json'))
+ subprocess.run(args,check=True)

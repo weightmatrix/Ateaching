@@ -92,9 +92,13 @@ nonisolated enum TeachingCoursePackageContentSignature {
         let index: NodeMarkdownDocumentIndex
         let digests: [String: String]
 
-        init(document: NodeMarkdownDocument, reusing previous: DigestSnapshot? = nil) {
+        init(
+            document: NodeMarkdownDocument,
+            reusing previous: DigestSnapshot? = nil,
+            structuralIndex: NodeMarkdownDocumentIndex? = nil
+        ) {
             self.document = document
-            index = NodeMarkdownDocumentIndex(nodes: document.nodes)
+            index = structuralIndex ?? NodeMarkdownDocumentIndex(nodes: document.nodes)
             var result: [String: String] = [:]
             for range in index.packageRanges() {
                 let rootID = document.nodes[range.lowerBound].id

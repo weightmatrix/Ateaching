@@ -192,9 +192,14 @@ nonisolated struct NodeMarkdownDocument: Hashable, Codable {
         }
     }
 
-    mutating func touchChangedH3Packages(comparedTo previousDocument: NodeMarkdownDocument, at timestamp: Date = Date()) -> Set<String> {
-        let currentIndex = NodeMarkdownDocumentIndex(nodes: nodes)
-        let previousStructureIndex = NodeMarkdownDocumentIndex(nodes: previousDocument.nodes)
+    mutating func touchChangedH3Packages(
+        comparedTo previousDocument: NodeMarkdownDocument,
+        at timestamp: Date = Date(),
+        currentStructuralIndex: NodeMarkdownDocumentIndex? = nil,
+        previousStructuralIndex: NodeMarkdownDocumentIndex? = nil
+    ) -> Set<String> {
+        let currentIndex = currentStructuralIndex ?? NodeMarkdownDocumentIndex(nodes: nodes)
+        let previousStructureIndex = previousStructuralIndex ?? NodeMarkdownDocumentIndex(nodes: previousDocument.nodes)
         var previousByID: [UUID: NodeMarkdownNode] = [:]
         var previousIndexByID: [UUID: Int] = [:]
         for (index, node) in previousDocument.nodes.enumerated() {

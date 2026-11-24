@@ -1547,19 +1547,24 @@ struct NodeMarkdownEditorView: View {
             previousNodes: previousDocument.nodes
         )
         trace.mark("parse")
-        _ = parsed.restoreMissingH3SourceLinks(from: previousDocument)
-        _ = parsed.touchChangedH3Packages(comparedTo: previousDocument)
-        parsed.propagateChildMtimeToH3Roots()
+        let previousIndex = documentIndex.matchesStructure(of: previousDocument.nodes)
+            ? documentIndex : NodeMarkdownDocumentIndex(nodes: previousDocument.nodes)
+        let currentIndex = previousIndex.matchesStructure(of: parsed.nodes)
+            ? previousIndex : NodeMarkdownDocumentIndex(nodes: parsed.nodes)
+        trace.mark("index")
 
+        _ = parsed.restoreMissingH3SourceLinks(from: previousDocument)
+        _ = parsed.touchChangedH3Packages(
+            comparedTo: previousDocument,
+            currentStructuralIndex: currentIndex,
+            previousStructuralIndex: previousIndex
+        )
+        parsed.propagateChildMtimeToH3Roots()
         trace.mark("H3Maintenance")
+
         imageReferenceIndex = nil
         document = parsed
-        synchronizeDocumentIndex(
-            previousDocument: previousDocument,
-            currentDocument: parsed,
-            activeRowIndex: activeEditorRowIndex
-        )
-        trace.mark("index")
+        documentIndex = currentIndex
         textKitDraft = snapshot.plainText
         textKitDraftRowMetadata = makeTextKitRowMetadata(for: parsed)
         trace.mark("projection")
@@ -1571,7 +1576,9 @@ struct NodeMarkdownEditorView: View {
             _ = packageChangeTracker.recordDocumentMutation(
                 previousDocument: previousDocument,
                 currentDocument: parsed,
-                collectNewPackages: false
+                collectNewPackages: false,
+                previousStructuralIndex: previousIndex,
+                currentStructuralIndex: currentIndex
             )
             trace.mark("packageMutation")
             refreshLocalPackageListsAndLight()

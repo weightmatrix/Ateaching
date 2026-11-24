@@ -5,6 +5,7 @@ import Foundation
 /// 普通字符输入不会改变UUID、level或行序，因此可以持续复用同一份索引。
 nonisolated struct NodeMarkdownDocumentIndex {
     private(set) var nodeCount = 0
+    private var structure: [(id: UUID, level: Int)] = []
     private var firstRowByID: [UUID: Int] = [:]
     private var allRowsByID: [UUID: [Int]] = [:]
     private var parentRows: [Int?] = []
@@ -20,6 +21,7 @@ nonisolated struct NodeMarkdownDocumentIndex {
 
     mutating func rebuild(from nodes: [NodeMarkdownNode]) {
         nodeCount = nodes.count
+        structure = nodes.map { ($0.id, $0.level) }
         firstRowByID.removeAll(keepingCapacity: true)
         allRowsByID.removeAll(keepingCapacity: true)
         parentRows = Array(repeating: nil, count: nodes.count)
@@ -80,6 +82,12 @@ nonisolated struct NodeMarkdownDocumentIndex {
             if h3RangeByRootID[node.id] == nil {
                 h3RangeByRootID[node.id] = range
             }
+        }
+    }
+
+    func matchesStructure(of nodes: [NodeMarkdownNode]) -> Bool {
+        nodeCount == nodes.count && zip(structure, nodes).allSatisfy {
+            $0.id == $1.id && $0.level == $1.level
         }
     }
 
