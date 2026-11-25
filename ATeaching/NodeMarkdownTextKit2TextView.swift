@@ -11,6 +11,7 @@ import SwiftMath
 #if os(macOS)
 final class NodeMarkdownTextKit2TextView: NSTextView {
     let stabilityLog = NodeMarkdownStabilityLog()
+    var onSplitStyleDiagnostic: ((String, String) -> Void)?
     var onDiagnosticFontDraw: (() -> Void)?
     var diagnosticFontLastDrawSample: TimeInterval = 0
     struct InputMethodCommit {
@@ -134,6 +135,7 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
         _ = drawNodeMarkdownBackgroundBars(in: dirtyRect)
         super.draw(dirtyRect)
         _ = drawNodeMarkdownMarkers(in: dirtyRect)
+        onSplitStyleDiagnostic?("draw", "")
         let now = ProcessInfo.processInfo.systemUptime
         if now - diagnosticFontLastDrawSample >= 1 {
             diagnosticFontLastDrawSample = now

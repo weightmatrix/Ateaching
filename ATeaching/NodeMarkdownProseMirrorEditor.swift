@@ -74,6 +74,15 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
         private var exactGeometries: [UUID: NodeMarkdownExactGeometry] = [:]
         private var readyRowCount = 0
         // 每次插入最多追踪8个H3及首个后继；两分钟后停止滚动/配置采样。
+        private struct SplitStyleTrace {
+            let id = UUID()
+            let original: UUID
+            let inserted: UUID
+            var events: [String] = []
+            var reported: Set<UUID> = []
+        }
+
+        private var splitStyleTrace: SplitStyleTrace?
         private var fontDiagnosticWindow: TimeInterval = 0
         private var fontDiagnosticCount = 0
         private var fontDiagnosticLast: [UUID: (String, TimeInterval)] = [:]
@@ -601,6 +610,11 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 diagnostic114.recordCount("Cell配置次数")
             }
             let textView = cell.textView
+            if let previousNodeID = cell.nodeID, previousNodeID != node.id {
+                textView.onSplitStyleDiagnostic?("rebind", "to=\(node.id)")
+            }
+            bindSplitStyleTrace(to: textView, nodeID: node.id)
+            textView.onSplitStyleDiagnostic?("configure", "row=\(row) previousNode=\(String(describing: cell.nodeID))")
             var record = renderRecord(for: node, row: row, width: width)
             if record == nil, structuralEditInProgress {
                 diagnostic114.recordCount("结构编辑同步补测次数")
@@ -611,6 +625,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 record = renderRecord(for: node, row: row, width: width)
             }
             guard let record else {
+                textView.onSplitStyleDiagnostic?("configure", "missingRenderRecord")
                 diagnostic114.recordCount("Cell缺失几何次数")
                 if let previousNodeID = cell.nodeID {
                     textViewsByNodeID.removeValue(forKey: previousNodeID)
@@ -752,7 +767,11 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 if cell.renderedKey != record.key {
                     reinstall(record: record, in: textView)
                     cell.renderedKey = record.key
+                } else {
+                    textView.onSplitStyleDiagnostic?("configure", "skip=sameRenderKey")
                 }
+            } else {
+                textView.onSplitStyleDiagnostic?("configure", "skip=activeResponder")
             }
             if pendingFocusNodeID == node.id {
                 // `configure` runs inside NSTableView's row update. Changing the
@@ -878,8 +897,19 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             guard let row = state.row(for: nodeID), let node = state.node(at: row) else { return false }
             guard ownsStructuralInput(nodeID: nodeID, textView: textView) else { return true }
             let selection = textView.selectedRange()
-            guard beginStructuralEdit(nodeID: nodeID, textView: textView) else { return true }
             let newID = UUID()
+            let trace = SplitStyleTrace(original: nodeID, inserted: newID)
+            splitStyleTrace = trace
+            bindSplitStyleTrace(to: textView, nodeID: nodeID)
+            textView.onSplitStyleDiagnostic?("split", "beforeResign selection=\(selection)")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self, traceID = trace.id] in
+                self?.finishSplitStyleTrace(id: traceID)
+            }
+            guard beginStructuralEdit(nodeID: nodeID, textView: textView) else {
+                splitStyleTrace = nil
+                textView.onSplitStyleDiagnostic = nil
+                return true
+            }
             let newLevel = node.isProtectedH3 ? 4 : node.level
             var steps: [NodeMarkdownTransactionStep] = []
             if selection.length > 0 {
@@ -1526,6 +1556,57 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             )
             tableView.layoutSubtreeIfNeeded()
             restoreViewport(anchor: anchor, fallback: originalOrigin)
+        }
+
+        private func bindSplitStyleTrace(to view: NodeMarkdownTextKit2TextView, nodeID: UUID) {
+            guard let trace = splitStyleTrace, nodeID == trace.original || nodeID == trace.inserted else {
+                view.onSplitStyleDiagnostic = nil
+                return
+            }
+            let traceID = trace.id
+            view.onSplitStyleDiagnostic = { [weak self, weak view] stage, detail in
+                guard let self, let view, self.splitStyleTrace?.id == traceID else {
+                    view?.onSplitStyleDiagnostic = nil
+                    return
+                }
+                self.recordSplitStyle(view, nodeID: nodeID, stage: stage, detail: detail)
+            }
+        }
+
+        private func recordSplitStyle(
+            _ view: NodeMarkdownTextKit2TextView, nodeID: UUID, stage: String, detail: String
+        ) {
+            guard var trace = splitStyleTrace else { return }
+            let storage = view.nodeTextStorage
+            let count = storage.length
+            let font = count > 0 ? storage.attribute(.font, at: 0, effectiveRange: nil) as? NSFont : nil
+            let attachment = count > 0 && storage.attribute(.attachment, at: 0, effectiveRange: nil) != nil
+            let missingFont = count > 0 && font == nil && !attachment
+            if stage == "draw", !missingFont || trace.reported.contains(nodeID) { return }
+            let role = nodeID == trace.original ? "original" : "inserted"
+            let event = "role=\(role) node=\(nodeID) view=\(ObjectIdentifier(view)) stage=\(stage) chars=\(count) font=\(font.map { "\($0.fontName)@\($0.pointSize)" } ?? "nil") \(detail)"
+            if trace.events.count == 40 { trace.events.removeFirst() }
+            trace.events.append(event)
+            let shouldReport = (stage == "draw" || stage == "settled")
+                && missingFont && trace.reported.insert(nodeID).inserted
+            splitStyleTrace = trace
+            if shouldReport {
+                TeachingDebugLogStore.append(
+                    "editor=\(sessionID) split=\(trace.id) " + trace.events.joined(separator: " | "),
+                    category: "NodeMarkdown.SplitStyle", force: true
+                )
+            }
+        }
+
+        private func finishSplitStyleTrace(id: UUID) {
+            guard let trace = splitStyleTrace, trace.id == id else { return }
+            for nodeID in [trace.original, trace.inserted] {
+                guard let view = textViewsByNodeID[nodeID]?.value,
+                      nodeIDByTextView[ObjectIdentifier(view)] == nodeID else { continue }
+                recordSplitStyle(view, nodeID: nodeID, stage: "settled", detail: "")
+                view.onSplitStyleDiagnostic = nil
+            }
+            splitStyleTrace = nil
         }
 
         /// 有界属性采样；字体差异可能来自合法行内样式，只作为线索，不自动纠正。

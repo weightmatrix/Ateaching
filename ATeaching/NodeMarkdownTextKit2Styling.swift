@@ -18,7 +18,10 @@ extension NodeMarkdownTextKit2TextView {
         editingRowIndex: Int?
     ) {
         nodeMarkdownEditingRowIndex = editingRowIndex
-        guard !hasActiveInputMethodComposition else { return }
+        guard !hasActiveInputMethodComposition else {
+            onSplitStyleDiagnostic?("style.skip", "composition")
+            return
+        }
         let currentText = documentString()
         let textLength = (currentText as NSString).length
         let nsText = currentText as NSString
@@ -27,6 +30,11 @@ extension NodeMarkdownTextKit2TextView {
         let fullRange = NSRange(location: 0, length: nodeTextStorage.length)
         guard rowLayouts.allSatisfy({ $0.range.exact(toLength: textLength) != nil }),
               selectedRanges.allSatisfy({ $0.rangeValue.exact(toLength: textLength) != nil }) else {
+            if let onSplitStyleDiagnostic {
+                let invalidLayout = rowLayouts.first { $0.range.exact(toLength: textLength) == nil }
+                let invalidSelection = selectedRanges.first { $0.rangeValue.exact(toLength: textLength) == nil }
+                onSplitStyleDiagnostic("style.skip", "length=\(textLength) invalidLayout=\(String(describing: invalidLayout?.range)) invalidSelection=\(String(describing: invalidSelection?.rangeValue))")
+            }
             NodeMarkdownTextKit2Diagnostics.log("拒绝全文样式事务：行范围或选区与真实正文不一致。")
             return
         }
@@ -69,6 +77,7 @@ extension NodeMarkdownTextKit2TextView {
             )
         }
         NodeMarkdownDiagnostic31.record("全文样式恢复选区后", in: self, rowLayouts: rowLayouts)
+        onSplitStyleDiagnostic?("style.applied", "")
         setNeedsDisplay(bounds)
     }
 

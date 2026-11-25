@@ -13,11 +13,13 @@ extension NodeMarkdownTextKit2TextView {
         selectedRanges: [NSValue]? = nil
     ) {
         NodeMarkdownTextKit2Diagnostics.log("TextStorage准备替换全文，输入UTF16长度=\((value as NSString).length)，替换前storage长度=\(nodeTextStorage.length)。")
+        onSplitStyleDiagnostic?("replace.before", "")
         let attributed = NSAttributedString(string: value)
         nodeTextContentStorage.performEditingTransaction {
             nodeTextStorage.setAttributedString(attributed)
         }
         nodeSourceTextSnapshot = value
+        onSplitStyleDiagnostic?("replace.after", "")
         NodeMarkdownTextKit2Diagnostics.report(
             stage: "TextStorage全文替换完成",
             textView: self,

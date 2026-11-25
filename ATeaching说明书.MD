@@ -1,3 +1,7 @@
+## NodeMarkdown 拆行样式诊断（1.2611250857 / 1006）
+
+本版新增 Mac NodeMarkdown 回车后字体丢失诊断。若原行再次变成默认小字体，请记下复现时刻，便于在调试日志里定位 `NodeMarkdown.SplitStyle` 记录。
+
 ## NodeMarkdown 结构提交复用索引（1.2611241323 / 1005）
 
 Mac NodeMarkdown 更改层级、拆分或合并节点时，减少维护 H3 包的重复工作。操作方式、回车后的光标位置和滚动行为沿用原有规则。
