@@ -66,7 +66,10 @@ struct NodeMarkdownEditorView: View {
     @Environment(\.colorScheme) private var systemColorScheme
     @Environment(\.dismiss) private var dismiss
 
-    @State private var document = NodeMarkdownDocument()
+    @State private var structuralBaseline: UUID?
+    @State private var document = NodeMarkdownDocument() {
+        didSet { structuralBaseline = nil }
+    }
     @State private var documentIndex = NodeMarkdownDocumentIndex()
     @State private var fileMeta = NodeMarkdownFileMeta()
     @State private var isLoading = false
@@ -900,6 +903,8 @@ struct NodeMarkdownEditorView: View {
                     }
                 }
                 : nil,
+            structuralBaseline: { structuralBaseline },
+            onStructuralDelta: { delta in applyStructuralDelta(delta) },
             onDocumentSnapshot: { snapshot in
                 applyTextKit2DocumentSnapshot(snapshot)
             },
@@ -1356,6 +1361,7 @@ struct NodeMarkdownEditorView: View {
                 }.value
                 await MainActor.run {
                     if documentRevision == revisionBeforeSync {
+                        structuralBaseline = nil
                         packageChangeTracker.applySuccessfulSyncBaselines(
                             baselineUpdates,
                             removeSourceIDs: syncedDirtyIDs,
@@ -1395,6 +1401,7 @@ struct NodeMarkdownEditorView: View {
         let summary = try await syncAllClassSessionPackagesForClose(student: student)
         let failed = summary.packageResults.filter { !$0.success }
         if failed.isEmpty {
+            structuralBaseline = nil
             packageChangeTracker.resetLocalQueues()
             dirtyPackageItems = []
             newPackageItems = []
@@ -1533,9 +1540,71 @@ struct NodeMarkdownEditorView: View {
     /// TextKit2结构操作必须在当前事件中立即安装到外层文档。
     /// 如果像旧管线那样防抖，新行的UUID会在第一次输入和离行时尚未存在，
     /// 进而丢失焦点、脏包和新包归属。
+    private func applyStructuralDelta(_ delta: NodeMarkdownStructuralDelta) -> UUID? {
+        guard !isNotebookWriteOperationInProgress, structuralBaseline == delta.baseline,
+              documentIndex.nodeCount == delta.oldCount, delta.newCount > 0,
+              textKitDraftRowMetadata.count == delta.oldCount else { return nil }
+        let trace = NodeMarkdownPerformanceTrace("parentStructuralDelta")
+        defer { trace.finish(rows: document.nodes.count) }
+        let previous = document
+        let previousIndex = documentIndex
+        guard let applied = delta.applying(to: previous, index: previousIndex, rowMetadata: textKitDraftRowMetadata, now: Date())
+        else { return nil }
+        var updated = applied.document
+        trace.mark("splice")
+        let index = NodeMarkdownDocumentIndex(nodes: updated.nodes)
+        trace.mark("index")
+        let impacted = updated.maintainH3AfterStructuralEdit(
+            previous: previous, changedIDs: delta.affectedIDs, previousIndex: previousIndex,
+            currentIndex: index, at: Date()
+        )
+        trace.mark("H3Maintenance")
+
+        invalidatePendingTextKitParsing()
+        imageReferenceIndex = nil
+        document = updated
+        documentIndex = index
+        textKitDraft = updated.nodes.map(\.text).joined(separator: "\n")
+        textKitDraftRowMetadata = applied.metadata
+        if structuralEditChangesImageReferences(
+            from: previous, to: updated, affectedIDs: delta.affectedIDs,
+            previousIndex: previousIndex, currentIndex: index
+        ) {
+            cleanupUnusedImageAssets(previousDocument: previous, currentDocument: updated)
+        }
+        trace.mark("imageCleanup")
+        if isClassSessionEditor {
+            packageChangeTracker.recordStructuralMutation(
+                previous: previous, current: updated, affectedH3IDs: impacted,
+                previousIndex: previousIndex, currentIndex: index
+            )
+            trace.mark("packageMutation")
+            refreshLocalPackageListsAndLight(affectedH3IDs: impacted)
+            trace.mark("packageListRefresh")
+        }
+        markDocumentDirty()
+        scheduleSnapshotRebuild()
+        rebuildSearchResults()
+        trace.mark("remaining")
+        let token = UUID()
+        structuralBaseline = token
+        return token
+    }
+
+    private func hasNormalizedPackageMtime(at row: Int) -> Bool {
+        guard let rootRow = documentIndex.owningH3Row(for: row),
+              let range = documentIndex.packageRange(rootID: document.nodes[rootRow].id),
+              range.upperBound == document.nodes.count || document.nodes[range.upperBound].level == 3 else {
+            return true
+        }
+        let rootTime = document.nodes[rootRow].mtimeCache
+        return range.dropFirst().allSatisfy { document.nodes[$0].mtimeCache <= rootTime }
+    }
+
     private func applyTextKit2DocumentSnapshot(_ snapshot: NodeMarkdownLegacyDocumentSnapshot) {
         let trace = NodeMarkdownPerformanceTrace("parentSnapshot")
         defer { trace.mark("remaining"); trace.finish(rows: document.nodes.count) }
+        structuralBaseline = nil
         guard !isNotebookWriteOperationInProgress else { return }
         pendingTextKitParseTask?.cancel()
         textKitParseGeneration &+= 1
@@ -1589,6 +1658,10 @@ struct NodeMarkdownEditorView: View {
         trace.mark("dirtyAndSchedule")
         rebuildSearchResults()
         trace.mark("search")
+        if snapshot.rows.count == parsed.nodes.count,
+           zip(snapshot.rows, parsed.nodes).allSatisfy({ $0.matches($1) }) {
+            structuralBaseline = UUID()
+        }
     }
 
     /// 旧管线结构操作的唯一入口。正文和Node身份已经封装在同一份带版本快照中，
@@ -1658,6 +1731,8 @@ struct NodeMarkdownEditorView: View {
     private func commitLegacyEditingNode(_ draft: NodeMarkdownLegacyEditingNodeDraft) {
         let trace = NodeMarkdownPerformanceTrace("parentNodeCommit")
         defer { trace.mark("remaining"); trace.finish(rows: document.nodes.count) }
+        let priorStructuralBaseline = structuralBaseline
+        structuralBaseline = nil
         guard let nodeID = UUID(uuidString: draft.nodeID),
               let rowIndex = documentIndex.row(for: nodeID),
               document.nodes.indices.contains(rowIndex) else {
@@ -1697,6 +1772,16 @@ struct NodeMarkdownEditorView: View {
         } else {
             sourceID = ""
             sourceFile = ""
+        }
+
+        defer {
+            if priorStructuralBaseline != nil,
+               previousNode.level == level,
+               level == draft.level, sourceID == draft.sourceID, sourceFile == draft.sourceFile,
+               hasNormalizedPackageMtime(at: rowIndex),
+               NodeMarkdownLegacyAttachmentSourceRepair.repair(draft.content).utf8.elementsEqual(draft.content.utf8) {
+                structuralBaseline = UUID()
+            }
         }
 
         let nodeChanged = previousNode.level != level
@@ -1957,6 +2042,7 @@ struct NodeMarkdownEditorView: View {
 
     /// 外部插包、结构操作和磁盘重载会更换整份Node快照；旧编辑回调从这一刻起永久失效。
     private func invalidatePendingTextKitParsing() {
+        structuralBaseline = nil
         pendingTextKitParseTask?.cancel()
         pendingTextKitParseTask = nil
         latestLegacyDocumentSnapshot = nil
@@ -2540,9 +2626,12 @@ struct NodeMarkdownEditorView: View {
         }
     }
 
-    private func refreshLocalPackageListsAndLight() {
-        dirtyPackageItems = packageChangeTracker.dirtyPackageDisplayItems(document: document)
-        newPackageItems = packageChangeTracker.newPackageDisplayItems(document: document)
+    private func refreshLocalPackageListsAndLight(affectedH3IDs: Set<UUID>? = nil) {
+        let index = affectedH3IDs == nil ? nil : documentIndex
+        dirtyPackageItems = packageChangeTracker.dirtyPackageDisplayItems(document: document, structuralIndex: index)
+        newPackageItems = packageChangeTracker.newPackageDisplayItems(
+            document: document, structuralIndex: index, affectedH3IDs: affectedH3IDs
+        )
         let availableIDs = Set(newPackageItems.map(\.id))
         if selectedNewPackageIDs.isEmpty, !availableIDs.isEmpty {
             selectedNewPackageIDs = availableIDs
@@ -2661,6 +2750,7 @@ struct NodeMarkdownEditorView: View {
                 )
                 await MainActor.run {
                     pendingClassUpdateCount = packageChangeTracker.resetPendingCount()
+                    structuralBaseline = nil
                     packageChangeTracker.acceptSuccessfulSyncResults(
                         summary.packageResults,
                         document: document
@@ -3821,6 +3911,26 @@ struct NodeMarkdownEditorView: View {
         }
         for text in previousText.values {
             oldPaths.formUnion(NodeMarkdownImageResourceManager.imagePaths(in: text, notebookFileURL: fileURL))
+        }
+        return oldPaths != newPaths
+    }
+
+    private func structuralEditChangesImageReferences(
+        from previous: NodeMarkdownDocument, to current: NodeMarkdownDocument, affectedIDs: Set<UUID>,
+        previousIndex: NodeMarkdownDocumentIndex, currentIndex: NodeMarkdownDocumentIndex
+    ) -> Bool {
+        var oldPaths = Set<String>()
+        var newPaths = Set<String>()
+        for id in affectedIDs {
+            let old = previousIndex.row(for: id).map { previous.nodes[$0].text }
+            let new = currentIndex.row(for: id).map { current.nodes[$0].text }
+            guard old != new else { continue }
+            if let old {
+                oldPaths.formUnion(NodeMarkdownImageResourceManager.imagePaths(in: old, notebookFileURL: fileURL))
+            }
+            if let new {
+                newPaths.formUnion(NodeMarkdownImageResourceManager.imagePaths(in: new, notebookFileURL: fileURL))
+            }
         }
         return oldPaths != newPaths
     }

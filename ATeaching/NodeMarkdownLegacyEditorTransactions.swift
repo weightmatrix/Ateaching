@@ -36,6 +36,12 @@ nonisolated struct NodeMarkdownLegacyDocumentSnapshot: Equatable {
         let sourceID: String
         let sourceFile: String
 
+        func matches(_ node: NodeMarkdownNode) -> Bool {
+            nodeID == node.id.uuidString && level == node.level
+                && content.utf8.elementsEqual(node.text.utf8)
+                && sourceID == node.sourceID && sourceFile == node.sourceFile
+        }
+
         var metadata: NodeMarkdownTextKitRowMetadata {
             NodeMarkdownTextKitRowMetadata(
                 nodeID: nodeID,
@@ -56,6 +62,85 @@ nonisolated struct NodeMarkdownLegacyDocumentSnapshot: Equatable {
 
     var rowMetadata: [NodeMarkdownTextKitRowMetadata] {
         rows.map(\.metadata)
+    }
+}
+
+/// Rows moved, removed, inserted or changed by one editor transaction.
+nonisolated struct NodeMarkdownStructuralDelta {
+    struct Row {
+        let index: Int
+        let id: UUID
+        let value: NodeMarkdownLegacyDocumentSnapshot.Row
+    }
+
+    let baseline: UUID
+    let oldCount: Int
+    let newCount: Int
+    let affectedIDs: Set<UUID>
+    let rows: [Row]
+
+    func applying(
+        to previous: NodeMarkdownDocument,
+        index: NodeMarkdownDocumentIndex,
+        rowMetadata: [NodeMarkdownTextKitRowMetadata],
+        now: Date
+    ) -> (document: NodeMarkdownDocument, metadata: [NodeMarkdownTextKitRowMetadata])? {
+        guard previous.nodes.count == oldCount, index.nodeCount == oldCount, newCount > 0 else { return nil }
+        let removed = IndexSet(affectedIDs.compactMap(index.row(for:)))
+        var decoded: [NodeMarkdownNode] = []
+        decoded.reserveCapacity(rows.count)
+        for row in rows {
+            let old = index.row(for: row.id).map { previous.nodes[$0] }
+            let node = NodeMarkdownPlainTextCodec.parse(
+                row: row.value, nodeID: row.id, previousNode: old, now: now
+            )
+            // If the codec repairs or fills in metadata, reestablish agreement
+            // with the full snapshot before accepting another delta.
+            guard row.value.matches(node) else { return nil }
+            decoded.append(node)
+        }
+        guard let nodes = applying(to: previous.nodes, removing: removed, inserting: decoded),
+              let metadata = applying(to: rowMetadata, removing: removed, inserting: rows.map({ $0.value.metadata }))
+        else { return nil }
+        return (NodeMarkdownDocument(nodes: nodes), metadata)
+    }
+
+    private func applying<Element>(
+        to original: [Element],
+        removing removedRows: IndexSet,
+        inserting values: [Element]
+    ) -> [Element]? {
+        guard original.count == oldCount, rows.count == values.count,
+              oldCount - removedRows.count + values.count == newCount,
+              (removedRows.last ?? -1) < oldCount else { return nil }
+        var result: [Element] = []
+        result.reserveCapacity(newCount)
+        var oldRow = 0
+        var removals = removedRows.rangeView.makeIterator()
+        var removal = removals.next()
+
+        func copyUnchanged(count: Int) -> Bool {
+            guard count >= 0 else { return false }
+            var remaining = count
+            while let range = removal, range.lowerBound - oldRow <= remaining {
+                guard oldRow <= range.lowerBound else { return false }
+                result.append(contentsOf: original[oldRow..<range.lowerBound])
+                remaining -= range.lowerBound - oldRow
+                oldRow = range.upperBound
+                removal = removals.next()
+            }
+            guard remaining <= oldCount - oldRow else { return false }
+            result.append(contentsOf: original[oldRow..<(oldRow + remaining)])
+            oldRow += remaining
+            return true
+        }
+
+        for (row, value) in zip(rows, values) {
+            guard row.index < newCount, copyUnchanged(count: row.index - result.count) else { return nil }
+            result.append(value)
+        }
+        guard copyUnchanged(count: newCount - result.count), oldRow == oldCount else { return nil }
+        return result
     }
 }
 

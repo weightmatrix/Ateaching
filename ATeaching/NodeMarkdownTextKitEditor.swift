@@ -5811,14 +5811,14 @@ nonisolated enum NodeMarkdownPlainTextCodec {
     /// 猜测UUID。只有快照中新建或重复的非法身份才生成新UUID。
     nonisolated static func parse(
         snapshot: NodeMarkdownLegacyDocumentSnapshot,
-        previousNodes: [NodeMarkdownNode]
+        previousNodes: [NodeMarkdownNode],
+        now: Date = Date()
     ) -> NodeMarkdownDocument {
         var previousByID: [UUID: NodeMarkdownNode] = [:]
         for node in previousNodes where previousByID[node.id] == nil {
             previousByID[node.id] = node
         }
 
-        let now = Date()
         var assignedIDs: Set<UUID> = []
         var nodes: [NodeMarkdownNode] = []
         nodes.reserveCapacity(max(1, snapshot.rows.count))
@@ -5838,51 +5838,61 @@ nonisolated enum NodeMarkdownPlainTextCodec {
             }()
             assignedIDs.insert(nodeID)
 
-            let previousNode = previousByID[nodeID]
-            let previousIsProtectedH3 = previousNode?.level == 3
-                && !(previousNode?.sourceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
-                && !(previousNode?.sourceFile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
-            let level = previousIsProtectedH3 ? 3 : max(1, min(12, row.level))
-            let rowSourceID = keepsRequestedIdentity
-                ? row.sourceID.trimmingCharacters(in: .whitespacesAndNewlines)
-                : ""
-            let rowSourceFile = keepsRequestedIdentity
-                ? row.sourceFile.trimmingCharacters(in: .whitespacesAndNewlines)
-                : ""
-            let sourceID: String
-            let sourceFile: String
-            if level == 3 {
-                // 已有关联的H3绝不能因一次元数据短缺而失去母本身份。
-                sourceID = rowSourceID.isEmpty ? (previousNode?.sourceID ?? "") : row.sourceID
-                sourceFile = rowSourceFile.isEmpty ? (previousNode?.sourceFile ?? "") : row.sourceFile
-            } else {
-                sourceID = ""
-                sourceFile = ""
-            }
-
-            let repairedContent = NodeMarkdownLegacyAttachmentSourceRepair.repair(row.content)
-            let changed = previousNode?.level != level
-                || previousNode?.text != repairedContent
-                || previousNode?.sourceID != sourceID
-                || previousNode?.sourceFile != sourceFile
-            let mtime = changed ? now : (previousNode?.mtimeCache ?? now)
-            nodes.append(
-                NodeMarkdownNode(
-                    id: nodeID,
-                    level: level,
-                    text: repairedContent,
-                    sourceID: sourceID,
-                    sourceFile: sourceFile,
-                    cache: level == 3 ? NodeMarkdownCacheCodec.encode(mtime: mtime) : "",
-                    mtimeCache: mtime
-                )
-            )
+            nodes.append(parse(
+                row: row, nodeID: nodeID, previousNode: previousByID[nodeID],
+                keepsRequestedIdentity: keepsRequestedIdentity, now: now
+            ))
         }
 
         if nodes.isEmpty {
             nodes = [NodeMarkdownNode(level: 1, text: "")]
         }
         return NodeMarkdownDocument(nodes: nodes)
+    }
+
+    nonisolated static func parse(
+        row: NodeMarkdownLegacyDocumentSnapshot.Row,
+        nodeID: UUID,
+        previousNode: NodeMarkdownNode?,
+        keepsRequestedIdentity: Bool = true,
+        now: Date
+    ) -> NodeMarkdownNode {
+        let previousIsProtectedH3 = previousNode?.level == 3
+            && !(previousNode?.sourceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+            && !(previousNode?.sourceFile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        let level = previousIsProtectedH3 ? 3 : max(1, min(12, row.level))
+        let rowSourceID = keepsRequestedIdentity
+            ? row.sourceID.trimmingCharacters(in: .whitespacesAndNewlines)
+            : ""
+        let rowSourceFile = keepsRequestedIdentity
+            ? row.sourceFile.trimmingCharacters(in: .whitespacesAndNewlines)
+            : ""
+        let sourceID: String
+        let sourceFile: String
+        if level == 3 {
+            // 已有关联的H3绝不能因一次元数据短缺而失去母本身份。
+            sourceID = rowSourceID.isEmpty ? (previousNode?.sourceID ?? "") : row.sourceID
+            sourceFile = rowSourceFile.isEmpty ? (previousNode?.sourceFile ?? "") : row.sourceFile
+        } else {
+            sourceID = ""
+            sourceFile = ""
+        }
+
+        let repairedContent = NodeMarkdownLegacyAttachmentSourceRepair.repair(row.content)
+        let changed = previousNode?.level != level
+            || previousNode?.text != repairedContent
+            || previousNode?.sourceID != sourceID
+            || previousNode?.sourceFile != sourceFile
+        let mtime = changed ? now : (previousNode?.mtimeCache ?? now)
+        return NodeMarkdownNode(
+            id: nodeID,
+            level: level,
+            text: repairedContent,
+            sourceID: sourceID,
+            sourceFile: sourceFile,
+            cache: level == 3 ? NodeMarkdownCacheCodec.encode(mtime: mtime) : "",
+            mtimeCache: mtime
+        )
     }
 
     nonisolated static func parse(

@@ -32,6 +32,10 @@ struct NodeMarkdownTextKit2Node: Equatable, Identifiable {
         )
     }
 
+    var legacySnapshotRow: NodeMarkdownLegacyDocumentSnapshot.Row {
+        .init(nodeID: id.uuidString, level: level, content: content, sourceID: sourceID, sourceFile: sourceFile)
+    }
+
     var isProtectedH3: Bool { metadata.isProtectedH3 }
 }
 
@@ -97,6 +101,19 @@ final class NodeMarkdownTextKit2DocumentState {
             revision: revision,
             nodes: nodes,
             nodeRevisions: nodeRevisions
+        )
+    }
+
+    func structuralDelta(
+        for result: NodeMarkdownTransactionResult, baseline: UUID, oldCount: Int
+    ) -> NodeMarkdownStructuralDelta {
+        let rows = result.affectedNodeIDs.compactMap { id -> NodeMarkdownStructuralDelta.Row? in
+            guard let row = row(for: id), let node = node(at: row) else { return nil }
+            return .init(index: row, id: id, value: node.legacySnapshotRow)
+        }.sorted { $0.index < $1.index }
+        return .init(
+            baseline: baseline, oldCount: oldCount, newCount: nodes.count,
+            affectedIDs: result.affectedNodeIDs, rows: rows
         )
     }
 

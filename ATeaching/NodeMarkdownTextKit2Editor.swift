@@ -63,6 +63,8 @@ struct NodeMarkdownTextKit2Editor: View {
     var onRequestOpenDrawingBoardAtRow: ((Int) -> Void)?
     var onActiveRowChange: ((Int?) -> Void)?
     var onFocusLocationChange: ((NodeMarkdownTextFocusLocation?) -> Void)?
+    var structuralBaseline: (() -> UUID?)?
+    var onStructuralDelta: ((NodeMarkdownStructuralDelta) -> UUID?)?
     var onDocumentSnapshot: ((NodeMarkdownLegacyDocumentSnapshot) -> Void)?
     var onCommitEditingNode: ((NodeMarkdownLegacyEditingNodeDraft) -> Void)?
     var onEditingDraftDirtyChange: ((Bool) -> Void)?
@@ -97,6 +99,8 @@ struct NodeMarkdownTextKit2Editor: View {
             onRequestOpenDrawingBoardAtRow: onRequestOpenDrawingBoardAtRow,
             onActiveRowChange: onActiveRowChange,
             onFocusLocationChange: onFocusLocationChange,
+            structuralBaseline: structuralBaseline,
+            onStructuralDelta: onStructuralDelta,
             onDocumentSnapshot: onDocumentSnapshot,
             onCommitEditingNode: onCommitEditingNode,
             onEditingDraftDirtyChange: onEditingDraftDirtyChange,

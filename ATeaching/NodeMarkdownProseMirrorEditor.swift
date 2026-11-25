@@ -31,6 +31,8 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
     var onRequestOpenDrawingBoardAtRow: ((Int) -> Void)?
     var onActiveRowChange: ((Int?) -> Void)?
     var onFocusLocationChange: ((NodeMarkdownTextFocusLocation?) -> Void)?
+    var structuralBaseline: (() -> UUID?)?
+    var onStructuralDelta: ((NodeMarkdownStructuralDelta) -> UUID?)?
     var onDocumentSnapshot: ((NodeMarkdownLegacyDocumentSnapshot) -> Void)?
     var onCommitEditingNode: ((NodeMarkdownLegacyEditingNodeDraft) -> Void)?
     var onEditingDraftDirtyChange: ((Bool) -> Void)?
@@ -127,6 +129,8 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
         private let rowIdentifier = NSUserInterfaceItemIdentifier("NodeMarkdownProseMirrorRow")
         private let bottomPageMarginIdentifier = NSUserInterfaceItemIdentifier("NodeMarkdownBottomPageMargin")
         private let bottomPageMarginHeight: CGFloat = 15
+        private var structuralBaseline: (token: UUID, revision: UInt64, count: Int)?
+        private var pendingBaselineDraft: (id: UUID, revision: UInt64)?
         private let sessionID: UUID
         private let diagnostic114: NodeMarkdownDiagnostic114
 
@@ -470,6 +474,14 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 reinstall(node: oldNode, in: textView, row: row)
                 return
             }
+            if structuralBaseline?.revision == result.revisionBefore
+                || (pendingBaselineDraft?.id == nodeID && pendingBaselineDraft?.revision == result.revisionBefore) {
+                pendingBaselineDraft = (nodeID, result.revisionAfter)
+                if baselineNode == replacement {
+                    structuralBaseline?.revision = result.revisionAfter
+                    pendingBaselineDraft = nil
+                }
+            }
             if let operationID = textView.diagnostic117OperationID {
                 NodeMarkdownDiagnostic117.record(
                     operationID: operationID,
@@ -529,7 +541,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             trace.mark("selection")
             if let baselineNode, baselineNode != node {
                 if let onCommitEditingNode = owner.onCommitEditingNode {
-                    onCommitEditingNode(draft(for: node))
+                    commitNodeToParent(node, action: onCommitEditingNode)
                 } else {
                     publishProjectionFallback()
                 }
@@ -563,13 +575,28 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                   let node = state.node(at: row) else { return }
             if baselineNode != node {
                 if let onCommitEditingNode = owner.onCommitEditingNode {
-                    onCommitEditingNode(draft(for: node))
+                    commitNodeToParent(node, action: onCommitEditingNode)
                 } else {
                     publishProjectionFallback()
                 }
                 baselineNode = node
             }
             owner.onEditingDraftDirtyChange?(false)
+        }
+
+        private func commitNodeToParent(
+            _ node: NodeMarkdownTextKit2Node,
+            action: (NodeMarkdownLegacyEditingNodeDraft) -> Void
+        ) {
+            let wasAligned = structuralBaseline?.token == owner.structuralBaseline?()
+                && structuralBaseline?.count == state.nodes.count
+                && (structuralBaseline?.revision == state.revision
+                    || (pendingBaselineDraft?.id == node.id && pendingBaselineDraft?.revision == state.revision))
+            action(draft(for: node))
+            pendingBaselineDraft = nil
+            if wasAligned, let token = owner.structuralBaseline?() {
+                structuralBaseline = (token, state.revision, state.nodes.count)
+            }
         }
 
         func cancelPendingPublish() {
@@ -1185,7 +1212,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             )
             pendingFocusNodeID = targetNodeID
             pendingFocusOffset = targetOffset
-            publishNow()
+            publishNow(structuralResult: result)
 
             DispatchQueue.main.async { [weak self] in
                 guard let self,
@@ -1294,7 +1321,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
                 reinstall(node: updated, in: textView, row: row)
                 measure(textView: textView, nodeID: nodeID, row: row)
             }
-            publishNow()
+            publishNow(structuralResult: result)
             recordDiagnostic123(operationID: diagnosticID, stage: "改级后", anchorID: nodeID)
             DispatchQueue.main.async { [weak self] in
                 self?.recordDiagnostic123(operationID: diagnosticID, stage: "下一轮", anchorID: nodeID)
@@ -2501,26 +2528,43 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: work)
         }
 
-        private func publishNow() {
+        private func publishNow(structuralResult: NodeMarkdownTransactionResult? = nil) {
             let diagnosticStart = NodeMarkdownDiagnostic114.now()
             defer {
                 diagnostic114.recordDuration("发布文档快照", since: diagnosticStart, slowThresholdMilliseconds: 8)
                 diagnostic114.flushIfNeeded(reason: "发布快照", readyRows: readyRowCount)
             }
             cancelPendingPublish()
+            let pendingDraft = pendingBaselineDraft
+            pendingBaselineDraft = nil
+            if let result = structuralResult, result.structural,
+               result.revisionAfter == state.revision,
+               let baseline = structuralBaseline,
+               baseline.revision == result.revisionBefore
+                   || pendingDraft.map({ $0.revision == result.revisionBefore && result.affectedNodeIDs.contains($0.id) }) == true,
+               baseline.token == owner.structuralBaseline?(),
+               let onStructuralDelta = owner.onStructuralDelta {
+                let delta = state.structuralDelta(for: result, baseline: baseline.token, oldCount: baseline.count)
+                if let token = onStructuralDelta(delta) {
+                    structuralBaseline = (token, state.revision, state.nodes.count)
+                    return
+                }
+            }
+            structuralBaseline = nil
             let snapshot = state.snapshot
             if let onDocumentSnapshot = owner.onDocumentSnapshot {
                 let projectionStart = NodeMarkdownDiagnostic114.now()
                 let publishedSnapshot = NodeMarkdownLegacyDocumentSnapshot(
                     sessionID: sessionID,
                     revision: snapshot.revision,
-                    rows: snapshot.nodes.map {
-                        .init(nodeID: $0.id.uuidString, level: $0.level, content: $0.content, sourceID: $0.sourceID, sourceFile: $0.sourceFile)
-                    }
+                    rows: snapshot.nodes.map(\.legacySnapshotRow)
                 )
                 diagnostic114.recordDuration("快照构建全部行", since: projectionStart)
                 let callbackStart = NodeMarkdownDiagnostic114.now()
                 onDocumentSnapshot(publishedSnapshot)
+                if let token = owner.structuralBaseline?() {
+                    structuralBaseline = (token, snapshot.revision, snapshot.nodes.count)
+                }
                 diagnostic114.recordDuration("快照提交外层", since: callbackStart)
             } else {
                 publishProjectionFallback()

@@ -192,6 +192,85 @@ nonisolated struct NodeMarkdownDocument: Hashable, Codable {
         }
     }
 
+    /// Apply the same H3 timestamp rules as a full snapshot, limited to the
+    /// transaction's changes and packages whose boundaries may have moved.
+    mutating func maintainH3AfterStructuralEdit(
+        previous: NodeMarkdownDocument,
+        changedIDs: Set<UUID>,
+        previousIndex: NodeMarkdownDocumentIndex,
+        currentIndex: NodeMarkdownDocumentIndex,
+        at timestamp: Date
+    ) -> Set<UUID> {
+        var impacted = Set<UUID>()
+        var touched = Set<UUID>()
+
+        func owner(in document: NodeMarkdownDocument, index: NodeMarkdownDocumentIndex, row: Int?) -> UUID? {
+            row.flatMap(index.owningH3Row(for:)).map { document.nodes[$0].id }
+        }
+
+        func collectOwners(of id: UUID) {
+            if let owner = owner(in: previous, index: previousIndex, row: previousIndex.row(for: id)) {
+                impacted.insert(owner)
+            }
+            if let owner = owner(in: self, index: currentIndex, row: currentIndex.row(for: id)) {
+                impacted.insert(owner)
+            }
+        }
+
+        for id in changedIDs {
+            let oldRow = previousIndex.row(for: id)
+            let newRow = currentIndex.row(for: id)
+            collectOwners(of: id)
+            if let row = oldRow, row > 0 {
+                collectOwners(of: previous.nodes[row - 1].id)
+            }
+            if let row = newRow, row > 0 {
+                collectOwners(of: nodes[row - 1].id)
+            }
+            if let row = oldRow, row + 1 < previous.nodes.count {
+                collectOwners(of: previous.nodes[row + 1].id)
+            }
+            if let row = newRow, row + 1 < nodes.count {
+                collectOwners(of: nodes[row + 1].id)
+            }
+            let oldOwner = owner(in: previous, index: previousIndex, row: oldRow)
+            let newOwner = owner(in: self, index: currentIndex, row: newRow)
+            switch (oldRow, newRow) {
+            case (let old?, let new?):
+                let before = previous.nodes[old]
+                let after = nodes[new]
+                if before.level != after.level || before.text != after.text {
+                    if let oldOwner { touched.insert(oldOwner) }
+                    if let newOwner { touched.insert(newOwner) }
+                }
+            case (nil, let new?):
+                if nodes[new].level != 3, let newOwner { touched.insert(newOwner) }
+            case (.some, nil):
+                if let oldOwner { touched.insert(oldOwner) }
+            case (nil, nil):
+                break
+            }
+        }
+
+        for id in impacted {
+            guard let range = currentIndex.packageRange(rootID: id) else { continue }
+            let root = range.lowerBound
+            var mtime = touched.contains(id) ? timestamp : nodes[root].mtimeCache
+            // The full snapshot flushes the previous package at the next H3
+            // or at end of document. H1/H2 boundaries discard that accumulator.
+            if range.upperBound == nodes.count || nodes[range.upperBound].level == 3 {
+                for row in range.dropFirst() {
+                    mtime = max(mtime, nodes[row].mtimeCache)
+                }
+            }
+            if mtime != nodes[root].mtimeCache {
+                nodes[root].mtimeCache = mtime
+                nodes[root].cache = NodeMarkdownCacheCodec.encode(mtime: mtime)
+            }
+        }
+        return impacted
+    }
+
     mutating func touchChangedH3Packages(
         comparedTo previousDocument: NodeMarkdownDocument,
         at timestamp: Date = Date(),

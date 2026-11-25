@@ -34,10 +34,16 @@ for name in sorted(needed):
         image_code += body + '\n'
 image_code += '}\n' + '@MainActor\n' + typ(images, 'final class NodeMarkdownImageReferenceIndex')
 tracker_names = ['func establishBaseline(', 'func recordNodeMutation(', 'func recordDocumentMutation(',
+                 'func recordStructuralMutation(', 'func newPackageDisplayItems(', 'func dirtyPackageDisplayItems(',
                  'func localPendingCount(', 'private func isNewPackageRoot(', 'private func hasCompleteSourceLink(',
                  'private func addNewPackage(nodeID:', 'private func reconcileNewPackageList(', 'private func removeNewPackage(']
 tracker_code = '''@MainActor
 final class TeachingCoursePackageChangeTracker {
+ struct PackageDisplayItem: Equatable {
+  let id: String
+  let title: String
+  let sourceFile: String
+ }
  var activeRowSnapshot: Int? = nil
  var dirtyPackageIDs: Set<String> = []
  var newPackageOrderedIDs: [String] = []
@@ -68,13 +74,169 @@ source += typ(images, 'struct NodeMarkdownImageToken')+'\n'
 source += typ(images, 'private struct NodeMarkdownUndoImageStashRecord')+'\n'
 source += typ(images, 'nonisolated private struct NodeMarkdownUndoImageStashManifest')+'\n'
 source += image_code + "\n" + tracker_code
+transaction_file = (repo/'ATeaching/NodeMarkdownLegacyEditorTransactions.swift').read_text()
+for name in ('NodeMarkdownLegacyDocumentSnapshot', 'NodeMarkdownStructuralDelta', 'NodeMarkdownTextKitRowMetadata'):
+    source += typ(transaction_file, 'nonisolated struct '+name) + '\n'
+for name in ('NodeMarkdownProseMirrorCore', 'NodeMarkdownProseMirrorRuntime',
+             'NodeMarkdownTextKit2DocumentState', 'NodeMarkdownTextKit2Range', 'NodeMarkdownLegacyAttachmentSourceRepair'):
+    source += (repo/f'ATeaching/{name}.swift').read_text() + '\n'
+codec = (repo/'ATeaching/NodeMarkdownTextKitEditor.swift').read_text()
+codec_start = codec.index('nonisolated enum NodeMarkdownPlainTextCodec {')
+source += codec[codec_start:codec.index('    nonisolated static func parse(\n        text:', codec_start)] + '}\n'
 source += r'''
 @MainActor func assertEquivalent(_ a: TeachingCoursePackageChangeTracker, _ b: TeachingCoursePackageChangeTracker) {
  precondition(a.dirtyPackageIDs == b.dirtyPackageIDs)
  precondition(a.newPackageOrderedIDs == b.newPackageOrderedIDs)
  precondition(a.baselineDigestByH3ID == b.baselineDigestByH3ID)
 }
+@MainActor func structuralTests() {
+ let root = NodeMarkdownNode(level: 3, text: "A", sourceID: UUID().uuidString, sourceFile: "mother.csv")
+ let child = NodeMarkdownNode(level: 4, text: "前后")
+ let boundary = NodeMarkdownNode(level: 2, text: "chapter")
+ let orphan = NodeMarkdownNode(level: 4, text: "outside")
+ let fresh = NodeMarkdownNode(level: 3, text: "new")
+ let tail = NodeMarkdownNode(level: 4, text: "body")
+ let linked = NodeMarkdownNode(level: 3, text: "B", sourceID: UUID().uuidString, sourceFile: "mother.csv")
+ let fixture = NodeMarkdownDocument(nodes: [root, child, boundary, orphan, fresh, tail, linked])
+ let metadata = fixture.nodes.map {
+  NodeMarkdownTextKitRowMetadata(nodeID: $0.id.uuidString, level: $0.level, sourceID: $0.sourceID, sourceFile: $0.sourceFile)
+ }
+ let state = NodeMarkdownTextKit2DocumentState(text: NodeMarkdownPlainTextCodec.serialize(document: fixture), rowMetadata: metadata)
+ let session = UUID()
+ let token = UUID()
+ var clock = Date().addingTimeInterval(60)
+ func snapshot() -> NodeMarkdownLegacyDocumentSnapshot {
+  .init(sessionID: session, revision: state.revision, rows: state.nodes.map(\.legacySnapshotRow))
+ }
+ var initial = NodeMarkdownPlainTextCodec.parse(snapshot: snapshot(), previousNodes: fixture.nodes, now: clock)
+ initial.propagateChildMtimeToH3Roots()
+ var previous = initial
+ var previousMetadata = snapshot().rowMetadata
+ let full = TeachingCoursePackageChangeTracker(), deltaTracker = TeachingCoursePackageChangeTracker()
+ full.establishBaseline(document: initial)
+ deltaTracker.establishBaseline(document: initial)
+ func compare(_ result: NodeMarkdownTransactionResult) {
+  clock += 1
+  let next = snapshot()
+  let oldIndex = NodeMarkdownDocumentIndex(nodes: previous.nodes)
+  let delta = state.structuralDelta(for: result, baseline: token, oldCount: previous.nodes.count)
+  let applied = delta.applying(to: previous, index: oldIndex, rowMetadata: previousMetadata, now: clock)!
+  var actual = applied.document
+  let index = NodeMarkdownDocumentIndex(nodes: actual.nodes)
+  let impacted = actual.maintainH3AfterStructuralEdit(previous: previous, changedIDs: result.affectedNodeIDs, previousIndex: oldIndex, currentIndex: index, at: clock)
+  var expected = NodeMarkdownPlainTextCodec.parse(snapshot: next, previousNodes: previous.nodes, now: clock)
+  _ = expected.restoreMissingH3SourceLinks(from: previous)
+  _ = expected.touchChangedH3Packages(comparedTo: previous, at: clock)
+  expected.propagateChildMtimeToH3Roots()
+  precondition(actual == expected, "Node or H3 time diverged at revision \(state.revision)")
+  precondition(applied.metadata == next.rowMetadata && actual.nodes.map(\.text).joined(separator: "\n") == next.plainText)
+  _ = full.recordDocumentMutation(previousDocument: previous, currentDocument: expected, collectNewPackages: false)
+  deltaTracker.recordStructuralMutation(previous: previous, current: actual, affectedH3IDs: impacted, previousIndex: oldIndex, currentIndex: index)
+  let expectedNew = full.newPackageDisplayItems(document: expected)
+  let actualNew = deltaTracker.newPackageDisplayItems(document: actual, structuralIndex: index, affectedH3IDs: impacted)
+  precondition(expectedNew == actualNew)
+  precondition(full.dirtyPackageDisplayItems(document: expected) == deltaTracker.dirtyPackageDisplayItems(document: actual, structuralIndex: index))
+  assertEquivalent(full, deltaTracker)
+  previous = actual
+  previousMetadata = applied.metadata
+ }
+ func edit(_ steps: [NodeMarkdownTransactionStep]) {
+  compare(state.dispatch(.init(baseRevision: state.revision, steps: steps, label: "delta regression"))!)
+ }
+ let newID = UUID()
+ edit([.splitNode(nodeID: child.id, offset: 1, newNodeID: newID, newLevel: 4)])
+ compare(state.undo()!)
+ compare(state.redo()!)
+ edit([.joinNodes(leftID: child.id, rightID: newID)])
+ edit([.moveNodes(nodeIDs: [child.id], destinationRow: state.nodes.count)])
+ edit([.setLevel(nodeID: boundary.id, level: 4)])
+ edit([.setLevel(nodeID: orphan.id, level: 3)])
+ edit([.deleteNodes(nodeIDs: [fresh.id, tail.id])])
+ compare(state.undo()!)
+ edit([.moveNodes(nodeIDs: [boundary.id, orphan.id], destinationRow: state.nodes.count)])
+ edit([.deleteNodes(nodeIDs: [boundary.id, orphan.id])])
+ var seed: UInt64 = 719
+ for _ in 0..<150 {
+  seed = seed &* 6364136223846793005 &+ 1
+  let row = Int((seed >> 32) % UInt64(state.nodes.count))
+  let node = state.nodes[row]
+  switch seed % 4 {
+  case 0:
+   let new = NodeMarkdownTextKit2Node(id: UUID(), level: Int((seed >> 16) % 5) + 1, content: "随机", sourceID: "", sourceFile: "")
+   edit([.insertNodes(row: row, nodes: [new])])
+  case 1 where !node.isProtectedH3:
+   edit([.setLevel(nodeID: node.id, level: Int((seed >> 16) % 5) + 1)])
+  case 2 where !node.isProtectedH3 && state.nodes.count > 2:
+   edit([.deleteNodes(nodeIDs: [node.id])])
+  case 3:
+   edit([.moveNodes(nodeIDs: [node.id], destinationRow: Int((seed >> 16) % UInt64(state.nodes.count + 1)))])
+  default: break
+  }
+ }
+ print("PASS: transaction delta splice, H3 ownership/time, package queues and undo/redo")
+}
+@MainActor func benchmarkStructuralCommits() {
+ let now = Date()
+ for count in [200, 1000, 3000, 11770] {
+  let nodes = (0..<count).map { row in
+   row % 10 == 0
+    ? NodeMarkdownNode(level: 3, text: "课堂练习", sourceID: UUID().uuidString, sourceFile: "mother.csv", mtimeCache: now)
+    : NodeMarkdownNode(level: 4, text: "物理实验、公式与笔记", mtimeCache: now)
+  }
+  let previous = NodeMarkdownDocument(nodes: nodes)
+  let text = NodeMarkdownPlainTextCodec.serialize(document: previous)
+  let metadata = nodes.map {
+   NodeMarkdownTextKitRowMetadata(nodeID: $0.id.uuidString, level: $0.level, sourceID: $0.sourceID, sourceFile: $0.sourceFile)
+  }
+  let oldIndex = NodeMarkdownDocumentIndex(nodes: nodes)
+  var fullSamples: [Double] = [], deltaSamples: [Double] = []
+  for iteration in 0..<24 {
+   for useDelta in (iteration.isMultiple(of: 2) ? [false, true] : [true, false]) {
+    let tracker = TeachingCoursePackageChangeTracker()
+    tracker.establishBaseline(document: previous)
+    let state = NodeMarkdownTextKit2DocumentState(text: text, rowMetadata: metadata)
+    let split = NodeMarkdownTransaction(
+     baseRevision: state.revision,
+     steps: [.splitNode(nodeID: nodes[1].id, offset: 3, newNodeID: UUID(), newLevel: 4)], label: "split"
+    )
+    let start = ProcessInfo.processInfo.systemUptime
+    let result = state.dispatch(split)!
+    if useDelta {
+     let delta = state.structuralDelta(for: result, baseline: state.documentID, oldCount: count)
+     let applied = delta.applying(to: previous, index: oldIndex, rowMetadata: metadata, now: now)!
+     var current = applied.document
+     let index = NodeMarkdownDocumentIndex(nodes: current.nodes)
+     precondition(current.nodes.map(\.text).joined(separator: "\n").utf8.count > 0)
+     let affected = current.maintainH3AfterStructuralEdit(previous: previous, changedIDs: result.affectedNodeIDs, previousIndex: oldIndex, currentIndex: index, at: now)
+     tracker.recordStructuralMutation(previous: previous, current: current, affectedH3IDs: affected, previousIndex: oldIndex, currentIndex: index)
+     precondition(tracker.dirtyPackageDisplayItems(document: current, structuralIndex: index).count == 1)
+     precondition(tracker.newPackageDisplayItems(document: current, structuralIndex: index, affectedH3IDs: affected).isEmpty)
+    } else {
+     let snapshot = NodeMarkdownLegacyDocumentSnapshot(sessionID: state.documentID, revision: state.revision, rows: state.nodes.map(\.legacySnapshotRow))
+     var current = NodeMarkdownPlainTextCodec.parse(snapshot: snapshot, previousNodes: nodes, now: now)
+     let index = NodeMarkdownDocumentIndex(nodes: current.nodes)
+     _ = current.restoreMissingH3SourceLinks(from: previous)
+     _ = current.touchChangedH3Packages(comparedTo: previous, at: now, currentStructuralIndex: index, previousStructuralIndex: oldIndex)
+     current.propagateChildMtimeToH3Roots()
+     precondition(snapshot.plainText.utf8.count > 0 && snapshot.rowMetadata.count == count + 1)
+     _ = tracker.recordDocumentMutation(previousDocument: previous, currentDocument: current, collectNewPackages: false, previousStructuralIndex: oldIndex, currentStructuralIndex: index)
+     precondition(tracker.dirtyPackageDisplayItems(document: current).count == 1)
+     precondition(tracker.newPackageDisplayItems(document: current).isEmpty)
+    }
+    let elapsed = (ProcessInfo.processInfo.systemUptime - start) * 1_000
+    if iteration >= 4 {
+     if useDelta { deltaSamples.append(elapsed) } else { fullSamples.append(elapsed) }
+    }
+   }
+  }
+  let full = fullSamples.sorted(), delta = deltaSamples.sorted()
+  print("SPLIT \(count): full median \(full[full.count/2])ms, delta median \(delta[delta.count/2])ms")
+ }
+}
+
 @MainActor func tests() throws {
+ structuralTests()
+ if CommandLine.arguments.contains("--bench-structural") { benchmarkStructuralCommits() }
  let rootA = NodeMarkdownNode(level: 3, text: "A", sourceID: UUID().uuidString, sourceFile: "mother.csv")
  let rootB = NodeMarkdownNode(level: 3, text: "B", sourceID: UUID().uuidString, sourceFile: "mother.csv")
  let newRoot = NodeMarkdownNode(level: 3, text: "New")
@@ -189,4 +351,6 @@ with tempfile.TemporaryDirectory(prefix='node-local-') as tmp:
  subprocess.run(['swiftc','-O',str(src),'-o',str(root/'check')],check=True)
  args = [str(root/'check'), str(root/'workspace')]
  args.append(str(root/'results.json' if '--check-only' in sys.argv else repo/'Experiments/NodeMarkdownLocalCommit/results.json'))
+ if '--bench-structural' in sys.argv:
+    args.append('--bench-structural')
  subprocess.run(args,check=True)

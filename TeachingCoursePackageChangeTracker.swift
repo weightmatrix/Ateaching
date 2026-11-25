@@ -132,31 +132,57 @@ final class TeachingCoursePackageChangeTracker {
         newPackageOrderedIDs
     }
 
-    func dirtyPackageDisplayItems(document: NodeMarkdownDocument) -> [PackageDisplayItem] {
-        let set = dirtyPackageIDs
-        return document.nodes
-            .filter { $0.level == 3 && set.contains($0.id.uuidString) }
-            .map {
-                PackageDisplayItem(
-                    id: $0.id.uuidString,
-                    title: $0.text.trimmingCharacters(in: .whitespacesAndNewlines),
-                    sourceFile: $0.sourceFile.trimmingCharacters(in: .whitespacesAndNewlines)
-                )
+    func dirtyPackageDisplayItems(
+        document: NodeMarkdownDocument,
+        structuralIndex: NodeMarkdownDocumentIndex? = nil
+    ) -> [PackageDisplayItem] {
+        let rows: [Int]
+        if let structuralIndex {
+            rows = dirtyPackageIDs.compactMap { UUID(uuidString: $0).flatMap(structuralIndex.row(for:)) }.sorted()
+        } else {
+            rows = document.nodes.indices.filter { row in
+                let node = document.nodes[row]
+                return node.level == 3 && dirtyPackageIDs.contains(node.id.uuidString)
             }
+        }
+        return rows.compactMap { row in
+            let node = document.nodes[row]
+            guard node.level == 3 else { return nil }
+            return PackageDisplayItem(
+                id: node.id.uuidString,
+                title: node.text.trimmingCharacters(in: .whitespacesAndNewlines),
+                sourceFile: node.sourceFile.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        }
     }
 
-    func newPackageDisplayItems(document: NodeMarkdownDocument) -> [PackageDisplayItem] {
-        reconcileNewPackageList(with: document)
+    func newPackageDisplayItems(
+        document: NodeMarkdownDocument,
+        structuralIndex: NodeMarkdownDocumentIndex? = nil,
+        affectedH3IDs: Set<UUID>? = nil
+    ) -> [PackageDisplayItem] {
         var byID: [String: NodeMarkdownNode] = [:]
-        for node in document.nodes where node.level == 3 {
-            byID[node.id.uuidString] = node
+        if let structuralIndex, let affectedH3IDs {
+            let affectedRows = affectedH3IDs.compactMap(structuralIndex.row(for:)).sorted()
+            for row in affectedRows {
+                let node = document.nodes[row]
+                if isNewPackageRoot(node) {
+                    addNewPackage(nodeID: node.id.uuidString)
+                }
+            }
+        } else {
+            reconcileNewPackageList(with: document)
+            for node in document.nodes where node.level == 3 {
+                byID[node.id.uuidString] = node
+            }
         }
         let ids = newPackageOrderedIDs
         var staleIDs: [String] = []
         var items: [PackageDisplayItem] = []
         items.reserveCapacity(ids.count)
         for id in ids {
-            guard let node = byID[id] else {
+            let indexedNode = UUID(uuidString: id).flatMap { structuralIndex?.row(for: $0) }.map { document.nodes[$0] }
+            guard let node = indexedNode ?? byID[id] else {
                 staleIDs.append(id)
                 continue
             }
@@ -423,6 +449,48 @@ final class TeachingCoursePackageChangeTracker {
                 + "新包=\(newPackageOrderedIDs.map(NodeMarkdownDiagnostic26.shortID))"
         )
         return localPendingCount()
+    }
+
+    func recordStructuralMutation(
+        previous: NodeMarkdownDocument,
+        current: NodeMarkdownDocument,
+        affectedH3IDs: Set<UUID>,
+        previousIndex: NodeMarkdownDocumentIndex,
+        currentIndex: NodeMarkdownDocumentIndex
+    ) {
+        for id in affectedH3IDs {
+            let key = id.uuidString
+            guard let range = currentIndex.packageRange(rootID: id) else {
+                removeNewPackage(h3NodeID: key)
+                dirtyPackageIDs.remove(key)
+                baselineDigestByH3ID.removeValue(forKey: key)
+                continue
+            }
+            let root = current.nodes[range.lowerBound]
+            if isNewPackageRoot(root) {
+                dirtyPackageIDs.remove(key)
+                continue
+            }
+            removeNewPackage(h3NodeID: key)
+            guard hasCompleteSourceLink(root) else {
+                dirtyPackageIDs.remove(key)
+                continue
+            }
+            let digest = TeachingCoursePackageContentSignature.digest(Array(current.nodes[range]))
+            if baselineDigestByH3ID[key] == nil {
+                if let oldRange = previousIndex.packageRange(rootID: id),
+                   hasCompleteSourceLink(previous.nodes[oldRange.lowerBound]) {
+                    baselineDigestByH3ID[key] = TeachingCoursePackageContentSignature.digest(Array(previous.nodes[oldRange]))
+                } else {
+                    baselineDigestByH3ID[key] = digest
+                }
+            }
+            if baselineDigestByH3ID[key] == digest {
+                dirtyPackageIDs.remove(key)
+            } else {
+                dirtyPackageIDs.insert(key)
+            }
+        }
     }
 
     func recordTouchedH3Packages(
