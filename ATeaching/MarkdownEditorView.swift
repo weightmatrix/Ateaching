@@ -758,6 +758,7 @@ final class MarkdownTextKit2CommitBridge: ObservableObject {
     private(set) var hasPendingChanges = false
     var commitHandler: (() -> Void)?
     var isOutlineVisible = false
+    var interactionTrace: MarkdownInteractionTrace?
     private var pendingRevisionWorkItem: DispatchWorkItem?
 
     func markDirty() {
@@ -844,7 +845,7 @@ struct MarkdownEditorView: View {
     #endif
     @State private var searchGeneration = 0
     @State private var syntaxHeadings: [MarkdownHeading] = []
-    @StateObject private var textKit2CommitBridge = MarkdownTextKit2CommitBridge()
+    @StateObject private var textKit2CommitBridge: MarkdownTextKit2CommitBridge
     #if os(macOS)
     @StateObject private var viewportBridge: MarkdownDualScrollSyncBridge
     #endif
@@ -854,13 +855,24 @@ struct MarkdownEditorView: View {
     @ObservedObject private var settingsCenter = MarkdownEditorSettingsCenter.shared
     @ObservedObject private var fontCatalog = MarkdownFontCatalog.shared
 
-    init(fileURL: URL) {
+    init(fileURL: URL, openRequestedAt: TimeInterval? = nil) {
         self.fileURL = fileURL
+        _textKit2CommitBridge = StateObject(wrappedValue: Self.makeCommitBridge(requestedAt: openRequestedAt))
         let mode = Self.restoredRenderMode()
         _renderMode = State(initialValue: mode)
         #if os(macOS)
         _viewportBridge = StateObject(wrappedValue: MarkdownDualScrollSyncBridge(syncsPanes: mode == .dual))
         #endif
+    }
+
+    private static func makeCommitBridge(requestedAt: TimeInterval?) -> MarkdownTextKit2CommitBridge {
+        let bridge = MarkdownTextKit2CommitBridge()
+        #if os(macOS)
+        if MarkdownInteractionTrace.enabled {
+            bridge.interactionTrace = MarkdownInteractionTrace(requestedAt: requestedAt ?? MarkdownInteractionTrace.now)
+        }
+        #endif
+        return bridge
     }
 
     var body: some View {
@@ -978,6 +990,7 @@ struct MarkdownEditorView: View {
             pendingAutoSaveWorkItem?.cancel()
             pendingAutoSaveWorkItem = nil
             saveBeforeClosing()
+            textKit2CommitBridge.interactionTrace?.finish()
         }
         .task(id: textKit2CommitBridge.sourceRevision) {
             let snapshot = markdownSource
@@ -1335,6 +1348,7 @@ struct MarkdownEditorView: View {
     }
 
     private func loadFile() {
+        let traceStart = MarkdownInteractionTrace.now
         let profileStart = MarkdownEditorPerformanceProbe.start()
         do {
             let text = try withFileAccess {
@@ -1343,6 +1357,7 @@ struct MarkdownEditorView: View {
                 markdownDiskDigest = TeachingCloudFileAccess.digest(data)
                 return text
             }
+            textKit2CommitBridge.interactionTrace?.loaded(length: (text as NSString).length, since: traceStart)
             cloudFileError = ""
             markdownSource.text = text
             lastSavedSource = markdownSource
@@ -1356,6 +1371,7 @@ struct MarkdownEditorView: View {
                 details: MarkdownEditorPerformanceProbe.textDetails(text)
             )
         } catch {
+            textKit2CommitBridge.interactionTrace?.stage("open.readFailed", since: traceStart)
             cloudFileError = error.localizedDescription
             saveState = .failed
             MarkdownEditorPerformanceProbe.end(
@@ -1410,9 +1426,13 @@ struct MarkdownEditorView: View {
     }
 
     private func performSave(allowExternalOverwrite: Bool, promptOnExternalChange: Bool) {
+        let trace = textKit2CommitBridge.interactionTrace
+        let saveStart = MarkdownInteractionTrace.now
         textKit2CommitBridge.commitPendingText()
         guard hasUnsavedChanges else { return }
+        defer { trace?.stage("save.total", since: saveStart) }
         if !allowExternalOverwrite, fileWasModifiedExternally() {
+            trace?.stage("save.externalChange", since: saveStart)
             saveState = .failed
             pendingAutoSaveWorkItem?.cancel()
             pendingAutoSaveWorkItem = nil
@@ -1424,12 +1444,15 @@ struct MarkdownEditorView: View {
         }
         saveState = .saving
         do {
+            let writeStart = MarkdownInteractionTrace.now
             try writeCurrentMarkdownText(allowExternalOverwrite: allowExternalOverwrite)
+            trace?.stage("save.coordinatedWrite", since: writeStart)
             cloudFileError = ""
             lastSavedSource = markdownSource
             lastKnownFileModificationDate = fileModificationDate()
             saveState = .clean
         } catch {
+            trace?.stage("save.failed", since: saveStart)
             cloudFileError = error.localizedDescription
             saveState = .failed
         }
@@ -4442,6 +4465,7 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.textContainerInset = NSSize(width: 8, height: 8)
         textView.delegate = context.coordinator
+        textView.interactionTrace = commitBridge.interactionTrace
         textView.string = text
         textView.workingDirectoryURL = workingDirectoryURL
         textView.quickInputSettings = quickInputSettings
@@ -4520,7 +4544,9 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
             let syncStart = MarkdownEditorPerformanceProbe.start()
             context.coordinator.cancelPendingBindingSync()
             let selectedRange = textView.selectedRange()
+            let installStart = MarkdownInteractionTrace.now
             textView.string = text
+            textView.interactionTrace?.stage("open.installStorage", since: installStart, detail: "utf16=\((text as NSString).length)")
             textView.seedSourceProjection(text)
             context.coordinator.lastSourceSnapshot = text
             let maxLocation = (text as NSString).length
@@ -4948,6 +4974,7 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
                 scheduleCenterLinePublish(delay: 0.08)
             }
             if let previousOrigin {
+                textView?.interactionTrace?.viewportMoved(distance: currentOrigin.y - previousOrigin.y)
                 textView?.captureViewportTransition(from: previousOrigin.y, to: currentOrigin.y)
                 textView?.recordScrollJump(stage: "viewportSample", previousY: previousOrigin.y)
             }
@@ -5395,10 +5422,12 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         semanticWork = nil
         semanticGeneration += 1
         let generation = semanticGeneration
+        let parseStart = MarkdownInteractionTrace.now
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let snapshot = NormalMarkdownSyntax.parse(source)
             DispatchQueue.main.async {
                 guard let self, generation == self.semanticGeneration else { return }
+                self.interactionTrace?.stage("syntax.refresh", since: parseStart)
                 self.semanticSnapshot = snapshot
                 self.largeStyledViewport = nil
                 self.scheduleLargeDocumentViewportStyle()
@@ -5432,9 +5461,36 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     var diagnosticCachedLineCount: Int { lineRangeCache.count }
     fileprivate let performanceDiagnostics = MarkdownPerformanceDiagnostics()
 
+    var interactionTrace: MarkdownInteractionTrace?
+
+    override func keyDown(with event: NSEvent) {
+        if handleMarkdownImagePasteShortcut(event) { return }
+        guard let interactionTrace else {
+            super.keyDown(with: event)
+            return
+        }
+        let kind: String
+        switch event.keyCode {
+        case 36, 76: kind = "return"
+        case 51, 117: kind = "delete"
+        default:
+            if event.modifierFlags.contains(.command) || event.characters?.isEmpty != false
+                || (123...126).contains(event.keyCode) {
+                super.keyDown(with: event)
+                return
+            }
+            kind = "input"
+        }
+        let start = MarkdownInteractionTrace.now
+        let id = interactionTrace.input(kind: kind, eventTime: event.timestamp, startedAt: start)
+        defer { interactionTrace.inputHandled(id: id, since: start, marked: hasActiveMarkedText) }
+        super.keyDown(with: event)
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         let diagnosticStart = MarkdownTextKit2Diagnostic38.now()
         super.draw(dirtyRect)
+        interactionTrace?.didDraw()
         let drawDuration = MarkdownTextKit2Diagnostic38.milliseconds(since: diagnosticStart)
         if let inputStart = diagnostic38InputToFirstDrawStart {
             diagnostic38InputToFirstDrawStart = nil
@@ -5455,11 +5511,6 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if handleMarkdownImagePasteShortcut(event) { return true }
         return super.performKeyEquivalent(with: event)
-    }
-
-    override func keyDown(with event: NSEvent) {
-        if handleMarkdownImagePasteShortcut(event) { return }
-        super.keyDown(with: event)
     }
 
     func markDiagnostic38InputStarted(at timestamp: UInt64) {
@@ -6155,6 +6206,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         isSelectable = true
         onStylePreparationFinished?()
         alphaValue = 1
+        interactionTrace?.editorReady(length: textStorage?.length ?? 0, viewportStyling: usesViewportStyling)
     }
 
     private func prepareStyleBatch(style: MarkdownDocumentStyle, generation: Int, startingAt start: Int, retryingImage: Bool = false) {

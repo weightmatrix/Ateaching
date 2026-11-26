@@ -239,6 +239,7 @@ enum ExternalMarkdownWindowPresenter {
     }
 
     static func presentSingleMarkdownWindow(fileURL: URL) {
+        let requestedAt = MarkdownInteractionTrace.now
         let standardizedURL = fileURL.standardizedFileURL
         let key = standardizedURL.path
         if let window = singleWindows[key] {
@@ -257,7 +258,7 @@ enum ExternalMarkdownWindowPresenter {
         window.isReleasedWhenClosed = false
         window.center()
         window.contentView = NSHostingView(
-            rootView: MarkdownEditorView(fileURL: standardizedURL)
+            rootView: MarkdownEditorView(fileURL: standardizedURL, openRequestedAt: requestedAt)
                 .environment(\.font, .system(size: 14, weight: .regular, design: .monospaced))
                 .monospaced()
         )
