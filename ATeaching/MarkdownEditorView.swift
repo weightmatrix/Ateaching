@@ -4428,8 +4428,8 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
         textContentStorage.addTextLayoutManager(textLayoutManager)
 
         let textView = MarkdownTextKit2PlainTextView(frame: .zero, textContainer: textContainer)
-        textView.font = markdownResolvedFont(name: appleSystemMonospacedFontName, size: 15)
-        textView.textColor = .labelColor
+        textView.font = markdownResolvedFont(name: documentStyle.body.fontName, size: documentStyle.body.fontSize)
+        textView.textColor = NSColor(documentStyle.body.renderedColor)
         textView.isRichText = true
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
@@ -5010,7 +5010,7 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
         }
 
         func scheduleCenterLinePublish(delay: TimeInterval) {
-            guard viewportConnected else { return }
+            guard viewportConnected, parent.scrollSyncBridge?.syncsPanes == true else { return }
             if delay < 3, scrollSyncWorkItem != nil { return }
             typingScrollSyncWorkItem?.cancel()
             let scheduledAt = MarkdownTextKit2Diagnostic38.now()
@@ -5250,8 +5250,10 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         clip?.blocksLayoutScrolling = true
         defer { clip?.blocksLayoutScrolling = wasBlocked }
         super.textViewportLayoutControllerDidLayout(controller)
+        scheduleLargeDocumentViewportStyle()
     }
 
+    private let tracksScrollDiagnostics = UserDefaults.standard.bool(forKey: "Markdown.traceScroll")
     private var scrollDiagnosticEvent: UInt64 = 0
     private var scrollDiagnosticRecent: [String] = []
     private var scrollDiagnosticLastY: CGFloat?
@@ -5260,6 +5262,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     private var scrollDiagnosticLastTraceAt: TimeInterval = 0
 
     private func captureScrollStep(_ stage: String, before: CGFloat, after: CGFloat, detail: String = "") {
+        guard tracksScrollDiagnostics else { return }
         let now = ProcessInfo.processInfo.systemUptime
         let line = "event=\(scrollDiagnosticEvent) t=\(String(format: "%.4f", now)) stage=\(stage) before=\(before) after=\(after) wheel=\(scrollDiagnosticWheelDelta) \(detail)"
         scrollDiagnosticRecent.append(line)
@@ -5297,6 +5300,10 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     override func scrollWheel(with event: NSEvent) {
         guard !isPreparingDocumentStyle else { return }
         if event.scrollingDeltaY != 0 { onUserWheel?() }
+        guard tracksScrollDiagnostics else {
+            super.scrollWheel(with: event)
+            return
+        }
         scrollDiagnosticEvent &+= 1
         scrollDiagnosticLastWheelAt = ProcessInfo.processInfo.systemUptime
         scrollDiagnosticWheelDelta = event.scrollingDeltaY
@@ -5311,6 +5318,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     }
 
     override func adjustScroll(_ newVisible: NSRect) -> NSRect {
+        guard tracksScrollDiagnostics else { return super.adjustScroll(newVisible) }
         let before = enclosingScrollView?.contentView.bounds.minY ?? -1
         let adjusted = super.adjustScroll(newVisible)
         captureScrollStep("adjustScroll", before: before, after: adjusted.minY,
@@ -5320,6 +5328,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
 
     private var lastScrollJumpDiagnosticAt: [String: TimeInterval] = [:]
     func recordScrollJump(stage: String, previousY: CGFloat) {
+        guard tracksScrollDiagnostics else { return }
         let now = ProcessInfo.processInfo.systemUptime
         guard now - (lastScrollJumpDiagnosticAt[stage] ?? 0) >= 0.25 else { return }
         lastScrollJumpDiagnosticAt[stage] = now
@@ -5391,6 +5400,8 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
             DispatchQueue.main.async {
                 guard let self, generation == self.semanticGeneration else { return }
                 self.semanticSnapshot = snapshot
+                self.largeStyledViewport = nil
+                self.scheduleLargeDocumentViewportStyle()
             }
         }
     }
@@ -5564,6 +5575,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     func prepareCachesForTextEdit(affectedRange: NSRange, replacementString: String?) {
         guard let nsText = textStorage?.mutableString else { return }
         let replacement = replacementString ?? ""
+        largeStyledViewport = nil
         if pendingLiveStyleWork != nil, let currentDocumentStyle {
             scheduleLiveStyleRefresh(style: currentDocumentStyle)
         }
@@ -5626,6 +5638,53 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         )
     }
 
+    // Above MiaoYan's UTF-16 ceiling, style a viewport instead of preparing every line.
+    private static let largeDocumentLength = 1_000_000
+    private var usesViewportStyling = false
+    private var largeStyledViewport: NSRange?
+    private var pendingViewportStyle: DispatchWorkItem?
+
+    private func scheduleLargeDocumentViewportStyle() {
+        guard usesViewportStyling, pendingViewportStyle == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingViewportStyle = nil
+            self.applyLargeDocumentViewportStyle()
+        }
+        pendingViewportStyle = work
+        DispatchQueue.main.async(execute: work)
+    }
+
+    private func applyLargeDocumentViewportStyle() {
+        guard usesViewportStyling, !hasActiveMarkedText, let storage = textStorage,
+              let style = currentDocumentStyle, let visible = visibleCharacterRange(),
+              visible.length > 0 else { return }
+        let target = expandedLineRange(for: visible)
+        if let styled = largeStyledViewport, NSIntersectionRange(styled, target) == target { return }
+        let clip = enclosingScrollView?.contentView as? MarkdownViewportClipView
+        let wasBlocked = clip?.blocksLayoutScrolling ?? false
+        clip?.blocksLayoutScrolling = true
+        defer { clip?.blocksLayoutScrolling = wasBlocked }
+        let deadline = ProcessInfo.processInfo.systemUptime + 0.004
+        let selection = selectedRange()
+        var cursor = target.location
+        if let styled = largeStyledViewport, NSLocationInRange(cursor, styled) {
+            cursor = NSMaxRange(styled)
+        }
+        while cursor < min(NSMaxRange(target), storage.length) {
+            var line = storage.mutableString.lineRange(for: NSRange(location: cursor, length: 0))
+            if restoreAttachmentSourceTokens(in: line) {
+                line = storage.mutableString.lineRange(for: NSRange(location: cursor, length: 0))
+            }
+            applyMarkdownStyle(in: line, style: style)
+            cursor = NSMaxRange(line)
+            if ProcessInfo.processInfo.systemUptime >= deadline { break }
+        }
+        if selectedRange() != selection { setSelectedRange(selection) }
+        largeStyledViewport = NSRange(location: target.location, length: cursor - target.location)
+        if cursor < NSMaxRange(target) { scheduleLargeDocumentViewportStyle() }
+    }
+
     private var pendingLiveStyleWork: DispatchWorkItem?
 
     func updateDocumentStyleInPlace(_ style: MarkdownDocumentStyle) {
@@ -5636,7 +5695,12 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         currentDocumentStyle = style
         cancelPendingAttachmentStyleWork()
         pendingAttachmentLineRanges.removeAll(keepingCapacity: true)
-        scheduleLiveStyleRefresh(style: style)
+        if usesViewportStyling {
+            largeStyledViewport = nil
+            scheduleLargeDocumentViewportStyle()
+        } else {
+            scheduleLiveStyleRefresh(style: style)
+        }
     }
 
     private func scheduleLiveStyleRefresh(style: MarkdownDocumentStyle) {
@@ -5711,7 +5775,18 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         semanticGeneration += 1
         currentDocumentStyle = style
         let generation = idleStyleGeneration
+        usesViewportStyling = (textStorage?.length ?? 0) > Self.largeDocumentLength
+        largeStyledViewport = nil
+        pendingViewportStyle?.cancel()
+        pendingViewportStyle = nil
         let source = markdownSourceStringPreservingAttachments()
+        if usesViewportStyling {
+            semanticSnapshot = nil
+            finishStylePreparation(layoutImmediately: false)
+            scheduleLargeDocumentViewportStyle()
+            refreshSemanticSnapshot(from: source)
+            return
+        }
         guard !source.isEmpty else {
             semanticSnapshot = nil
             finishStylePreparation()
@@ -6071,8 +6146,8 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         stylePreparationIndicator = indicator
     }
 
-    private func finishStylePreparation() {
-        enclosingScrollView?.layoutSubtreeIfNeeded()
+    private func finishStylePreparation(layoutImmediately: Bool = true) {
+        if layoutImmediately { enclosingScrollView?.layoutSubtreeIfNeeded() }
         isPreparingDocumentStyle = false
         stylePreparationIndicator?.removeFromSuperview()
         stylePreparationIndicator = nil
@@ -7596,47 +7671,40 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     }
 
     private func applyAutoContinueRule() -> Bool {
-        let profileStart = MarkdownEditorPerformanceProbe.start()
-        let nsText = self.textStorage?.mutableString ?? NSMutableString(string: string)
+        guard let storage = textStorage else { return false }
         let selection = selectedRange()
         guard selection.length == 0 else { return false }
+        let source = storage.mutableString
+        let caret = min(selection.location, source.length)
+        let lineRange = caretLineRange(at: caret, in: source)
+        let raw = source.substring(with: lineRange)
+        let line = raw.trimmingCharacters(in: .newlines) as NSString
+        let localCaret = caret - lineRange.location
+        guard !isSemanticLiteral(at: lineRange.location) else { return false }
 
-        let baseLocation = max(0, min(selection.location, nsText.length))
-        let lineRange = caretLineRange(at: baseLocation, in: nsText)
-
-        var line = lineRange.length > 0 ? nsText.substring(with: lineRange) : ""
-        if line.hasSuffix("\n") { line.removeLast() }
-
-        guard let marker = parseMarker(in: line) else { return false }
-        let caretOffsetInLine = max(0, baseLocation - lineRange.location)
-
-        if marker.hasContent || caretOffsetInLine > marker.markerLength {
-            let insertion = "\n\(marker.nextMarker)"
-            textStorage?.replaceCharacters(in: selection, with: insertion)
-            setSelectedRange(NSRange(location: baseLocation + (insertion as NSString).length, length: 0))
-            _ = renumberAllNumberedRunsPreservingSelection()
-            didChangeText()
-            keepInsertionPointComfortablyVisible()
-            MarkdownEditorPerformanceProbe.end(
-                "MarkdownTextKit2PlainTextView.applyAutoContinueRule",
-                start: profileStart,
-                details: "continued=true,\(MarkdownEditorPerformanceProbe.textDetails(string))"
-            )
+        if localCaret == line.length,
+           let edit = MiaoYanListContinuation.lineEdit(
+               in: line, line: NSRange(location: 0, length: line.length),
+               caret: localCaret, lineBreak: raw.hasSuffix("\r\n") ? "\r\n" : "\n"
+           ) {
+            let range = NSRange(location: lineRange.location + edit.range.location, length: edit.range.length)
+            insertText(edit.replacement, replacementRange: range)
+            setSelectedRange(NSRange(location: lineRange.location + edit.caret, length: 0))
+            if parseNumberedLine(in: line as String) != nil, renumberNumberedRunAround(location: range.location) {
+                didChangeText()
+            }
             return true
         }
 
-        let markerRange = NSRange(location: lineRange.location, length: marker.markerLength)
-        textStorage?.replaceCharacters(in: markerRange, with: "")
-        let adjustedLocation = baseLocation - marker.markerLength
-        setSelectedRange(NSRange(location: adjustedLocation, length: 0))
-        _ = renumberAllNumberedRunsPreservingSelection()
-        didChangeText()
-        keepInsertionPointComfortablyVisible()
-        MarkdownEditorPerformanceProbe.end(
-            "MarkdownTextKit2PlainTextView.applyAutoContinueRule",
-            start: profileStart,
-            details: "continued=false,removedEmptyMarker=true,\(MarkdownEditorPerformanceProbe.textDetails(string))"
-        )
+        guard let marker = parseMarker(in: line as String) else { return false }
+        let continues = marker.hasContent || localCaret > marker.markerLength
+        let range = continues
+            ? selection
+            : NSRange(location: lineRange.location, length: marker.markerLength)
+        insertText(continues ? "\n" + marker.nextMarker : "", replacementRange: range)
+        if parseNumberedLine(in: line as String) != nil, renumberNumberedRunAround(location: range.location) {
+            didChangeText()
+        }
         return true
     }
 
