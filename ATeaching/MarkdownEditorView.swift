@@ -822,7 +822,9 @@ struct MarkdownEditorView: View {
     @State private var pendingExportFormat: MarkdownExportFormat = .pdf
     @State private var showScaledPDFSheet = false
     @AppStorage("markdownScaledPDFMultiplier") private var scaledPDFMultiplier = 1.0
+    #if os(iOS)
     @State private var documentStyleRefreshToken = 0
+    #endif
     @State private var searchGeneration = 0
     @State private var syntaxHeadings: [MarkdownHeading] = []
     @StateObject private var textKit2CommitBridge = MarkdownTextKit2CommitBridge()
@@ -922,9 +924,11 @@ struct MarkdownEditorView: View {
                 }
                 ScreenCastStrokeOverlay(strokes: screenCastAnnotationHub.strokes)
             }
-            .id("markdown-display-\(renderMode.rawValue)-\(documentStyleRefreshToken)")
             #if os(macOS)
+            .id(renderMode)
             .environment(\.markdownViewportBridge, viewportBridge)
+            #else
+            .id("markdown-display-\(renderMode.rawValue)-\(documentStyleRefreshToken)")
             #endif
         }
         .navigationTitle(windowTitle)
@@ -997,7 +1001,9 @@ struct MarkdownEditorView: View {
             UserDefaults.standard.set(newValue.rawValue, forKey: Self.renderModeDefaultsKey)
         }
         .onChange(of: settingsCenter.documentStyle) { _, _ in
+            #if os(iOS)
             documentStyleRefreshToken &+= 1
+            #endif
             scheduleScreenCastPublish(source: markdownText)
         }
         .onReceive(NotificationCenter.default.publisher(for: .screenCastRequestedKindsDidChange)) { _ in
@@ -4494,6 +4500,7 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
             context.coordinator.lastSourceSnapshot = text
             let maxLocation = (text as NSString).length
             textView.setSelectedRange(NSRange(location: min(selectedRange.location, maxLocation), length: 0))
+            context.coordinator.documentStyle = documentStyle
             textView.prepareDocumentStyleInBatches(style: documentStyle)
             MarkdownEditorPerformanceProbe.end(
                 "MarkdownTextKit2PlainTextEditor.updateNSView.externalTextSync",
@@ -4506,9 +4513,7 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
         if context.coordinator.documentStyle != documentStyle {
             let styleStart = MarkdownEditorPerformanceProbe.start()
             context.coordinator.documentStyle = documentStyle
-            if !bindingChangedExternally || !textView.isPreparingDocumentStyle {
-                textView.prepareDocumentStyleInBatches(style: documentStyle)
-            }
+            textView.updateDocumentStyleInPlace(documentStyle)
             MarkdownEditorPerformanceProbe.end(
                 "MarkdownTextKit2PlainTextEditor.updateNSView.documentStyle",
                 start: styleStart,
@@ -5457,6 +5462,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
 
     deinit {
         if let sourceStorageObserver { NotificationCenter.default.removeObserver(sourceStorageObserver) }
+        pendingLiveStyleWork?.cancel()
         cancelIdleMarkdownStyleCompletion()
         cancelPendingAttachmentStyleWork()
         cancelPendingSearchHighlightWork()
@@ -5516,6 +5522,9 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     func prepareCachesForTextEdit(affectedRange: NSRange, replacementString: String?) {
         guard let nsText = textStorage?.mutableString else { return }
         let replacement = replacementString ?? ""
+        if pendingLiveStyleWork != nil, let currentDocumentStyle {
+            scheduleLiveStyleRefresh(style: currentDocumentStyle)
+        }
         let impact: EditorDeletionImpact
         if replacement.isEmpty, affectedRange.length > 0 {
             impact = EditorDeletionClassifier.classifyDeletion(
@@ -5575,7 +5584,84 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         )
     }
 
+    private var pendingLiveStyleWork: DispatchWorkItem?
+
+    func updateDocumentStyleInPlace(_ style: MarkdownDocumentStyle) {
+        if isPreparingDocumentStyle {
+            prepareDocumentStyleInBatches(style: style)
+            return
+        }
+        currentDocumentStyle = style
+        cancelPendingAttachmentStyleWork()
+        pendingAttachmentLineRanges.removeAll(keepingCapacity: true)
+        scheduleLiveStyleRefresh(style: style)
+    }
+
+    private func scheduleLiveStyleRefresh(style: MarkdownDocumentStyle) {
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, let storage = self.textStorage else { return }
+            let visible = self.visibleCharacterRange() ?? self.selectedNeighborhoodRange()
+            let start = self.expandedLineRange(for: visible).location
+            self.refreshStyleBatch(style: style, from: start, through: storage.length, wrapAt: start)
+        }
+        pendingLiveStyleWork?.cancel()
+        pendingLiveStyleWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
+    }
+
+    private func refreshStyleBatch(style: MarkdownDocumentStyle, from start: Int, through end: Int, wrapAt: Int?) {
+        guard let storage = textStorage else {
+            pendingLiveStyleWork = nil
+            return
+        }
+        guard !hasActiveMarkedText else {
+            scheduleLiveStyleRefresh(style: style)
+            return
+        }
+        let clip = enclosingScrollView?.contentView as? MarkdownViewportClipView
+        let wasBlocked = clip?.blocksLayoutScrolling ?? false
+        clip?.blocksLayoutScrolling = true
+        defer { clip?.blocksLayoutScrolling = wasBlocked }
+
+        let deadline = ProcessInfo.processInfo.systemUptime + 0.004
+        let selection = selectedRange()
+        var cursor = start
+        while cursor < min(end, storage.length) {
+            var line = storage.mutableString.lineRange(for: NSRange(location: cursor, length: 0))
+            if restoreAttachmentSourceTokens(in: line) {
+                line = storage.mutableString.lineRange(for: NSRange(location: cursor, length: 0))
+            }
+            applyMarkdownStyle(in: line, style: style, refreshingDocumentStyle: true)
+            cursor = NSMaxRange(line)
+            if ProcessInfo.processInfo.systemUptime >= deadline { break }
+        }
+        if selectedRange() != selection { setSelectedRange(selection) }
+
+        if cursor < min(end, storage.length) {
+            enqueueLiveStyleBatch(style: style, from: cursor, through: end, wrapAt: wrapAt)
+        } else if let wrapAt, wrapAt > 0 {
+            enqueueLiveStyleBatch(style: style, from: 0, through: wrapAt, wrapAt: nil)
+        } else {
+            pendingLiveStyleWork = nil
+            prepareTypingAttributesIfNeeded(at: selectedRange().location)
+            if !currentSearchQuery.isEmpty {
+                updateSearchHighlights(query: currentSearchQuery, activeRange: currentSearchActiveRange)
+            }
+            onDiagnostic38Count?("文档样式原地刷新完成", 1)
+        }
+    }
+
+    private func enqueueLiveStyleBatch(style: MarkdownDocumentStyle, from start: Int, through end: Int, wrapAt: Int?) {
+        let work = DispatchWorkItem { [weak self] in
+            self?.refreshStyleBatch(style: style, from: start, through: end, wrapAt: wrapAt)
+        }
+        pendingLiveStyleWork = work
+        DispatchQueue.main.async(execute: work)
+    }
+
     func prepareDocumentStyleInBatches(style: MarkdownDocumentStyle) {
+        pendingLiveStyleWork?.cancel()
+        pendingLiveStyleWork = nil
         cancelIdleMarkdownStyleCompletion()
         cancelPendingAttachmentStyleWork()
         pendingAttachmentLineRanges.removeAll(keepingCapacity: true)
@@ -6002,7 +6088,12 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
         pendingAttachmentStyleWorkItem = nil
     }
 
-    private func applyMarkdownStyle(in targetRange: NSRange, style: MarkdownDocumentStyle, layers: MarkdownStyleLayer = .all) {
+    private func applyMarkdownStyle(
+        in targetRange: NSRange,
+        style: MarkdownDocumentStyle,
+        layers: MarkdownStyleLayer = .all,
+        refreshingDocumentStyle: Bool = false
+    ) {
         guard let textStorage else { return }
         let totalLength = textStorage.length
         let safeLocation = max(0, min(targetRange.location, totalLength))
@@ -6021,7 +6112,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
             let bounded = nsText.rangeOfComposedCharacterSequences(for: NSRange(location: start, length: end - start))
             if layers.contains(.block) || layers.contains(.inline) {
                 isApplyingMarkdownStyle = true
-                textStorage.addAttributes(bodyAttributes(for: style.body), range: isPreparingDocumentStyle ? actualLineRange : bounded)
+                textStorage.addAttributes(bodyAttributes(for: style.body), range: isPreparingDocumentStyle || refreshingDocumentStyle ? actualLineRange : bounded)
                 isApplyingMarkdownStyle = false
             }
             onDiagnostic38Count?("超长段落局部属性UTF16", bounded.length)
@@ -6064,8 +6155,9 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
             if layers.contains(.inline), !isSemanticLiteral(at: lineRange.location) {
                 applyMarkdownInlineStyle(in: textStorage, rawLine: syntaxLine, lineRange: lineRange, style: style)
             }
-            if layers.contains(.attachment), !isSemanticLiteral(at: lineRange.location) {
-                applyMarkdownAttachmentStyle(in: textStorage, rawLine: syntaxLine, lineRange: lineRange, style: style)
+            if layers.contains(.attachment), !isSemanticLiteral(at: lineRange.location),
+               isPreparingDocumentStyle || !isLineRangeEditing(lineRange) {
+                applyMarkdownAttachments(in: textStorage, rawLine: syntaxLine, lineRange: lineRange, style: style)
             }
 
             lineLocation = NSMaxRange(lineRange)
@@ -6234,16 +6326,6 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
                 .strikethroughColor: NSColor.systemRed
             ], range: strikeRange)
         }
-    }
-
-    private func applyMarkdownAttachmentStyle(
-        in textStorage: NSTextStorage,
-        rawLine: String,
-        lineRange: NSRange,
-        style: MarkdownDocumentStyle
-    ) {
-        guard isPreparingDocumentStyle || !isLineRangeEditing(lineRange) else { return }
-        applyMarkdownAttachments(in: textStorage, rawLine: rawLine, lineRange: lineRange, style: style)
     }
 
     private func lineContainsMarkdownAttachment(_ lineRange: NSRange) -> Bool {
@@ -6502,7 +6584,7 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
               let image = MarkdownImageDecodeCache.shared.image(at: imageURL, width: targetWidth, owner: self, onPending: { key in
                   if isPreparingDocumentStyle { pendingPreparationImages.insert(key) }
               }, onReady: { [weak self] key in
-                  guard let self, self.idleStyleGeneration == generation else { return }
+                  guard let self, self.idleStyleGeneration == generation, self.currentDocumentStyle == style else { return }
                   if self.isPreparingDocumentStyle {
                       guard self.pendingPreparationImages.remove(key) != nil, self.pendingPreparationImages.isEmpty else { return }
                       let continuation = self.preparationImageContinuation
