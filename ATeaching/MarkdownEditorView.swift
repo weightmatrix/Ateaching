@@ -757,6 +757,7 @@ final class MarkdownTextKit2CommitBridge: ObservableObject {
     func notePublishedSource() { sourceRevision &+= 1 }
     private(set) var hasPendingChanges = false
     var commitHandler: (() -> Void)?
+    var isOutlineVisible = false
     private var pendingRevisionWorkItem: DispatchWorkItem?
 
     func markDirty() {
@@ -786,13 +787,29 @@ final class MarkdownTextKit2CommitBridge: ObservableObject {
 }
 
 // MARK: - Markdown编辑器主页面 - v14 - 增强搜索命中高亮与右侧浮窗结果导航
+struct MarkdownEditorSource: Equatable {
+    // Keep the exact UTF-16 source comparison out of Swift's canonical-equivalence path.
+    private var value: NSString = ""
+
+    var text: String {
+        get { value as String }
+        set { value = newValue as NSString }
+    }
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.value.isEqual(rhs.value)
+    }
+}
+
 struct MarkdownEditorView: View {
     let fileURL: URL
     private static let renderModeDefaultsKey = "MarkdownEditor.lastRenderMode"
 
     @Environment(\.dismiss) private var dismiss
-    @State private var markdownText = ""
-    @State private var lastSavedText = ""
+    @State private var markdownSource = MarkdownEditorSource()
+    @State private var lastSavedSource = MarkdownEditorSource()
+
+    private var markdownText: String { markdownSource.text }
     @State private var markdownDiskDigest: String?
     @State private var cloudFileError = ""
     @State private var saveState: MarkdownSaveState = .clean
@@ -852,7 +869,7 @@ struct MarkdownEditorView: View {
                 switch renderMode {
                 case .dual:
                     MarkdownDualRenderModeView(
-                        markdownText: $markdownText,
+                        markdownSource: $markdownSource,
                         targetUTF16Offset: $targetUTF16Offset,
                         preferredScheme: preferredScheme,
                         workingDirectoryURL: fileURL.deletingLastPathComponent(),
@@ -864,7 +881,7 @@ struct MarkdownEditorView: View {
                     )
                 case .instant:
                     MarkdownInstantRenderModeView(
-                        markdownText: $markdownText,
+                        markdownSource: $markdownSource,
                         targetUTF16Offset: $targetUTF16Offset,
                         preferredScheme: preferredScheme,
                         workingDirectoryURL: fileURL.deletingLastPathComponent(),
@@ -876,7 +893,7 @@ struct MarkdownEditorView: View {
                     )
                 case .source:
                     MarkdownSourceModeView(
-                        markdownText: $markdownText,
+                        markdownSource: $markdownSource,
                         targetUTF16Offset: $targetUTF16Offset,
                         preferredScheme: preferredScheme,
                         workingDirectoryURL: fileURL.deletingLastPathComponent(),
@@ -888,7 +905,7 @@ struct MarkdownEditorView: View {
                     )
                 case .textKit2Plain:
                     MarkdownTextKit2PlainModeView(
-                        markdownText: $markdownText,
+                        markdownSource: $markdownSource,
                         targetUTF16Offset: $targetUTF16Offset,
                         preferredScheme: preferredScheme,
                         workingDirectoryURL: fileURL.deletingLastPathComponent(),
@@ -963,17 +980,18 @@ struct MarkdownEditorView: View {
             saveBeforeClosing()
         }
         .task(id: textKit2CommitBridge.sourceRevision) {
-            let source = markdownText
+            let snapshot = markdownSource
+            let source = snapshot.text
             try? await Task.sleep(nanoseconds: 250_000_000)
             guard !Task.isCancelled else { return }
             let syntax = await Task.detached(priority: .utility) { NormalMarkdownSyntax.parse(source) }.value
-            guard !Task.isCancelled, markdownText == source else { return }
+            guard !Task.isCancelled, markdownSource == snapshot else { return }
             syntaxHeadings = syntax.headings.map { MarkdownHeading(level: $0.level, title: $0.title, utf16Offset: $0.offset) }
         }
-        .onChange(of: markdownText) { _, newValue in
+        .onChange(of: markdownSource) { _, newSource in
             textKit2CommitBridge.notePublishedSource()
             let profileStart = MarkdownEditorPerformanceProbe.start()
-            if newValue != lastSavedText {
+            if newSource != lastSavedSource {
                 if saveState != .saving {
                     saveState = .dirty
                 }
@@ -982,11 +1000,11 @@ struct MarkdownEditorView: View {
             }
             scheduleAutoSave()
             scheduleSearchResultsRebuild(delay: 0.22)
-            scheduleScreenCastPublish(source: newValue)
+            scheduleScreenCastPublish(source: newSource.text)
             MarkdownEditorPerformanceProbe.end(
                 "MarkdownEditorView.onChange(markdownText)",
                 start: profileStart,
-                details: MarkdownEditorPerformanceProbe.textDetails(newValue)
+                details: MarkdownEditorPerformanceProbe.textDetails(newSource.text)
             )
         }
         .onChange(of: textKit2CommitBridge.revision) { _, _ in
@@ -995,6 +1013,9 @@ struct MarkdownEditorView: View {
                 saveState = .dirty
             }
             scheduleAutoSave()
+        }
+        .onChange(of: showTOCPopover) { _, isVisible in
+            textKit2CommitBridge.isOutlineVisible = isVisible
         }
         .onChange(of: renderMode) { _, newValue in
             textKit2CommitBridge.commitPendingText()
@@ -1140,7 +1161,7 @@ struct MarkdownEditorView: View {
     }
 
     private var hasUnsavedChanges: Bool {
-        textKit2CommitBridge.hasPendingChanges || markdownText != lastSavedText
+        textKit2CommitBridge.hasPendingChanges || markdownSource != lastSavedSource
     }
 
     private var headings: [MarkdownHeading] {
@@ -1323,8 +1344,8 @@ struct MarkdownEditorView: View {
                 return text
             }
             cloudFileError = ""
-            markdownText = text
-            lastSavedText = text
+            markdownSource.text = text
+            lastSavedSource = markdownSource
             textKit2CommitBridge.reset()
             lastKnownFileModificationDate = fileModificationDate()
             saveState = .clean
@@ -1405,7 +1426,7 @@ struct MarkdownEditorView: View {
         do {
             try writeCurrentMarkdownText(allowExternalOverwrite: allowExternalOverwrite)
             cloudFileError = ""
-            lastSavedText = markdownText
+            lastSavedSource = markdownSource
             lastKnownFileModificationDate = fileModificationDate()
             saveState = .clean
         } catch {
@@ -2400,7 +2421,7 @@ struct MarkdownStyledPreviewView: View {
 
 // MARK: - 即时渲染模式 - v7 - 单页可编辑富文本源码并支持搜索高亮定位
 struct MarkdownInstantRenderModeView: View {
-    @Binding var markdownText: String
+    @Binding var markdownSource: MarkdownEditorSource
     @Binding var targetUTF16Offset: Int?
     let preferredScheme: ColorScheme?
     let workingDirectoryURL: URL?
@@ -2412,7 +2433,7 @@ struct MarkdownInstantRenderModeView: View {
 
     var body: some View {
         MarkdownInstantEditorContainer(
-            markdownText: $markdownText,
+            markdownSource: $markdownSource,
             targetUTF16Offset: $targetUTF16Offset,
             workingDirectoryURL: workingDirectoryURL,
             documentStyle: documentStyle,
@@ -2426,7 +2447,7 @@ struct MarkdownInstantRenderModeView: View {
 
 // MARK: - 源码模式视图 - v7 - 使用固定Markdown标准样式渲染并支持搜索高亮定位
 struct MarkdownSourceModeView: View {
-    @Binding var markdownText: String
+    @Binding var markdownSource: MarkdownEditorSource
     @Binding var targetUTF16Offset: Int?
     let preferredScheme: ColorScheme?
     let workingDirectoryURL: URL?
@@ -2442,7 +2463,7 @@ struct MarkdownSourceModeView: View {
 
     var body: some View {
         MarkdownSourceEditorContainer(
-            markdownText: $markdownText,
+            markdownSource: $markdownSource,
             targetUTF16Offset: $targetUTF16Offset,
             workingDirectoryURL: workingDirectoryURL,
             documentStyle: sourceStyle,
@@ -2456,7 +2477,7 @@ struct MarkdownSourceModeView: View {
 
 // MARK: - 双区域Markdown视图 - v1 - 左侧TextKit2编辑右侧Web预览并保留旧即时渲染代码为旧管道
 struct MarkdownDualRenderModeView: View {
-    @Binding var markdownText: String
+    @Binding var markdownSource: MarkdownEditorSource
     @Binding var targetUTF16Offset: Int?
     let preferredScheme: ColorScheme?
     let workingDirectoryURL: URL?
@@ -2469,7 +2490,7 @@ struct MarkdownDualRenderModeView: View {
     var body: some View {
         HStack(spacing: 0) {
             MarkdownTextKit2PlainModeView(
-                markdownText: $markdownText,
+                markdownSource: $markdownSource,
                 targetUTF16Offset: $targetUTF16Offset,
                 preferredScheme: preferredScheme,
                 workingDirectoryURL: workingDirectoryURL,
@@ -2484,7 +2505,7 @@ struct MarkdownDualRenderModeView: View {
             Divider()
 
             MarkdownWebRenderModeView(
-                markdownText: markdownText,
+                markdownText: markdownSource.text,
                 preferredScheme: preferredScheme,
                 documentStyle: documentStyle
             )
@@ -2495,7 +2516,7 @@ struct MarkdownDualRenderModeView: View {
 
 // MARK: - TextKit2纯文本基线模式 - v1 - 用于验证大文档原生编辑性能
 struct MarkdownTextKit2PlainModeView: View {
-    @Binding var markdownText: String
+    @Binding var markdownSource: MarkdownEditorSource
     @Binding var targetUTF16Offset: Int?
     let preferredScheme: ColorScheme?
     let workingDirectoryURL: URL?
@@ -2509,7 +2530,7 @@ struct MarkdownTextKit2PlainModeView: View {
     #endif
 
     init(
-        markdownText: Binding<String>,
+        markdownSource: Binding<MarkdownEditorSource>,
         targetUTF16Offset: Binding<Int?>,
         preferredScheme: ColorScheme?,
         workingDirectoryURL: URL?,
@@ -2519,7 +2540,7 @@ struct MarkdownTextKit2PlainModeView: View {
         activeSearchRange: NSRange?,
         commitBridge: MarkdownTextKit2CommitBridge
     ) {
-        self._markdownText = markdownText
+        self._markdownSource = markdownSource
         self._targetUTF16Offset = targetUTF16Offset
         self.preferredScheme = preferredScheme
         self.workingDirectoryURL = workingDirectoryURL
@@ -2533,7 +2554,7 @@ struct MarkdownTextKit2PlainModeView: View {
     var body: some View {
         #if os(macOS)
         MarkdownTextKit2PlainTextEditor(
-            text: $markdownText,
+            source: $markdownSource,
             targetUTF16Offset: $targetUTF16Offset,
             workingDirectoryURL: workingDirectoryURL,
             documentStyle: documentStyle,
@@ -2547,7 +2568,7 @@ struct MarkdownTextKit2PlainModeView: View {
         .padding(8)
         #else
         MarkdownIOSStyledTextEditor(
-            text: $markdownText,
+            text: $markdownSource.text,
             targetUTF16Offset: $targetUTF16Offset,
             documentStyle: documentStyle,
             commitBridge: commitBridge
@@ -2601,7 +2622,7 @@ struct MarkdownWebRenderModeView: View {
 
 // MARK: - 编辑器容器 - v6 - 封装源码编辑定位跳转并支持搜索高亮同步
 struct MarkdownSourceEditorContainer: View {
-    @Binding var markdownText: String
+    @Binding var markdownSource: MarkdownEditorSource
     @Binding var targetUTF16Offset: Int?
     let workingDirectoryURL: URL?
     let documentStyle: MarkdownDocumentStyle
@@ -2612,7 +2633,7 @@ struct MarkdownSourceEditorContainer: View {
 
     var body: some View {
         MarkdownTextKit2PlainModeView(
-            markdownText: $markdownText,
+            markdownSource: $markdownSource,
             targetUTF16Offset: $targetUTF16Offset,
             preferredScheme: nil,
             workingDirectoryURL: workingDirectoryURL,
@@ -2627,7 +2648,7 @@ struct MarkdownSourceEditorContainer: View {
 
 // MARK: - 即时编辑容器 - v3 - 封装富文本编辑并同步应用即时样式快捷输入与搜索高亮
 struct MarkdownInstantEditorContainer: View {
-    @Binding var markdownText: String
+    @Binding var markdownSource: MarkdownEditorSource
     @Binding var targetUTF16Offset: Int?
     let workingDirectoryURL: URL?
     let documentStyle: MarkdownDocumentStyle
@@ -2638,7 +2659,7 @@ struct MarkdownInstantEditorContainer: View {
 
     var body: some View {
         MarkdownTextKit2PlainModeView(
-            markdownText: $markdownText,
+            markdownSource: $markdownSource,
             targetUTF16Offset: $targetUTF16Offset,
             preferredScheme: nil,
             workingDirectoryURL: workingDirectoryURL,
@@ -4369,7 +4390,11 @@ private final class MarkdownPerformanceDiagnostics {
 
 // MARK: - TextKit2纯文本编辑器 - v1 - 建立200k文档输入性能基线
 struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
-    @Binding var text: String
+    @Binding var source: MarkdownEditorSource
+    private var text: String {
+        get { source.text }
+        nonmutating set { source.text = newValue }
+    }
     @Binding var targetUTF16Offset: Int?
     var workingDirectoryURL: URL?
     var documentStyle: MarkdownDocumentStyle = MarkdownDocumentStyle()
@@ -4489,8 +4514,8 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
         }
         textView.workingDirectoryURL = workingDirectoryURL
 
-        let bindingChangedExternally = text != context.coordinator.lastObservedBindingText
-        if bindingChangedExternally, text != context.coordinator.lastSourceSnapshot {
+        let bindingChangedExternally = !(text as NSString).isEqual(to: context.coordinator.lastObservedBindingText)
+        if bindingChangedExternally, !(text as NSString).isEqual(to: context.coordinator.lastSourceSnapshot) {
             context.coordinator.recordDiagnostic38Count("外部全文替换次数")
             let syncStart = MarkdownEditorPerformanceProbe.start()
             context.coordinator.cancelPendingBindingSync()
@@ -4732,7 +4757,11 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
                 details: MarkdownEditorPerformanceProbe.textDetails(textView.string)
             )
             let usesInlineDeletionFastPath = pendingDeletionKind == .inlineCharacter
-            if parent.scrollSyncBridge != nil {
+            // The viewport bridge also preserves position between modes in the single editor.
+            if parent.scrollSyncBridge?.syncsPanes == true
+                || parent.commitBridge.isOutlineVisible
+                || !parent.searchQuery.isEmpty
+                || ScreenCastContentHub.shared.isRequested(.markdown) {
                 scheduleBindingSyncFromTextView(delay: pendingEditIsLocalCharacter ? 0.35 : 0.10)
                 recordDiagnostic38Count("绑定延迟任务安排")
             }
