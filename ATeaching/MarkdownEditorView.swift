@@ -4743,7 +4743,7 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
                 return
             }
             parent.commitBridge.markDirty()
-            textView.scheduleSemanticRefresh()
+            textView.invalidateSemanticSnapshot()
             let quickInputStart = MarkdownEditorPerformanceProbe.start()
             let diagnosticQuickInputStart = MarkdownTextKit2Diagnostic38.now()
             if textView.applyQuickInputIfNeeded() {
@@ -4762,6 +4762,7 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
                 || parent.commitBridge.isOutlineVisible
                 || !parent.searchQuery.isEmpty
                 || ScreenCastContentHub.shared.isRequested(.markdown) {
+                textView.scheduleSemanticRefresh()
                 scheduleBindingSyncFromTextView(delay: pendingEditIsLocalCharacter ? 0.35 : 0.10)
                 recordDiagnostic38Count("绑定延迟任务安排")
             }
@@ -4894,6 +4895,7 @@ struct MarkdownTextKit2PlainTextEditor: NSViewRepresentable {
             let sourceText = textView.markdownSourceStringPreservingAttachments()
             recordDiagnostic38Duration("提交全文源码投影", since: snapshotStart)
             recordDiagnostic38Count("提交全文源码投影次数")
+            textView.refreshSemanticSnapshot(from: sourceText)
             lastSourceSnapshot = sourceText
             parent.text = sourceText
             lastObservedBindingText = sourceText
@@ -5362,24 +5364,35 @@ final class MarkdownTextKit2PlainTextView: NSTextView {
     private var semanticWork: DispatchWorkItem?
     private var semanticGeneration = 0
 
-    func scheduleSemanticRefresh() {
+    func invalidateSemanticSnapshot() {
         semanticWork?.cancel()
+        semanticWork = nil
         semanticGeneration += 1
-        let generation = semanticGeneration
         semanticSnapshot = nil
+    }
+
+    func scheduleSemanticRefresh() {
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            let source = self.markdownSourceStringPreservingAttachments()
-            DispatchQueue.global(qos: .utility).async { [weak self] in
-                let snapshot = NormalMarkdownSyntax.parse(source)
-                DispatchQueue.main.async {
-                    guard let self, generation == self.semanticGeneration else { return }
-                    self.semanticSnapshot = snapshot
-                }
-            }
+            self.refreshSemanticSnapshot(from: self.markdownSourceStringPreservingAttachments())
         }
         semanticWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
+    }
+
+    func refreshSemanticSnapshot(from source: String) {
+        guard semanticSnapshot == nil else { return }
+        semanticWork?.cancel()
+        semanticWork = nil
+        semanticGeneration += 1
+        let generation = semanticGeneration
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let snapshot = NormalMarkdownSyntax.parse(source)
+            DispatchQueue.main.async {
+                guard let self, generation == self.semanticGeneration else { return }
+                self.semanticSnapshot = snapshot
+            }
+        }
     }
 
     private func isSemanticLiteral(at offset: Int) -> Bool {
