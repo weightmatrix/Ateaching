@@ -205,12 +205,7 @@ nonisolated enum TeachingDebugLogStore {
     }
 
     static func isLessonStatisticsEnabled() -> Bool {
-        settingsLock.lock()
-        defer { settingsLock.unlock() }
-        if let cachedSettings {
-            return cachedSettings.lessonStatisticsEnabled
-        }
-        return UserDefaults.standard.bool(forKey: lessonStatisticsEnabledDefaultsKey)
+        false
     }
 
     private static func nodeMarkdownEditorPipelineFromDefaults() -> NodeMarkdownEditorPipeline {

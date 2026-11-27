@@ -39,7 +39,7 @@ struct TeachingStudentBackupSheet: View {
                             Image(systemName: selectedStudentIDs.contains(student.id) ? "checkmark.circle.fill" : "circle")
                                 .foregroundStyle(selectedStudentIDs.contains(student.id) ? .accent : .secondary)
                             Image(systemName: student.iconName)
-                                .foregroundStyle(student.color.value)
+                                .foregroundStyle(student.displayColor)
                             Text(student.name)
                             Spacer()
                         }
@@ -125,7 +125,7 @@ struct TeachingStudentRestoreSheet: View {
                             Image(systemName: selectedIDs.contains(entry.id) ? "checkmark.circle.fill" : "circle")
                                 .foregroundStyle(selectedIDs.contains(entry.id) ? .accent : .secondary)
                             Image(systemName: entry.student.iconName)
-                                .foregroundStyle(entry.student.color.value)
+                                .foregroundStyle(entry.student.displayColor)
                             VStack(alignment: .leading) {
                                 Text(entry.student.name)
                                 Text(entry.folderURL.lastPathComponent)

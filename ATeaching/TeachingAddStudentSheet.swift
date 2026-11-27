@@ -1,21 +1,20 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-// MARK: - 学生新增向导 - v3 - 六步建档并支持默认继承与逐项覆盖
+// MARK: - 学生建档
 struct TeachingAddStudentSheet: View {
     @Environment(\.dismiss) private var dismiss
 
+    let existingStudents: [TeachingStudentItem]
     let onConfirm: (TeachingStudentItem, TeachingStudentProfileSettings) -> Void
 
-    @State private var step: Step = .basicInfo
     @State private var name = ""
     @State private var iconName = TeachingStudentItem.supportedIcons.first ?? "person.fill"
-    @State private var color = TeachingStudentColor.blue
+    @State private var selectedColor: String?
 
     @State private var defaultSettings = TeachingStudentSystemSettings()
     @State private var draftSettings = TeachingStudentProfileSettings()
     @State private var selectionData = TeachingSelectionData.empty
-    @State private var institutions: [TeachingInstitutionRecord] = []
     @State private var featureFlags = TeachingFeatureFlags()
     @State private var statusMessage = ""
     @State private var didLoadDefaults = false
@@ -24,13 +23,12 @@ struct TeachingAddStudentSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("进度") {
-                    Text(stepIndicatorText)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-
-                stepContent
+                basicInfoSection
+                studentInfoSection
+                classInfoSection
+                lessonPlansSection
+                workbookSection
+                syncFolderSection
 
                 TeachingStatusMessageSection(message: statusMessage)
             }
@@ -42,24 +40,10 @@ struct TeachingAddStudentSheet: View {
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    if step == .syncFolder {
-                        Button("创建") {
-                            createStudent()
-                        }
-                        .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    } else {
-                        Button("下一步") {
-                            moveToNextStep()
-                        }
-                        .disabled(!canMoveToNextStep)
+                    Button("创建") {
+                        createStudent()
                     }
-                }
-                ToolbarItem(placement: .automatic) {
-                    if step != .basicInfo {
-                        Button("上一步") {
-                            moveToPreviousStep()
-                        }
-                    }
+                    .disabled(!canCreateStudent)
                 }
             }
             .task {
@@ -96,44 +80,42 @@ struct TeachingAddStudentSheet: View {
         }
     }
 
-    @ViewBuilder
-    private var stepContent: some View {
-        switch step {
-        case .basicInfo:
-            basicInfoSection
-        case .studentInfo:
-            studentInfoSection
-        case .classInfo:
-            classInfoSection
-        case .lessonPlans:
-            lessonPlansSection
-        case .workbook:
-            workbookSection
-        case .statistics:
-            lessonStatisticsSection
-        case .syncFolder:
-            syncFolderSection
-        }
-    }
-
     private var basicInfoSection: some View {
-        Section("第一页：基础信息") {
+        let activeColor = effectiveColor
+        return Section("基础信息") {
             TextField("学生姓名", text: $name)
             Picker("图标", selection: $iconName) {
                 ForEach(TeachingStudentItem.supportedIcons, id: \.self) { icon in
                     Label(icon, systemImage: icon).tag(icon)
                 }
             }
-            Picker("颜色", selection: $color) {
-                ForEach(TeachingStudentColor.allCases) { option in
-                    Text(option.displayName).tag(option)
+            Button("自动选色") { selectedColor = nil }
+                .accessibilityAddTraits(selectedColor == nil ? .isSelected : [])
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 34))], spacing: 10) {
+                ForEach(TeachingScheduleStudentColors.presets, id: \.self) { hex in
+                    Button {
+                        selectedColor = hex
+                    } label: {
+                        ZStack {
+                            Circle().fill(TeachingScheduleStudentColors.color(hex) ?? .clear)
+                            if hex == activeColor {
+                                Image(systemName: "checkmark")
+                                    .font(.caption.bold())
+                                    .foregroundStyle(.white)
+                            }
+                        }
+                        .frame(width: 28, height: 28)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(hex)
+                    .accessibilityAddTraits(hex == activeColor ? .isSelected : [])
                 }
             }
         }
     }
 
     private var studentInfoSection: some View {
-        Section("第二页：学生信息模板") {
+        Section("学生信息模板") {
             Picker("学生信息模板", selection: $draftSettings.studentInfoTemplateID) {
                 Text("未选择").tag(Optional<String>.none)
                 ForEach(selectionData.singleListTemplates) { template in
@@ -154,7 +136,7 @@ struct TeachingAddStudentSheet: View {
     }
 
     private var classInfoSection: some View {
-        Section("第三页：上课信息模板") {
+        Section("上课信息模板") {
             Picker("上课信息模板", selection: $draftSettings.classInfoTemplateID) {
                 Text("未选择").tag(Optional<String>.none)
                 ForEach(selectionData.singleListTemplates) { template in
@@ -193,7 +175,7 @@ struct TeachingAddStudentSheet: View {
     }
 
     private var lessonPlansSection: some View {
-        Section("第四页：教案（可多选）") {
+        Section("教案（可多选）") {
             if selectionData.lessonPlanFolders.isEmpty {
                 Text("未发现可选教案文件夹")
                     .foregroundStyle(.secondary)
@@ -218,7 +200,7 @@ struct TeachingAddStudentSheet: View {
     }
 
     private var workbookSection: some View {
-        Section("第五页：教辅（可选）") {
+        Section("教辅（可选）") {
             Picker("教辅模板", selection: $draftSettings.workbookFileID) {
                 Text("不选择").tag(Optional<String>.none)
                 ForEach(selectionData.checklistTemplates) { template in
@@ -229,53 +211,8 @@ struct TeachingAddStudentSheet: View {
         }
     }
 
-    private var lessonStatisticsSection: some View {
-        Section("第六页：统计") {
-            Picker("机构名称", selection: lessonStatisticsInstitutionBinding) {
-                Text("不选择").tag(Optional<UUID>.none)
-                ForEach(institutions.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }) { institution in
-                    Text(institution.name).tag(Optional(institution.id))
-                }
-            }
-            .pickerStyle(.menu)
-
-            TextField("课时价格（2小时）", value: lessonStatisticsPriceBinding, format: .number)
-                #if os(iOS)
-                .keyboardType(.decimalPad)
-                #endif
-                .disabled(draftSettings.lessonStatistics.institutionID == nil)
-
-            Text("课时价格按 2 小时价格保存；未选择机构时不会自动记录课。")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private var lessonStatisticsInstitutionBinding: Binding<UUID?> {
-        Binding(
-            get: { draftSettings.lessonStatistics.institutionID },
-            set: { newID in
-                if let newID,
-                   let institution = institutions.first(where: { $0.id == newID }) {
-                    draftSettings.lessonStatistics.institutionID = institution.id
-                    draftSettings.lessonStatistics.institutionName = institution.name
-                    draftSettings.lessonStatistics.priceForTwoHours = draftSettings.lessonStatistics.priceForTwoHours ?? institution.defaultPriceForTwoHours
-                } else {
-                    draftSettings.lessonStatistics = TeachingStudentLessonStatisticsSettings()
-                }
-            }
-        )
-    }
-
-    private var lessonStatisticsPriceBinding: Binding<Double?> {
-        Binding(
-            get: { draftSettings.lessonStatistics.priceForTwoHours },
-            set: { draftSettings.lessonStatistics.priceForTwoHours = $0 }
-        )
-    }
-
     private var syncFolderSection: some View {
-        Section("第七页：文件夹") {
+        Section("文件夹") {
             Text(draftSettings.syncBaseFolderPath ?? "未选择")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
@@ -296,34 +233,24 @@ struct TeachingAddStudentSheet: View {
         }
     }
 
-    private var stepIndicatorText: String {
-        "\(step.rawValue + 1)/\(Step.allCases.count) · \(step.displayName)"
+    private var effectiveColor: String {
+        selectedColor ?? TeachingScheduleStudentColors.next(
+            used: Set(existingStudents.compactMap(\.scheduleColorHex))
+        )
     }
 
-    private var canMoveToNextStep: Bool {
-        switch step {
-        case .basicInfo:
-            return !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        case .studentInfo:
-            return draftSettings.studentInfoTemplateID != nil && draftSettings.studentNameKeyID != nil
-        case .classInfo:
-            let selected = [
-                draftSettings.classInfoNameKeyID,
-                draftSettings.classInfoContentKeyID,
-                draftSettings.classInfoTimeKeyID
-            ].compactMap { $0 }
-            return draftSettings.classInfoTemplateID != nil && selected.count == 3 && Set(selected).count == 3
-        case .lessonPlans, .workbook:
-            return true
-        case .statistics:
-            let stats = draftSettings.lessonStatistics.normalized()
-            if stats.institutionID == nil && stats.institutionName == nil {
-                return true
-            }
-            return stats.priceForTwoHours != nil
-        case .syncFolder:
-            return true
-        }
+    private var canCreateStudent: Bool {
+        let classInfoKeys = [
+            draftSettings.classInfoNameKeyID,
+            draftSettings.classInfoContentKeyID,
+            draftSettings.classInfoTimeKeyID
+        ].compactMap { $0 }
+        return didLoadDefaults &&
+            !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            draftSettings.studentInfoTemplateID != nil &&
+            draftSettings.studentNameKeyID != nil &&
+            draftSettings.classInfoTemplateID != nil &&
+            Set(classInfoKeys).count == 3
     }
 
     private var studentNameRowOptions: [TeachingTemplateRowOption] {
@@ -349,28 +276,9 @@ struct TeachingAddStudentSheet: View {
         }
     }
 
-    private func moveToNextStep() {
-        guard canMoveToNextStep else {
-            statusMessage = "请先完成本页必填项。"
-            return
-        }
-        statusMessage = ""
-        if let next = Step(rawValue: step.rawValue + 1) {
-            step = next
-        }
-    }
-
-    private func moveToPreviousStep() {
-        statusMessage = ""
-        if let previous = Step(rawValue: step.rawValue - 1) {
-            step = previous
-        }
-    }
-
     private func loadDefaults() {
         do {
             defaultSettings = try TeachingStudentSettingsStore.loadStudentSystemSettings()
-            institutions = (try? TeachingLessonStatisticsStore.loadInstitutions()) ?? []
             featureFlags = try TeachingStudentSettingsStore.loadFeatureFlags()
             selectionData = (try? TeachingStudentSelectionSupport.loadSelectionData()) ?? .empty
             draftSettings = TeachingStudentProfileSettings(
@@ -410,8 +318,7 @@ struct TeachingAddStudentSheet: View {
             let student = TeachingStudentItem(
                 name: trimmedName,
                 iconName: iconName,
-                color: color,
-                isSelected: true
+                scheduleColorHex: effectiveColor
             )
             if featureFlags.enableStudentProvisioning {
                 try TeachingStudentProvisioningService.provisionArchiveSkeleton(
@@ -424,37 +331,6 @@ struct TeachingAddStudentSheet: View {
             dismiss()
         } catch {
             statusMessage = "建档失败：\(error.localizedDescription)"
-        }
-    }
-}
-
-private extension TeachingAddStudentSheet {
-    enum Step: Int, CaseIterable {
-        case basicInfo
-        case studentInfo
-        case classInfo
-        case lessonPlans
-        case workbook
-        case statistics
-        case syncFolder
-
-        var displayName: String {
-            switch self {
-            case .basicInfo:
-                return "基础信息"
-            case .studentInfo:
-                return "学生信息"
-            case .classInfo:
-                return "上课信息"
-            case .lessonPlans:
-                return "教案"
-            case .workbook:
-                return "教辅"
-            case .statistics:
-                return "统计"
-            case .syncFolder:
-                return "文件夹"
-            }
         }
     }
 }

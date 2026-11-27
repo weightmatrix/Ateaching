@@ -82,7 +82,7 @@ struct TeachingStudentsSubpageView: View {
         HStack(spacing: 10) {
             Image(systemName: student.iconName)
                 .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(student.color.value)
+                .foregroundStyle(student.displayColor)
                 .frame(width: 26, height: 26)
             Text(student.name)
                 .font(.system(size: 15, weight: .medium))

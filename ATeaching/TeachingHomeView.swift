@@ -10,7 +10,6 @@ struct TeachingHomeView: View {
         case lessonPlan
         case workbook
         case students
-        case statistics
         case sync
     }
 
@@ -24,7 +23,6 @@ struct TeachingHomeView: View {
     @State private var isApplyingStudentSnapshot = false
     @State private var studentSettingsRetryTask: Task<Void, Never>?
     @State private var featureFlags = TeachingFeatureFlags()
-    @State private var lessonStatisticsEnabled = false
     @State private var showStudentSystemSettings = false
     @State private var showAddStudentSheet = false
     @State private var editingProfileStudent: TeachingStudentItem?
@@ -90,7 +88,7 @@ struct TeachingHomeView: View {
             TeachingStudentSystemSettingsView()
         }
         .sheet(isPresented: $showAddStudentSheet) {
-            TeachingAddStudentSheet { student, profile in
+            TeachingAddStudentSheet(existingStudents: students) { student, profile in
                 students.append(student)
                 saveStudentsToSettings()
                 saveProfileOverrideIfNeeded(profile, for: student)
@@ -142,9 +140,14 @@ struct TeachingHomeView: View {
                 pageButton(title: "教案", systemImage: "book.closed", page: .lessonPlan)
                 pageButton(title: "教辅", systemImage: "books.vertical", page: .workbook)
                 pageButton(title: "学生", systemImage: "person.2", page: .students)
-                if lessonStatisticsEnabled {
-                    pageButton(title: "统计", systemImage: "chart.bar.doc.horizontal", page: .statistics)
+                Link(destination: URL(string: "https://zhibenwang.com/app/")!) {
+                    actionLabel("排课网", systemImage: "calendar")
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 12)
+                        .frame(height: 32)
                 }
+                .buttonStyle(.plain)
+                .help("打开排课网")
                 pageButton(title: "同步", systemImage: "arrow.triangle.2.circlepath", page: .sync)
             }
             .padding(4)
@@ -282,8 +285,6 @@ struct TeachingHomeView: View {
                 externalToggleMultiSelectToken: workbookToggleMultiSelectToken,
                 externalCreateToken: workbookCreateToken
             )
-        case .statistics:
-            TeachingLessonStatisticsSubpageView()
         case .sync:
             TeachingSyncPanelView(
                 students: students,
@@ -344,9 +345,9 @@ struct TeachingHomeView: View {
                                 HStack(spacing: 14) {
                                     Image(systemName: student.iconName)
                                         .font(.system(size: 21, weight: .semibold))
-                                        .foregroundStyle(student.color.value)
+                                        .foregroundStyle(student.displayColor)
                                         .frame(width: 46, height: 46)
-                                        .background(student.color.value.opacity(0.13), in: Circle())
+                                        .background(student.displayColor.opacity(0.13), in: Circle())
                                     VStack(alignment: .leading, spacing: 4) {
                                         Text(student.name)
                                             .font(.system(size: 15, weight: .semibold))
@@ -357,9 +358,6 @@ struct TeachingHomeView: View {
                                             .foregroundStyle(.secondary)
                                     }
                                     Spacer(minLength: 8)
-                                    Image(systemName: "chevron.right")
-                                        .font(.system(size: 11, weight: .semibold))
-                                        .foregroundStyle(.tertiary)
                                 }
                                 .frame(maxWidth: .infinity, minHeight: 58)
                                 .padding(14)
@@ -401,6 +399,7 @@ struct TeachingHomeView: View {
                                         Button {
                                             updateStudent(student.id) { item in
                                                 item.color = color
+                                                item.scheduleColorHex = nil
                                             }
                                         } label: {
                                             HStack {
@@ -468,6 +467,7 @@ struct TeachingHomeView: View {
             onUpdateColor: { studentID, color in
                 updateStudent(studentID) { item in
                     item.color = color
+                    item.scheduleColorHex = nil
                 }
             },
             onConfigureProfile: { student in
@@ -537,10 +537,6 @@ struct TeachingHomeView: View {
             loadedStudentsBaseline = snapshot.students
             students = snapshot.students
             featureFlags = snapshot.featureFlags
-            lessonStatisticsEnabled = TeachingDebugLogStore.isLessonStatisticsEnabled()
-            if selectedPage == .statistics && !lessonStatisticsEnabled {
-                selectedPage = .teaching
-            }
         } catch {
             statusMessage = error.localizedDescription
             scheduleStudentSettingsRetryIfNeeded(for: error)
@@ -841,6 +837,11 @@ nonisolated struct TeachingStudentItem: Identifiable, Equatable, Codable {
     var iconName: String = "person.fill"
     var color: TeachingStudentColor = .blue
     var isSelected: Bool = true
+    var scheduleColorHex: String?
+
+    @MainActor var displayColor: Color {
+        scheduleColorHex.flatMap(TeachingScheduleStudentColors.color) ?? color.value
+    }
 }
 
 enum TeachingStudentColor: String, CaseIterable, Identifiable, Codable {
@@ -891,5 +892,66 @@ enum TeachingStudentColor: String, CaseIterable, Identifiable, Codable {
         case .pink: return .pink
         case .brown: return .brown
         }
+    }
+}
+
+// Matches the student palette and distance rule in 李知本·排课.
+nonisolated enum TeachingScheduleStudentColors {
+    static let presets = [
+        "#E53935", "#D81B60", "#AD1457", "#8E24AA", "#6A1B9A", "#5E35B1",
+        "#3949AB", "#283593", "#1E88E5", "#039BE5", "#00ACC1", "#00897B",
+        "#00695C", "#43A047", "#2E7D32", "#7CB342", "#C0CA33", "#FDD835",
+        "#F9A825", "#FB8C00", "#F4511E", "#6D4C41", "#757575", "#546E7A"
+    ]
+
+    static func color(_ hex: String) -> Color? {
+        guard let rgb = rgb(hex) else { return nil }
+        return Color(red: Double(rgb.0) / 255, green: Double(rgb.1) / 255, blue: Double(rgb.2) / 255)
+    }
+
+    static func next(used: Set<String>) -> String {
+        let used = Set(used.map { $0.uppercased() })
+        let occupied = used.compactMap(rgb)
+        var candidates = presets.filter { !used.contains($0) }
+        if candidates.isEmpty {
+            candidates = (0..<720).map { index in
+                let hue = (Double(index) * 137.507764).truncatingRemainder(dividingBy: 360) / 60
+                let saturation = 0.54 + Double(index % 4) * 0.10
+                let value = 0.64 + Double(index % 3) * 0.12
+                let chroma = value * saturation
+                let secondary = chroma * (1 - abs(hue.truncatingRemainder(dividingBy: 2) - 1))
+                let channels = [
+                    (chroma, secondary, 0), (secondary, chroma, 0), (0, chroma, secondary),
+                    (0, secondary, chroma), (secondary, 0, chroma), (chroma, 0, secondary)
+                ][Int(hue)]
+                let offset = value - chroma
+                return String(
+                    format: "#%02X%02X%02X",
+                    Int(((channels.0 + offset) * 255).rounded()),
+                    Int(((channels.1 + offset) * 255).rounded()),
+                    Int(((channels.2 + offset) * 255).rounded())
+                )
+            }.filter { !used.contains($0) }
+        }
+        return candidates.map { candidate in
+            (candidate, closestDistance(to: candidate, occupied: occupied))
+        }.max { $0.1 < $1.1 }?.0 ?? presets[0]
+    }
+
+    private static func closestDistance(to hex: String, occupied: [(Int, Int, Int)]) -> Int {
+        guard let (r, g, b) = rgb(hex) else { return 0 }
+        return occupied.map { other in
+            let red = r - other.0
+            let green = g - other.1
+            let blue = b - other.2
+            return red * red + green * green + blue * blue
+        }.min() ?? 0
+    }
+
+    private static func rgb(_ hex: String) -> (Int, Int, Int)? {
+        guard hex.count == 7, hex.first == "#", let value = Int(hex.dropFirst(), radix: 16) else {
+            return nil
+        }
+        return (value >> 16, value >> 8 & 255, value & 255)
     }
 }

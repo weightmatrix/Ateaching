@@ -60,16 +60,6 @@ struct TeachingDebugSettingsView: View {
                             lessonStatisticsEnabled: lessonStatisticsEnabled
                         )
                     }
-                Toggle("课时统计", isOn: $lessonStatisticsEnabled)
-                    .onChange(of: lessonStatisticsEnabled) { _, newValue in
-                        save(
-                            persistEnabled: persistLogsEnabled,
-                            jitterEnabled: layoutJitterLogsEnabled,
-                            editorPipeline: nodeMarkdownEditorPipeline,
-                            textKit2FocusLocationOverlayEnabled: textKit2FocusLocationOverlayEnabled,
-                            lessonStatisticsEnabled: newValue
-                        )
-                    }
                 NavigationLink {
                     TeachingDebugLogViewerView()
                 } label: {
@@ -177,14 +167,6 @@ struct TeachingDebugActionToolsView: View {
                     systemImage: "arrow.triangle.2.circlepath"
                 ) {
                     TeachingNotebookSSCActionView()
-                }
-                AppSettingsDivider()
-                AppSettingsNavigationRow(
-                    title: "颜色整理",
-                    subtitle: "重新分配高区分度机构颜色",
-                    systemImage: "paintpalette.fill"
-                ) {
-                    TeachingInstitutionColorOrganizerView()
                 }
             }
         }
