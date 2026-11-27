@@ -71,7 +71,7 @@ extension NodeMarkdownTextKit2Coordinator {
         let diagnosticStart = NodeMarkdownDiagnostic35.now()
         defer { recordDiagnostic35Duration("单行坐标增量更新", since: diagnosticStart) }
         recordDiagnostic35Count("单行坐标增量次数")
-        guard !rowLayouts.isEmpty, !rowCharacterRanges.isEmpty else { return false }
+        guard !rowLayouts.isEmpty, rowCharacterRanges.count == rowLayouts.count else { return false }
         let nsText = value as NSString
         guard nsText.length > 0 else {
             rebuildRowLayouts(from: textView, value: value, applyStyles: false)
@@ -110,8 +110,17 @@ extension NodeMarkdownTextKit2Coordinator {
             with: rebuiltLayout,
             documentLength: nsText.length
         ) else { return false }
+        if previousLayout.range != rebuiltLayout.range {
+            rowCharacterRanges[rowIndex] = rebuiltLayout.range
+        }
+        let followingRow = rowIndex + 1
+        if rowLayouts.indices.contains(followingRow),
+           rowLayouts[followingRow].range != reconciledLayouts[followingRow].range {
+            for index in followingRow..<reconciledLayouts.count {
+                rowCharacterRanges[index] = reconciledLayouts[index].range
+            }
+        }
         rowLayouts = reconciledLayouts
-        rowCharacterRanges = reconciledLayouts.map(\.range)
 
         lastLayoutTextSnapshot = value
         lastLayoutDocumentStyleIdentity = documentStyle.renderIdentity

@@ -80,22 +80,30 @@ enum NodeMarkdownTextKit2TransientLayoutProjection {
         replacing affectedRange: NSRange,
         characterDelta: Int
     ) -> [NodeMarkdownTextKit2RowLayout]? {
-        guard affectedRange.location != NSNotFound,
-              affectedRange.length >= 0,
-              let rowIndex = layouts.firstIndex(where: { layout in
-                  affectedRange.location >= layout.contentRange.location
-                      && NSMaxRange(affectedRange) <= NSMaxRange(layout.contentRange)
-              }),
-              let changedRow = layouts[rowIndex].changingLength(by: characterDelta) else {
-            return nil
+        guard affectedRange.location != NSNotFound, affectedRange.length >= 0 else { return nil }
+        let affectedEnd = NSMaxRange(affectedRange)
+
+        // Content ranges follow document order. Find the first row whose end can
+        // contain the edit, including an insertion exactly at the end of a row.
+        var lower = layouts.startIndex
+        var upper = layouts.endIndex
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2
+            if NSMaxRange(layouts[middle].contentRange) < affectedEnd {
+                lower = middle + 1
+            } else {
+                upper = middle
+            }
         }
+        guard layouts.indices.contains(lower),
+              affectedRange.location >= layouts[lower].contentRange.location else { return nil }
+        guard characterDelta != 0 else { return layouts }
+        guard let changedRow = layouts[lower].changingLength(by: characterDelta) else { return nil }
 
         var projected = layouts
-        projected[rowIndex] = changedRow
-        if characterDelta != 0, rowIndex + 1 < projected.count {
-            for index in (rowIndex + 1)..<projected.count {
-                projected[index] = projected[index].offsetBy(characterDelta)
-            }
+        projected[lower] = changedRow
+        for index in (lower + 1)..<projected.count {
+            projected[index] = projected[index].offsetBy(characterDelta)
         }
         return projected
     }
