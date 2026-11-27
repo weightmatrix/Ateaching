@@ -37,12 +37,15 @@ extension NodeMarkdownTextKit2TextView {
         var drawnCount = 0
 
         nodeTextLayoutManager.ensureLayout(for: visibleTextContainerRect(in: dirtyRect))
-        for layout in visibleRowLayouts(in: dirtyRect) {
-            guard let lineRect = firstLineRect(for: layout, documentStart: documentStart) else { continue }
+        for layout in visibleRowLayouts() {
+            let geometry = firstLineGeometry(for: layout, documentStart: documentStart)
+            guard let lineRect = layout.contentRange.length == 0
+                ? Self.emptyParagraphRect(for: layout, textContainerOrigin: textContainerOrigin)
+                : geometry?.rect else { continue }
             let markerRect = markerDrawingRect(
                 for: layout,
                 lineRect: lineRect,
-                documentStart: documentStart
+                baselineY: geometry?.baselineY
             )
             guard markerRect.intersects(dirtyRect) else { continue }
             drawMarker(for: layout, in: markerRect)
@@ -58,7 +61,7 @@ extension NodeMarkdownTextKit2TextView {
         var drawnCount = 0
 
         nodeTextLayoutManager.ensureLayout(for: visibleTextContainerRect(in: dirtyRect))
-        for layout in visibleRowLayouts(in: dirtyRect) where layout.lineStyle.hasBackgroundBar {
+        for layout in visibleRowLayouts() where layout.lineStyle.hasBackgroundBar {
             guard let textRect = rowTextRect(for: layout, documentStart: documentStart) else { continue }
             let barRect = backgroundBarRect(for: layout, textRect: textRect)
             guard barRect.intersects(dirtyRect) else { continue }
@@ -74,7 +77,7 @@ extension NodeMarkdownTextKit2TextView {
         // 绘制发生在主线程，直接只读唯一TextStorage；禁止每次滚动复制整篇富文本。
         let attributed: NSAttributedString = nodeTextStorage
         guard attributed.length > 0 else { return 0 }
-        let visibleLayouts = visibleRowLayouts(in: dirtyRect)
+        let visibleLayouts = visibleRowLayouts()
         guard !visibleLayouts.isEmpty else { return 0 }
         guard visibleLayouts.allSatisfy({ $0.range.exact(toLength: attributed.length) != nil }) else { return 0 }
 
@@ -116,10 +119,10 @@ extension NodeMarkdownTextKit2TextView {
         dirtyRect.offsetBy(dx: -textContainerOrigin.x, dy: -textContainerOrigin.y)
     }
 
-    private func visibleRowLayouts(in dirtyRect: NSRect) -> [NodeMarkdownTextKit2RowLayout] {
+    private func visibleRowLayouts() -> ArraySlice<NodeMarkdownTextKit2RowLayout> {
         guard !nodeMarkdownRowLayouts.isEmpty else { return [] }
         let documentLength = nodeTextStorage.length
-        guard documentLength > 0 else { return Array(nodeMarkdownRowLayouts.prefix(1)) }
+        guard documentLength > 0 else { return nodeMarkdownRowLayouts.prefix(1) }
 
         // TextKit2 already owns the authoritative viewport. Do not infer visible rows by hit
         // testing the marker gutter: before the first scroll that empty area can resolve to
@@ -137,7 +140,7 @@ extension NodeMarkdownTextKit2TextView {
         return rowLayouts(from: viewportStart, through: viewportEnd)
     }
 
-    private func rowLayouts(from startLocation: Int, through endLocation: Int) -> [NodeMarkdownTextKit2RowLayout] {
+    private func rowLayouts(from startLocation: Int, through endLocation: Int) -> ArraySlice<NodeMarkdownTextKit2RowLayout> {
         guard let exactStartRow = rowIndex(containing: startLocation),
               let exactEndRow = rowIndex(containing: max(startLocation, endLocation)) else { return [] }
         let startRow = max(0, exactStartRow - 2)
@@ -146,16 +149,13 @@ extension NodeMarkdownTextKit2TextView {
             exactEndRow + 2
         )
         guard startRow <= endRow else { return [] }
-        return Array(nodeMarkdownRowLayouts[startRow...endRow])
+        return nodeMarkdownRowLayouts[startRow...endRow]
     }
 
-    private func firstLineRect(
+    private func firstLineGeometry(
         for layout: NodeMarkdownTextKit2RowLayout,
         documentStart: any NSTextLocation
-    ) -> NSRect? {
-        if layout.contentRange.length == 0 {
-            return Self.emptyParagraphRect(for: layout, textContainerOrigin: textContainerOrigin)
-        }
+    ) -> (rect: NSRect, baselineY: CGFloat)? {
         guard let location = nodeTextContentStorage.location(documentStart, offsetBy: layout.range.location),
               let fragment = nodeTextLayoutManager.textLayoutFragment(for: location),
               let lineFragment = fragment.textLineFragment(for: location, isUpstreamAffinity: false) else {
@@ -163,13 +163,14 @@ extension NodeMarkdownTextKit2TextView {
         }
         let fragmentFrame = fragment.layoutFragmentFrame
         let lineBounds = lineFragment.typographicBounds
+        let originY = textContainerOrigin.y + fragmentFrame.minY + lineBounds.minY
         let rect = NSRect(
             x: textContainerOrigin.x + fragmentFrame.minX + lineBounds.minX,
-            y: textContainerOrigin.y + fragmentFrame.minY + lineBounds.minY,
+            y: originY,
             width: lineBounds.width,
             height: lineBounds.height
         )
-        return rect
+        return (rect, originY + lineFragment.glyphOrigin.y)
     }
 
     private func rowTextRect(
@@ -209,7 +210,10 @@ extension NodeMarkdownTextKit2TextView {
             return true
         }
         guard var rect = measuredRect else {
-            return firstLineRect(for: layout, documentStart: documentStart)
+            if layout.contentRange.length == 0 {
+                return Self.emptyParagraphRect(for: layout, textContainerOrigin: textContainerOrigin)
+            }
+            return firstLineGeometry(for: layout, documentStart: documentStart)?.rect
         }
 
         let font = Self.resolvedFont(for: layout.lineStyle.roleStyle)
@@ -227,7 +231,7 @@ extension NodeMarkdownTextKit2TextView {
     private func markerDrawingRect(
         for layout: NodeMarkdownTextKit2RowLayout,
         lineRect: NSRect,
-        documentStart: any NSTextLocation
+        baselineY: CGFloat?
     ) -> NSRect {
         let markerFont = Self.markerFont(for: layout.lineStyle.roleStyle)
         let marker = layout.lineStyle.iconGlyph
@@ -237,7 +241,6 @@ extension NodeMarkdownTextKit2TextView {
             options: [.usesLineFragmentOrigin, .usesFontLeading]
         )
         let markerSize = (marker as NSString).size(withAttributes: attributes)
-        let baselineY = textBaselineY(for: layout, documentStart: documentStart)
         let visualCenterY = Self.markerVisualCenterY(
             textBaselineY: baselineY,
             font: markerFont,
@@ -258,25 +261,6 @@ extension NodeMarkdownTextKit2TextView {
     ) -> CGFloat {
         guard let textBaselineY else { return fallback }
         return textBaselineY - (font.ascender + font.descender) * 0.5
-    }
-
-    private func textBaselineY(
-        for layout: NodeMarkdownTextKit2RowLayout,
-        documentStart: any NSTextLocation
-    ) -> CGFloat? {
-        guard let location = nodeTextContentStorage.location(
-            documentStart,
-            offsetBy: layout.range.location
-        ),
-        let fragment = nodeTextLayoutManager.textLayoutFragment(for: location),
-        let lineFragment = fragment.textLineFragment(
-            for: location,
-            isUpstreamAffinity: false
-        ) else { return nil }
-        return textContainerOrigin.y
-            + fragment.layoutFragmentFrame.minY
-            + lineFragment.typographicBounds.minY
-            + lineFragment.glyphOrigin.y
     }
 
     private func drawMarker(for layout: NodeMarkdownTextKit2RowLayout, in rect: NSRect) {
