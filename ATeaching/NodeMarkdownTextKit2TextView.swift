@@ -64,12 +64,12 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
     private var inputMethodCommitPending = false
     private var inputMethodSourceBefore = ""
     private var inputMethodAffectedRange = NSRange(location: 0, length: 0)
-    private var inputMethodRowLayoutsBefore: [NodeMarkdownTextKit2RowLayout] = []
+    private var inputMethodRowLayoutsBefore: NodeMarkdownRowLayouts = []
     private var inputMethodGeneration: UInt64 = 0
     private var caretClickViewportGeneration: UInt64 = 0
     private var didDragSelectionWithMouse = false
     var nodeMarkdownEditingRowIndex: Int?
-    var nodeMarkdownRowLayouts: [NodeMarkdownTextKit2RowLayout] = [] {
+    var nodeMarkdownRowLayouts: NodeMarkdownRowLayouts = [] {
         didSet {
             guard oldValue != nodeMarkdownRowLayouts else { return }
             needsDisplay = true
@@ -386,14 +386,14 @@ final class NodeMarkdownTextKit2TextView: NSTextView {
                 replacement: replacement
             )
         )
-        inputMethodRowLayoutsBefore.removeAll(keepingCapacity: true)
+        inputMethodRowLayoutsBefore = []
     }
 
     private func failInputMethodCommit(reason: String) {
         inputMethodTransactionActive = false
         inputMethodCommitPending = false
         inputMethodSourceBefore = ""
-        inputMethodRowLayoutsBefore.removeAll(keepingCapacity: true)
+        inputMethodRowLayoutsBefore = []
         onInputMethodTransactionFailure?(reason)
     }
 

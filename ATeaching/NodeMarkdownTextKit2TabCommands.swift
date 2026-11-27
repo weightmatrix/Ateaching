@@ -56,7 +56,7 @@ extension NodeMarkdownTextKit2Coordinator {
         let fullLineRange = sourceText.lineRange(for: selection)
         var steps: [NodeMarkdownTransactionStep] = []
         var affectedRows = Set<Int>()
-        for index in rowCharacterRanges.indices {
+        for index in rowLayouts.intersectingRowIndices(fullLineRange) {
             guard NSIntersectionRange(fullLineRange, rowCharacterRanges[index]).length > 0,
                   rowMetadata.indices.contains(index),
                   !rowMetadata[index].isProtectedH3,

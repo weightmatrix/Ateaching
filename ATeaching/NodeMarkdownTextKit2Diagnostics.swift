@@ -234,7 +234,7 @@ enum NodeMarkdownDiagnostic31 {
 
     static func startIfNeeded(
         in textView: NodeMarkdownTextKit2TextView,
-        rowLayouts: [NodeMarkdownTextKit2RowLayout],
+        rowLayouts: NodeMarkdownRowLayouts,
         rowMetadata: [NodeMarkdownTextKitRowMetadata],
         affectedRange: NSRange,
         replacement: String
@@ -243,13 +243,13 @@ enum NodeMarkdownDiagnostic31 {
     static func record(
         _ stage: String,
         in textView: NodeMarkdownTextKit2TextView,
-        rowLayouts: [NodeMarkdownTextKit2RowLayout]
+        rowLayouts: NodeMarkdownRowLayouts
     ) {}
 
     static func noteCommittedReplacement(
         _ replacement: String,
         in textView: NodeMarkdownTextKit2TextView,
-        rowLayouts: [NodeMarkdownTextKit2RowLayout]
+        rowLayouts: NodeMarkdownRowLayouts
     ) {}
 
     static func recordSelectionWrite(
@@ -257,7 +257,7 @@ enum NodeMarkdownDiagnostic31 {
         before: NSRange,
         requested: NSRange,
         in textView: NodeMarkdownTextKit2TextView,
-        rowLayouts: [NodeMarkdownTextKit2RowLayout]
+        rowLayouts: NodeMarkdownRowLayouts
     ) {}
 
     static func recordGeometry(
@@ -272,7 +272,7 @@ enum NodeMarkdownDiagnostic31 {
         after delay: TimeInterval,
         stage: String,
         in textView: NodeMarkdownTextKit2TextView,
-        rowLayouts: @escaping () -> [NodeMarkdownTextKit2RowLayout]
+        rowLayouts: @escaping () -> NodeMarkdownRowLayouts
     ) {}
 }
 
@@ -292,7 +292,7 @@ enum NodeMarkdownDiagnostic41 {
         _ stage: String,
         transaction: Transaction? = nil,
         textView: NodeMarkdownTextKit2TextView,
-        rowLayouts: [NodeMarkdownTextKit2RowLayout],
+        rowLayouts: NodeMarkdownRowLayouts,
         rowMetadata: [NodeMarkdownTextKitRowMetadata],
         editingRow: Int?
     ) {}

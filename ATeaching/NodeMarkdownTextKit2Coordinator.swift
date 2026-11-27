@@ -20,8 +20,10 @@ final class NodeMarkdownTextKit2Coordinator: NSObject, NSTextViewDelegate {
     var searchQuery: String
     var rowMetadata: [NodeMarkdownTextKitRowMetadata]
     var quickInputSettings: MarkdownQuickInputSettings
-    var rowCharacterRanges: [NSRange] = []
-    var rowLayouts: [NodeMarkdownTextKit2RowLayout] = []
+    var rowCharacterRanges: LazyMapCollection<NodeMarkdownRowLayouts, NSRange> {
+        rowLayouts.lazy.map(\.range)
+    }
+    var rowLayouts: NodeMarkdownRowLayouts = []
     var lastLayoutTextSnapshot = ""
     var lastLayoutDocumentStyleIdentity: NodeMarkdownDocumentStyleRecord?
     var lastLayoutRowMetadataSnapshot: [NodeMarkdownTextKitRowMetadata] = []

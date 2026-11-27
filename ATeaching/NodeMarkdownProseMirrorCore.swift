@@ -200,9 +200,11 @@ struct NodeMarkdownPositionMap: Equatable {
     }
 
     func map(_ selection: NodeMarkdownNodeSelection?) -> NodeMarkdownNodeSelection? {
-        guard let selection,
-              let anchor = map(selection.anchor),
-              let head = map(selection.head) else { return nil }
+        guard let selection, let anchor = map(selection.anchor) else { return nil }
+        if selection.anchor == selection.head {
+            return NodeMarkdownNodeSelection(anchor: anchor, head: anchor)
+        }
+        guard let head = map(selection.head) else { return nil }
         return NodeMarkdownNodeSelection(anchor: anchor, head: head)
     }
 }

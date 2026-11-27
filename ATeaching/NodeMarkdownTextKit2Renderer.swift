@@ -119,8 +119,8 @@ extension NodeMarkdownTextKit2TextView {
         dirtyRect.offsetBy(dx: -textContainerOrigin.x, dy: -textContainerOrigin.y)
     }
 
-    private func visibleRowLayouts() -> ArraySlice<NodeMarkdownTextKit2RowLayout> {
-        guard !nodeMarkdownRowLayouts.isEmpty else { return [] }
+    private func visibleRowLayouts() -> Slice<NodeMarkdownRowLayouts> {
+        guard !nodeMarkdownRowLayouts.isEmpty else { return nodeMarkdownRowLayouts.prefix(0) }
         let documentLength = nodeTextStorage.length
         guard documentLength > 0 else { return nodeMarkdownRowLayouts.prefix(1) }
 
@@ -129,26 +129,26 @@ extension NodeMarkdownTextKit2TextView {
         // the document tail and make every decoration at the top disappear.
         guard let viewportRange = nodeTextLayoutManager.textViewportLayoutController.viewportRange else {
             // prepareViewport会在真实尺寸布局完成后明确请求重画；这里没有事实范围时不猜。
-            return []
+            return nodeMarkdownRowLayouts.prefix(0)
         }
         let documentStart = nodeTextContentStorage.documentRange.location
         let viewportStart = nodeTextContentStorage.offset(from: documentStart, to: viewportRange.location)
         let viewportEnd = nodeTextContentStorage.offset(from: documentStart, to: viewportRange.endLocation)
         guard viewportStart >= 0,
               viewportStart <= viewportEnd,
-              viewportEnd <= documentLength else { return [] }
+              viewportEnd <= documentLength else { return nodeMarkdownRowLayouts.prefix(0) }
         return rowLayouts(from: viewportStart, through: viewportEnd)
     }
 
-    private func rowLayouts(from startLocation: Int, through endLocation: Int) -> ArraySlice<NodeMarkdownTextKit2RowLayout> {
+    private func rowLayouts(from startLocation: Int, through endLocation: Int) -> Slice<NodeMarkdownRowLayouts> {
         guard let exactStartRow = rowIndex(containing: startLocation),
-              let exactEndRow = rowIndex(containing: max(startLocation, endLocation)) else { return [] }
+              let exactEndRow = rowIndex(containing: max(startLocation, endLocation)) else { return nodeMarkdownRowLayouts.prefix(0) }
         let startRow = max(0, exactStartRow - 2)
         let endRow = min(
             nodeMarkdownRowLayouts.count - 1,
             exactEndRow + 2
         )
-        guard startRow <= endRow else { return [] }
+        guard startRow <= endRow else { return nodeMarkdownRowLayouts.prefix(0) }
         return nodeMarkdownRowLayouts[startRow...endRow]
     }
 

@@ -9,7 +9,7 @@ import SwiftMath
 
 extension NodeMarkdownTextKit2TextView {
     func applyNodeMarkdownStyles(
-        rowLayouts: [NodeMarkdownTextKit2RowLayout],
+        rowLayouts: NodeMarkdownRowLayouts,
         documentStyle: NodeMarkdownDocumentStyle,
         baseDirectoryURL: URL?,
         searchQuery: String,
@@ -22,9 +22,8 @@ extension NodeMarkdownTextKit2TextView {
             onSplitStyleDiagnostic?("style.skip", "composition")
             return
         }
-        let currentText = documentString()
-        let textLength = (currentText as NSString).length
-        let nsText = currentText as NSString
+        let nsText = documentString() as NSString
+        let textLength = nsText.length
         let selectedRanges = self.selectedRanges
         NodeMarkdownDiagnostic31.record("全文样式事务前", in: self, rowLayouts: rowLayouts)
         let fullRange = NSRange(location: 0, length: nodeTextStorage.length)
@@ -83,7 +82,7 @@ extension NodeMarkdownTextKit2TextView {
 
     func refreshNodeMarkdownRowStyle(
         rowIndex: Int?,
-        rowLayouts: [NodeMarkdownTextKit2RowLayout],
+        rowLayouts: NodeMarkdownRowLayouts,
         documentStyle: NodeMarkdownDocumentStyle,
         baseDirectoryURL: URL?,
         searchQuery: String,
@@ -94,12 +93,11 @@ extension NodeMarkdownTextKit2TextView {
         nodeMarkdownEditingRowIndex = editingRowIndex
         guard !hasActiveInputMethodComposition else { return }
         guard let rowIndex, rowLayouts.indices.contains(rowIndex) else { return }
-        let currentText = documentString()
-        let textLength = (currentText as NSString).length
+        let nsText = documentString() as NSString
+        let textLength = nsText.length
         let layout = rowLayouts[rowIndex]
         guard let rowRange = layout.range.exact(toLength: textLength), rowRange.length > 0 else { return }
 
-        let nsText = currentText as NSString
         let selectedRanges = self.selectedRanges
         NodeMarkdownDiagnostic31.record("单行样式事务前 row=\(rowIndex)", in: self, rowLayouts: rowLayouts)
         guard selectedRanges.allSatisfy({ $0.rangeValue.exact(toLength: textLength) != nil }) else {

@@ -46,12 +46,11 @@ extension NodeMarkdownTextKit2Coordinator {
             return
         }
         editingParagraphStyleCache.removeAll(keepingCapacity: true)
-        rowLayouts = Self.makeRowLayouts(
+        rowLayouts = NodeMarkdownRowLayouts(Self.makeRowLayouts(
             in: value,
             documentStyle: documentStyle,
             rowMetadata: rowMetadata
-        )
-        rowCharacterRanges = rowLayouts.map(\.range)
+        ))
         lastLayoutTextSnapshot = value
         lastLayoutDocumentStyleIdentity = documentStyle.renderIdentity
         lastLayoutRowMetadataSnapshot = rowMetadata
@@ -71,7 +70,7 @@ extension NodeMarkdownTextKit2Coordinator {
         let diagnosticStart = NodeMarkdownDiagnostic35.now()
         defer { recordDiagnostic35Duration("单行坐标增量更新", since: diagnosticStart) }
         recordDiagnostic35Count("单行坐标增量次数")
-        guard !rowLayouts.isEmpty, rowCharacterRanges.count == rowLayouts.count else { return false }
+        guard !rowLayouts.isEmpty else { return false }
         let nsText = value as NSString
         guard nsText.length > 0 else {
             rebuildRowLayouts(from: textView, value: value, applyStyles: false)
@@ -110,16 +109,6 @@ extension NodeMarkdownTextKit2Coordinator {
             with: rebuiltLayout,
             documentLength: nsText.length
         ) else { return false }
-        if previousLayout.range != rebuiltLayout.range {
-            rowCharacterRanges[rowIndex] = rebuiltLayout.range
-        }
-        let followingRow = rowIndex + 1
-        if rowLayouts.indices.contains(followingRow),
-           rowLayouts[followingRow].range != reconciledLayouts[followingRow].range {
-            for index in followingRow..<reconciledLayouts.count {
-                rowCharacterRanges[index] = reconciledLayouts[index].range
-            }
-        }
         rowLayouts = reconciledLayouts
 
         lastLayoutTextSnapshot = value
@@ -378,14 +367,13 @@ extension NodeMarkdownTextKit2Coordinator {
         guard updated.count == rowMetadata.count,
               updated.last.map({ NSMaxRange($0.range) }) == source.length else { return false }
 
-        rowLayouts = updated
-        rowCharacterRanges = updated.map(\.range)
+        rowLayouts = NodeMarkdownRowLayouts(updated)
         lastLayoutTextSnapshot = value
         lastLayoutDocumentStyleIdentity = documentStyle.renderIdentity
         lastLayoutRowMetadataSnapshot = rowMetadata
         editingParagraphStyleCache.removeValue(forKey: sourceRow)
         editingParagraphStyleCache.removeValue(forKey: sourceRow + 1)
-        textView.nodeMarkdownRowLayouts = updated
+        textView.nodeMarkdownRowLayouts = rowLayouts
         return true
     }
 

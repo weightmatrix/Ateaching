@@ -520,7 +520,7 @@ enum NodeMarkdownTextKit2RegressionSuite {
         let staleLayouts = [layout(0, 0, 3), layout(1, 3, 2), layout(2, 5, 1)]
         let rebuiltFirstRow = layout(0, 0, 9)
         let reconciledFromStale = NodeMarkdownTextKit2RowLayoutReconciler.replacingRow(
-            in: staleLayouts,
+            in: NodeMarkdownRowLayouts(staleLayouts),
             rowIndex: 0,
             with: rebuiltFirstRow,
             documentLength: 12
@@ -530,7 +530,7 @@ enum NodeMarkdownTextKit2RegressionSuite {
 
         let alreadyProjected = [layout(0, 0, 9), layout(1, 9, 2), layout(2, 11, 1)]
         let reconciledFromProjection = NodeMarkdownTextKit2RowLayoutReconciler.replacingRow(
-            in: alreadyProjected,
+            in: NodeMarkdownRowLayouts(alreadyProjected),
             rowIndex: 0,
             with: rebuiltFirstRow,
             documentLength: 12
@@ -568,7 +568,7 @@ enum NodeMarkdownTextKit2RegressionSuite {
             )
         ]
         let projected = NodeMarkdownTextKit2TransientLayoutProjection.project(
-            layouts,
+            NodeMarkdownRowLayouts(layouts),
             replacing: NSRange(location: 1, length: 0),
             characterDelta: 3
         )
