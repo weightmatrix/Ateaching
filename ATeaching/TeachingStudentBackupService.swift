@@ -42,7 +42,8 @@ enum TeachingStudentBackupService {
 
         for student in students {
             let sourceURL = archiveStudentsRoot.appendingPathComponent(student.name, isDirectory: true)
-            guard fileManager.fileExists(atPath: sourceURL.path) else {
+            let sourceExists = fileManager.fileExists(atPath: sourceURL.path)
+            guard sourceExists || student.scheduleStudentID != nil else {
                 skippedNames.append(student.name)
                 continue
             }
@@ -52,16 +53,24 @@ enum TeachingStudentBackupService {
                 fileManager: fileManager
             )
             do {
-                try fileManager.moveItem(at: sourceURL, to: destinationURL)
-                let profile = try? TeachingStudentSettingsStore.loadStudentProfile(
-                    studentID: student.id,
-                    fileManager: fileManager
+                let profile = try TeachingStudentSettingsStore.loadStudentProfile(
+                    studentID: student.id, fileManager: fileManager
                 )
-                if let data = try? JSONEncoder().encode(Metadata(student: student, profile: profile)) {
-                    try? data.write(
-                        to: destinationURL.appendingPathComponent(metadataFileName),
-                        options: .atomic
-                    )
+                let data = try JSONEncoder().encode(Metadata(student: student, profile: profile))
+                if sourceExists {
+                    try fileManager.moveItem(at: sourceURL, to: destinationURL)
+                } else {
+                    try fileManager.createDirectory(at: destinationURL, withIntermediateDirectories: false)
+                }
+                do {
+                    try data.write(to: destinationURL.appendingPathComponent(metadataFileName), options: .atomic)
+                } catch {
+                    if sourceExists {
+                        try fileManager.moveItem(at: destinationURL, to: sourceURL)
+                    } else {
+                        try fileManager.removeItem(at: destinationURL)
+                    }
+                    throw error
                 }
                 movedIDs.insert(student.id)
                 movedCount += 1
@@ -100,7 +109,8 @@ enum TeachingStudentBackupService {
 
     static func restoreBackups(
         _ entries: [TeachingStudentBackupEntry],
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        persist: ((TeachingStudentItem, TeachingStudentProfileSettings?) throws -> Void)? = nil
     ) throws -> TeachingStudentRestoreResult {
         let studentsRoot = try ArchiveStorage.ensureArchiveRoot(fileManager: fileManager)
             .appendingPathComponent("学生", isDirectory: true)
@@ -119,12 +129,19 @@ enum TeachingStudentBackupService {
             }
             do {
                 try fileManager.moveItem(at: entry.folderURL, to: destination)
+                do {
+                    try persist?(student, metadata?.profile)
+                } catch {
+                    try fileManager.moveItem(at: destination, to: entry.folderURL)
+                    throw error
+                }
                 try? fileManager.removeItem(at: destination.appendingPathComponent(metadataFileName))
                 restoredStudents.append(student)
                 if let profile = metadata?.profile {
                     restoredProfiles[student.id] = profile
                 }
             } catch {
+                if persist != nil { throw error }
                 skippedNames.append(student.name)
             }
         }

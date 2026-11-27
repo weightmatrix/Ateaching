@@ -313,6 +313,15 @@ private struct FrequentDocumentDestination: View {
 struct ProjectUsageSettingsView: View {
     var body: some View {
         AppSettingsPage(title: "项目设置", subtitle: "管理主界面项目的显示与使用方式") {
+            AppSettingsCard(title: "排课联动", systemImage: "link") {
+                AppSettingsNavigationRow(
+                    title: "排课联动",
+                    subtitle: "打开联动或断开联动",
+                    systemImage: "link"
+                ) {
+                    TeachingScheduleConnectionView()
+                }
+            }
             AppSettingsCard(title: "导航栏", systemImage: "square.grid.2x2") {
                 AppSettingsNavigationRow(
                     title: "常用栏",

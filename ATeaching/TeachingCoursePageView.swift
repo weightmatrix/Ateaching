@@ -1410,11 +1410,31 @@ struct TeachingCoursePageView: View {
         modeStatusMessage = "正在执行改名..."
         Task(priority: .userInitiated) {
             do {
+                let scheduleConnection: TeachingScheduleConnection?
+                if let teacherID = student.scheduleTeacherID, student.scheduleStudentID != nil {
+                    guard let connection = TeachingScheduleConnection.load(),
+                          try await connection.roster().teacherID == teacherID else {
+                        throw TeachingScheduleStudentSync.failure("请先连接这位学生对应的排课教师账号。")
+                    }
+                    scheduleConnection = connection
+                } else {
+                    scheduleConnection = nil
+                }
                 try await TeachingStudentRenameService.renameStudent(
                     studentID: student.id,
                     from: student.name,
                     to: nextName
                 )
+                if let scheduleConnection, let id = student.scheduleStudentID {
+                    do {
+                        try await scheduleConnection.writeStudent(id: id, method: "PATCH", fields: ["name": nextName])
+                    } catch {
+                        try await TeachingStudentRenameService.renameStudent(
+                            studentID: student.id, from: nextName, to: student.name
+                        )
+                        throw error
+                    }
+                }
                 await MainActor.run {
                     isRunningWorkflow = false
                     modeStatusMessage = "改名完成：\(student.name) → \(nextName)"

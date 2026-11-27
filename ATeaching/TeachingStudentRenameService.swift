@@ -78,7 +78,15 @@ enum TeachingStudentRenameService {
         }
     }
 
-    static func renameStudent(studentID: UUID, from oldName: String, to newName: String) async throws {
+    struct ScheduleIdentity {
+        let studentID: UUID
+        let teacherID: UUID
+        let color: String
+    }
+
+    static func renameStudent(
+        studentID: UUID, from oldName: String, to newName: String, scheduleIdentity: ScheduleIdentity? = nil
+    ) async throws {
         let requestedOldName = oldName.trimmingCharacters(in: .whitespacesAndNewlines)
         let newName = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !newName.isEmpty else { throw RenameError.emptyName }
@@ -99,8 +107,16 @@ enum TeachingStudentRenameService {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let oldName = persistedOldName.isEmpty ? requestedOldName : persistedOldName
         guard !oldName.isEmpty else { throw RenameError.emptyName }
-        guard oldName != newName else { return }
-        if foldedName(oldName) == foldedName(newName) {
+        let newID = scheduleIdentity?.studentID ?? studentID
+        if let scheduleIdentity,
+           oldSnapshot.students.contains(where: {
+               $0.id != studentID && ($0.id == newID ||
+                   ($0.scheduleTeacherID == scheduleIdentity.teacherID && $0.scheduleStudentID == newID))
+           }) {
+            throw RenameError.destinationExists(newID.uuidString)
+        }
+        guard oldName != newName || scheduleIdentity != nil else { return }
+        if oldName != newName && foldedName(oldName) == foldedName(newName) {
             throw RenameError.caseOnlyRename
         }
         if oldSnapshot.students.contains(where: {
@@ -115,35 +131,56 @@ enum TeachingStudentRenameService {
             .appendingPathComponent("学生", isDirectory: true)
         let oldStudentFolder = archiveRoot.appendingPathComponent(oldName, isDirectory: true)
         let newStudentFolder = archiveRoot.appendingPathComponent(newName, isDirectory: true)
-        guard fileManager.fileExists(atPath: oldStudentFolder.path) else {
-            throw RenameError.archiveFolderMissing(oldStudentFolder.path)
-        }
 
         var moves: [FileMove] = []
         var rewrites: [String: FileRewrite] = [:]
-        try prepareArchiveChanges(
-            folder: oldStudentFolder,
-            oldName: oldName,
-            newName: newName,
-            studentNameKeyID: effectiveNameKeys.studentInfoNameKeyID,
-            classInfoNameKeyID: effectiveNameKeys.classInfoNameKeyID,
-            moves: &moves,
-            rewrites: &rewrites,
-            fileManager: fileManager
-        )
-        moves.append(FileMove(source: oldStudentFolder, destination: newStudentFolder))
-
         var newSnapshot = oldSnapshot
         newSnapshot.students[studentIndex].name = newName
         var newProfile = oldProfile
-        try preparePersonalSyncChanges(
-            profile: &newProfile,
-            oldName: oldName,
-            newName: newName,
-            moves: &moves,
-            fileManager: fileManager
-        )
-        newSnapshot.studentProfiles[studentID.uuidString] = newProfile.normalized()
+        if oldName != newName {
+            if fileManager.fileExists(atPath: oldStudentFolder.path) {
+                try prepareArchiveChanges(
+                    folder: oldStudentFolder, oldName: oldName, newName: newName,
+                    studentNameKeyID: effectiveNameKeys.studentInfoNameKeyID,
+                    classInfoNameKeyID: effectiveNameKeys.classInfoNameKeyID,
+                    moves: &moves, rewrites: &rewrites, fileManager: fileManager
+                )
+                moves.append(FileMove(source: oldStudentFolder, destination: newStudentFolder))
+            } else if scheduleIdentity == nil || fileManager.fileExists(atPath: newStudentFolder.path) {
+                throw RenameError.archiveFolderMissing(oldStudentFolder.path)
+            }
+            try preparePersonalSyncChanges(
+                profile: &newProfile, oldName: oldName, newName: newName,
+                moves: &moves, fileManager: fileManager
+            )
+        }
+        if let scheduleIdentity {
+            newSnapshot.students[studentIndex].id = newID
+            newSnapshot.students[studentIndex].scheduleStudentID = newID
+            newSnapshot.students[studentIndex].scheduleTeacherID = scheduleIdentity.teacherID
+            newSnapshot.students[studentIndex].scheduleColorHex = scheduleIdentity.color
+        }
+        if newID != studentID {
+            let system = try ArchiveStorage.ensureWorkspace(fileManager: fileManager)
+                .appendingPathComponent(ArchiveStorage.systemFolderName, isDirectory: true)
+            for (folder, suffix) in [
+                ("course-sync-baselines", "json"), ("course-sync-conflicts", "log"), ("course-insert-undo", "json")
+            ] {
+                let directory = system.appendingPathComponent(folder, isDirectory: true)
+                let source = directory.appendingPathComponent("\(studentID.uuidString).\(suffix)")
+                let destination = directory.appendingPathComponent("\(newID.uuidString).\(suffix)")
+                if fileManager.fileExists(atPath: destination.path) {
+                    throw RenameError.destinationExists(destination.path)
+                }
+                if fileManager.fileExists(atPath: source.path) {
+                    moves.append(FileMove(source: source, destination: destination))
+                }
+            }
+            newSnapshot.studentProfiles.removeValue(forKey: studentID.uuidString)
+        }
+        if oldSnapshot.studentProfiles[studentID.uuidString] != nil || oldName != newName {
+            newSnapshot.studentProfiles[newID.uuidString] = newProfile.normalized()
+        }
 
         try preflight(moves: moves, fileManager: fileManager)
 
@@ -162,9 +199,9 @@ enum TeachingStudentRenameService {
             weeklyRecordsExisted: fileManager.fileExists(atPath: weeklyRecordsURL.path)
         )
 
-        let newLessonRecords = renamedRecords(oldLessonRecords, studentID: studentID, newName: newName)
-        let newPlanningRecords = renamedRecords(oldPlanningRecords, studentID: studentID, newName: newName)
-        let newWeeklyRecords = renamedRecords(oldWeeklyRecords, studentID: studentID, newName: newName)
+        let newLessonRecords = renamedRecords(oldLessonRecords, studentID: studentID, newName: newName, newID: newID)
+        let newPlanningRecords = renamedRecords(oldPlanningRecords, studentID: studentID, newName: newName, newID: newID)
+        let newWeeklyRecords = renamedRecords(oldWeeklyRecords, studentID: studentID, newName: newName, newID: newID)
 
         var completedMoves: [FileMove] = []
         var completedRewrites: [FileRewrite] = []
@@ -410,12 +447,14 @@ enum TeachingStudentRenameService {
     private static func renamedRecords(
         _ records: [TeachingLessonRecord],
         studentID: UUID,
-        newName: String
+        newName: String,
+        newID: UUID
     ) -> [TeachingLessonRecord] {
         records.map { record in
             guard record.studentID == studentID else { return record }
             var next = record
             next.studentName = newName
+            next.studentID = newID
             return next
         }
     }

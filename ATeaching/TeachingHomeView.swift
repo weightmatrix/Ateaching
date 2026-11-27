@@ -10,10 +10,14 @@ struct TeachingHomeView: View {
         case lessonPlan
         case workbook
         case students
+        case schedule
         case sync
     }
 
     @State private var statusMessage = ""
+    @State private var scheduleRoster: TeachingScheduleRoster?
+    @State private var scheduleSyncRunning = false
+    @AppStorage("teaching.schedule.exportedCourses") private var exportedScheduleCourses = ""
     @State private var students: [TeachingStudentItem] = []
     @State private var loadedStudentsBaseline: [TeachingStudentItem] = []
     @State private var hasLoadedStudentsSnapshot = false
@@ -69,6 +73,16 @@ struct TeachingHomeView: View {
             didLoadStudents = true
             loadStudentsFromSettings()
         }
+        .task {
+            while !Task.isCancelled {
+                await syncScheduleRoster()
+                do { try await Task.sleep(for: .seconds(30)) }
+                catch { return }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .teachingScheduleConnectionChanged)) { _ in
+            Task { await syncScheduleRoster() }
+        }
         .onChange(of: students) { _, _ in
             guard !isApplyingStudentSnapshot else { return }
             saveStudentsToSettings()
@@ -88,7 +102,7 @@ struct TeachingHomeView: View {
             TeachingStudentSystemSettingsView()
         }
         .sheet(isPresented: $showAddStudentSheet) {
-            TeachingAddStudentSheet(existingStudents: students) { student, profile in
+            TeachingAddStudentSheet(existingStudents: students, scheduleRoster: scheduleRoster) { student, profile in
                 students.append(student)
                 saveStudentsToSettings()
                 saveProfileOverrideIfNeeded(profile, for: student)
@@ -114,7 +128,12 @@ struct TeachingHomeView: View {
             NavigationStack {
                 SingleListDocumentEditorView(
                     fileURL: document.fileURL,
-                    onClose: { presentedHomeStudentDocument = nil }
+                    showsReflectionSiblingNavigation: document.scheduleExportKey == nil,
+                    navigationTitleOverride: document.title,
+                    onClose: { presentedHomeStudentDocument = nil },
+                    onSaveCourseExport: document.scheduleExportKey.map { key in
+                        { markScheduleExport(key) }
+                    }
                 )
             }
             .singleListAdaptivePresentation()
@@ -140,14 +159,7 @@ struct TeachingHomeView: View {
                 pageButton(title: "教案", systemImage: "book.closed", page: .lessonPlan)
                 pageButton(title: "教辅", systemImage: "books.vertical", page: .workbook)
                 pageButton(title: "学生", systemImage: "person.2", page: .students)
-                Link(destination: URL(string: "https://zhibenwang.com/app/")!) {
-                    actionLabel("排课网", systemImage: "calendar")
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 12)
-                        .frame(height: 32)
-                }
-                .buttonStyle(.plain)
-                .help("打开排课网")
+                pageButton(title: "排课网", systemImage: "calendar", page: .schedule)
                 pageButton(title: "同步", systemImage: "arrow.triangle.2.circlepath", page: .sync)
             }
             .padding(4)
@@ -279,6 +291,8 @@ struct TeachingHomeView: View {
             )
         case .students:
             studentsPanel
+        case .schedule:
+            TeachingScheduleWebView()
         case .workbook:
             TeachingWorkbookManagementView(
                 showTopActionToolbar: false,
@@ -358,6 +372,9 @@ struct TeachingHomeView: View {
                                             .foregroundStyle(.secondary)
                                     }
                                     Spacer(minLength: 8)
+                                    if latestScheduleCourse(for: student) != nil {
+                                        Color.clear.frame(width: 30, height: 30)
+                                    }
                                 }
                                 .frame(maxWidth: .infinity, minHeight: 58)
                                 .padding(14)
@@ -373,6 +390,22 @@ struct TeachingHomeView: View {
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
+                            .overlay(alignment: .trailing) {
+                                if let course = latestScheduleCourse(for: student),
+                                   let roster = scheduleRoster {
+                                    let key = scheduleExportKey(teacher: roster.teacherID, course: course.id)
+                                    let done = exportedScheduleCourses.split(separator: ",").contains(Substring(key))
+                                    Button {
+                                        openScheduleReflection(student: student, course: course, key: key)
+                                    } label: {
+                                        Image(systemName: done ? "checkmark.square" : "square")
+                                            .frame(width: 30, height: 30)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .padding(.trailing, 14)
+                                    .accessibilityLabel(done ? "上一节课反已导出" : "导出上一节课反")
+                                }
+                            }
                             .contextMenu {
                                 Button("学生信息") {
                                     openStudentInformation(student)
@@ -385,28 +418,28 @@ struct TeachingHomeView: View {
                                 Menu("更改图标") {
                                     ForEach(TeachingStudentItem.supportedIcons, id: \.self) { iconName in
                                         Button {
-                                            updateStudent(student.id) { item in
-                                                item.iconName = iconName
-                                            }
+                                            changeStudentIcon(student, icon: iconName)
                                         } label: {
                                             Label(TeachingStudentItem.displayName(forIcon: iconName), systemImage: iconName)
                                         }
                                     }
                                 }
 
-                                Menu("更改颜色") {
-                                    ForEach(TeachingStudentColor.allCases) { color in
-                                        Button {
-                                            updateStudent(student.id) { item in
-                                                item.color = color
-                                                item.scheduleColorHex = nil
-                                            }
-                                        } label: {
-                                            HStack {
-                                                Circle()
-                                                    .fill(color.value)
-                                                    .frame(width: 10, height: 10)
-                                                Text(color.displayName)
+                                if student.scheduleStudentID == nil {
+                                    Menu("更改颜色") {
+                                        ForEach(TeachingStudentColor.allCases) { color in
+                                            Button {
+                                                updateStudent(student.id) { item in
+                                                    item.color = color
+                                                    item.scheduleColorHex = nil
+                                                }
+                                            } label: {
+                                                HStack {
+                                                    Circle()
+                                                        .fill(color.value)
+                                                        .frame(width: 10, height: 10)
+                                                    Text(color.displayName)
+                                                }
                                             }
                                         }
                                     }
@@ -438,6 +471,61 @@ struct TeachingHomeView: View {
         }
     }
 
+    private func latestScheduleCourse(for student: TeachingStudentItem) -> TeachingScheduleRoster.Course? {
+        guard let roster = scheduleRoster, student.scheduleTeacherID == roster.teacherID,
+              let id = student.scheduleStudentID else { return nil }
+        return roster.latestCourses[id.uuidString.lowercased()]
+    }
+
+    private func scheduleExportKey(teacher: UUID, course: UUID) -> String {
+        "\(teacher.uuidString):\(course.uuidString)"
+    }
+
+    private func markScheduleExport(_ key: String) {
+        var keys = Set(exportedScheduleCourses.split(separator: ",").map(String.init))
+        keys.insert(key)
+        exportedScheduleCourses = keys.sorted().joined(separator: ",")
+    }
+
+    private func openScheduleReflection(student: TeachingStudentItem, course: TeachingScheduleRoster.Course, key: String) {
+        let formatter = ISO8601DateFormatter()
+        let ordinary = formatter.date(from: course.start)
+        formatter.formatOptions.insert(.withFractionalSeconds)
+        guard let date = ordinary ?? formatter.date(from: course.start) else {
+            statusMessage = "排课课程时间无法读取。"
+            return
+        }
+        do {
+            let file = try TeachingCourseWorkflowService.classInfoFileURL(student: student, on: date)
+            presentedHomeStudentDocument = TeachingHomeStudentDocument(
+                title: "上一节课反", fileURL: file, scheduleExportKey: key
+            )
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    private func syncScheduleRoster() async {
+        guard !scheduleSyncRunning else { return }
+        guard let connection = TeachingScheduleConnection.load() else {
+            scheduleRoster = nil
+            return
+        }
+        scheduleSyncRunning = true
+        defer { scheduleSyncRunning = false }
+        do {
+            let roster = try await connection.roster()
+            guard !Task.isCancelled, TeachingScheduleConnection.load()?.code == connection.code else { return }
+            scheduleRoster = roster
+            guard selectedCourseStudent == nil, !showAddStudentSheet, !isRunningStudentBackup else { return }
+            try await TeachingScheduleStudentSync.pull(roster)
+        } catch {
+            if !Task.isCancelled, scheduleRoster != nil {
+                statusMessage = "排课联动：\(error.localizedDescription)"
+            }
+        }
+    }
+
     private var studentsPanel: some View {
         TeachingStudentsSubpageView(
             students: $students,
@@ -460,8 +548,8 @@ struct TeachingHomeView: View {
                 refreshStudentsFromArchive()
             },
             onUpdateIcon: { studentID, iconName in
-                updateStudent(studentID) { item in
-                    item.iconName = iconName
+                if let student = students.first(where: { $0.id == studentID }) {
+                    changeStudentIcon(student, icon: iconName)
                 }
             },
             onUpdateColor: { studentID, color in
@@ -474,6 +562,21 @@ struct TeachingHomeView: View {
                 editingProfileStudent = student
             }
         )
+    }
+
+    private func changeStudentIcon(_ student: TeachingStudentItem, icon: String) {
+        if student.scheduleStudentID == nil {
+            updateStudent(student.id) { $0.iconName = icon }
+            return
+        }
+        Task {
+            do {
+                let profile = try TeachingStudentSettingsStore.loadStudentProfile(studentID: student.id) ?? .init()
+                try await TeachingScheduleStudentSync.saveProfile(profile, for: student, icon: icon)
+            } catch {
+                statusMessage = error.localizedDescription
+            }
+        }
     }
 
     private func updateStudent(_ id: UUID, updater: (inout TeachingStudentItem) -> Void) {
@@ -601,6 +704,21 @@ struct TeachingHomeView: View {
         statusMessage = "正在迁移学生到系统备份..."
         Task(priority: .userInitiated) {
             do {
+                let linked = selectedStudents.filter { $0.scheduleStudentID != nil }
+                if !linked.isEmpty {
+                    guard let connection = TeachingScheduleConnection.load() else {
+                        throw TeachingScheduleStudentSync.failure("请先打开对应教师账号的排课联动。")
+                    }
+                    let roster = try await connection.roster()
+                    guard linked.allSatisfy({ $0.scheduleTeacherID == roster.teacherID }) else {
+                        throw TeachingScheduleStudentSync.failure("选中的学生属于其他教师账号。")
+                    }
+                    for student in linked {
+                        if let id = student.scheduleStudentID {
+                            try await connection.writeStudent(id: id, method: "DELETE")
+                        }
+                    }
+                }
                 let result = try TeachingStudentBackupService.backupStudents(selectedStudents)
                 await MainActor.run {
                     if !result.movedStudentIDs.isEmpty {
@@ -625,6 +743,10 @@ struct TeachingHomeView: View {
 
     private func runStudentRestore(_ entries: [TeachingStudentBackupEntry]) {
         guard !isRunningStudentBackup, !entries.isEmpty else { return }
+        guard entries.allSatisfy({ $0.student.scheduleTeacherID == nil }) else {
+            statusMessage = "联动学生请从排课网回收站恢复。"
+            return
+        }
         isRunningStudentBackup = true
         statusMessage = "正在恢复学生..."
         Task(priority: .userInitiated) {
@@ -780,6 +902,7 @@ private struct TeachingHomeStudentDocument: Identifiable {
     let id = UUID()
     let title: String
     let fileURL: URL
+    var scheduleExportKey: String? = nil
 }
 
 nonisolated struct TeachingStudentItem: Identifiable, Equatable, Codable {
@@ -838,6 +961,9 @@ nonisolated struct TeachingStudentItem: Identifiable, Equatable, Codable {
     var color: TeachingStudentColor = .blue
     var isSelected: Bool = true
     var scheduleColorHex: String?
+    var scheduleStudentID: UUID?
+    var scheduleTeacherID: UUID?
+    var scheduleProfile: TeachingScheduleProfile?
 
     @MainActor var displayColor: Color {
         scheduleColorHex.flatMap(TeachingScheduleStudentColors.color) ?? color.value

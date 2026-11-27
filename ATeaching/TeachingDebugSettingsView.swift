@@ -146,6 +146,14 @@ struct TeachingDebugActionToolsView: View {
         ) {
             AppSettingsCard(title: "维护工具", systemImage: "switch.2") {
                 AppSettingsNavigationRow(
+                    title: "排课网初始化",
+                    subtitle: "刷新名单并关联学生",
+                    systemImage: "person.2"
+                ) {
+                    TeachingScheduleInitializationView()
+                }
+                AppSettingsDivider()
+                AppSettingsNavigationRow(
                     title: "H3查重",
                     subtitle: "扫描正式教案中的同名H3包",
                     systemImage: "text.magnifyingglass"

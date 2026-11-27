@@ -109,16 +109,18 @@ struct TeachingStudentsSubpageView: View {
                 }
             }
 
-            Menu("更换颜色") {
-                ForEach(TeachingStudentColor.allCases) { color in
-                    Button {
-                        onUpdateColor(student.id, color)
-                    } label: {
-                        HStack {
-                            Circle()
-                                .fill(color.value)
-                                .frame(width: 10, height: 10)
-                            Text(color.displayName)
+            if student.scheduleStudentID == nil {
+                Menu("更换颜色") {
+                    ForEach(TeachingStudentColor.allCases) { color in
+                        Button {
+                            onUpdateColor(student.id, color)
+                        } label: {
+                            HStack {
+                                Circle()
+                                    .fill(color.value)
+                                    .frame(width: 10, height: 10)
+                                Text(color.displayName)
+                            }
                         }
                     }
                 }

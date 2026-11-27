@@ -6,6 +6,14 @@ struct TeachingAddStudentSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     let existingStudents: [TeachingStudentItem]
+    let scheduleRoster: TeachingScheduleRoster?
+    @State private var studentID = UUID()
+    @State private var saving = false
+    @State private var scheduleManager: UUID?
+    @State private var scheduleTeacherPrice = ""
+    @State private var scheduleChargePrice = ""
+    @State private var scheduleGrade: Int?
+    @State private var schedulePayment = "postpaid"
     let onConfirm: (TeachingStudentItem, TeachingStudentProfileSettings) -> Void
 
     @State private var name = ""
@@ -29,21 +37,41 @@ struct TeachingAddStudentSheet: View {
                 lessonPlansSection
                 workbookSection
                 syncFolderSection
+                if let scheduleRoster {
+                    Section("排课信息") {
+                        Picker("学管", selection: $scheduleManager) {
+                            Text("个人直收").tag(UUID?.none)
+                            ForEach(scheduleRoster.managers) { manager in
+                                Text(manager.name).tag(Optional(manager.id))
+                            }
+                        }
+                        Picker("年级", selection: $scheduleGrade) {
+                            Text("未指定").tag(Int?.none)
+                            ForEach(1...12, id: \.self) { grade in
+                                Text("\(grade) 年级").tag(Optional(grade))
+                            }
+                        }
+                        TextField("教师价格（每小时）", text: $scheduleTeacherPrice)
+                        TextField("收费价格（每小时）", text: $scheduleChargePrice)
+                        Picker("付款方式", selection: $schedulePayment) {
+                            Text("课后付").tag("postpaid")
+                            Text("预付").tag("prepaid")
+                        }
+                    }
+                }
 
                 TeachingStatusMessageSection(message: statusMessage)
             }
             .navigationTitle("添加学生")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") {
-                        dismiss()
-                    }
+                    Button("取消") { dismiss() }.disabled(saving)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("创建") {
-                        createStudent()
+                        Task { await createStudent() }
                     }
-                    .disabled(!canCreateStudent)
+                    .disabled(!canCreateStudent || saving)
                 }
             }
             .task {
@@ -298,13 +326,39 @@ struct TeachingAddStudentSheet: View {
         }
     }
 
-    private func createStudent() {
+    private func createStudent() async {
+        guard !saving else { return }
+        saving = true
+        defer { saving = false }
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else {
             statusMessage = "请输入学生姓名。"
             return
         }
         do {
+            guard !existingStudents.contains(where: {
+                $0.name.compare(trimmedName, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+            }) else {
+                throw TeachingScheduleStudentSync.failure("已存在同名学生。")
+            }
+            if let scheduleRoster {
+                guard let connection = TeachingScheduleConnection.load(),
+                      try await connection.roster().teacherID == scheduleRoster.teacherID else {
+                    throw TeachingScheduleStudentSync.failure("教师账号已变更，请重新打开建档页面。")
+                }
+                var fields = [
+                    "name": trimmedName, "color": effectiveColor,
+                    "payment_timing": schedulePayment
+                ]
+                if let scheduleManager { fields["academic_manager"] = scheduleManager.uuidString }
+                if let scheduleGrade { fields["grade"] = String(scheduleGrade) }
+                if !scheduleTeacherPrice.isEmpty { fields["default_price"] = scheduleTeacherPrice }
+                if !scheduleChargePrice.isEmpty { fields["charge_price"] = scheduleChargePrice }
+                try await connection.writeStudent(
+                    id: studentID, method: "PUT", fields: fields,
+                    profile: TeachingScheduleProfile(iconName: iconName, settings: draftSettings)
+                )
+            }
             var profile = draftSettings
             if let baseFolderPath = profile.syncBaseFolderPath?.trimmingCharacters(in: .whitespacesAndNewlines),
                !baseFolderPath.isEmpty {
@@ -316,9 +370,13 @@ struct TeachingAddStudentSheet: View {
             }
 
             let student = TeachingStudentItem(
+                id: studentID,
                 name: trimmedName,
                 iconName: iconName,
-                scheduleColorHex: effectiveColor
+                scheduleColorHex: effectiveColor,
+                scheduleStudentID: scheduleRoster == nil ? nil : studentID,
+                scheduleTeacherID: scheduleRoster?.teacherID,
+                scheduleProfile: scheduleRoster == nil ? nil : TeachingScheduleProfile(iconName: iconName, settings: draftSettings)
             )
             if featureFlags.enableStudentProvisioning {
                 try TeachingStudentProvisioningService.provisionArchiveSkeleton(

@@ -10,6 +10,7 @@ struct TeachingStudentProfileSettingsView: View {
     @State private var settings = TeachingStudentProfileSettings()
     @State private var statusMessage = ""
     @State private var didLoad = false
+    @State private var saving = false
     @State private var selectionData = TeachingSelectionData.empty
     @State private var selectionDataReady = false
     @State private var showSyncFolderPicker = false
@@ -38,7 +39,7 @@ struct TeachingStudentProfileSettingsView: View {
 
                 Section {
                     Button("恢复默认") {
-                        resetOverride()
+                        Task { await resetOverride() }
                     }
                 }
             }
@@ -51,8 +52,8 @@ struct TeachingStudentProfileSettingsView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存") {
-                        save()
-                    }
+                        Task { await save() }
+                    }.disabled(saving)
                 }
             }
             .task {
@@ -106,18 +107,28 @@ struct TeachingStudentProfileSettingsView: View {
         }
     }
 
-    private func save() {
+    private func save() async {
+        guard !saving else { return }
+        saving = true
+        defer { saving = false }
         do {
-            try TeachingStudentSettingsStore.saveStudentProfile(settings, studentID: student.id)
+            try await TeachingScheduleStudentSync.saveProfile(settings, for: student)
             statusMessage = "已保存。"
         } catch {
             statusMessage = "保存失败：\(error.localizedDescription)"
         }
     }
 
-    private func resetOverride() {
+    private func resetOverride() async {
+        guard !saving else { return }
+        saving = true
+        defer { saving = false }
         do {
-            try TeachingStudentSettingsStore.removeStudentProfile(studentID: student.id)
+            if student.scheduleStudentID != nil {
+                try await TeachingScheduleStudentSync.saveProfile(TeachingStudentProfileSettings(), for: student)
+            } else {
+                try TeachingStudentSettingsStore.removeStudentProfile(studentID: student.id)
+            }
             settings = TeachingStudentProfileSettings()
             if selectionDataReady {
                 TeachingStudentSelectionSupport.sanitizeSelections(&settings, using: selectionData)

@@ -24,6 +24,9 @@ struct SingleListDocumentEditorView: View {
     var studentInfoToggleTitle: String = "主"
     var studentInfoToggleDisabled: Bool = false
     var onClose: (() -> Void)?
+    var onSaveCourseExport: (() -> Void)?
+    @State private var courseExport: CourseReflectionImage?
+    @State private var showingCourseExporter = false
 
     @State private var currentFileURL: URL
     @State private var reflectionSiblingFiles: [URL] = []
@@ -60,7 +63,8 @@ struct SingleListDocumentEditorView: View {
         onRequestToggleStudentInfo: (() -> Void)? = nil,
         studentInfoToggleTitle: String = "主",
         studentInfoToggleDisabled: Bool = false,
-        onClose: (() -> Void)? = nil
+        onClose: (() -> Void)? = nil,
+        onSaveCourseExport: (() -> Void)? = nil
     ) {
         self.fileURL = fileURL
         self.externalExportImageToken = externalExportImageToken
@@ -73,6 +77,7 @@ struct SingleListDocumentEditorView: View {
         self.studentInfoToggleTitle = studentInfoToggleTitle
         self.studentInfoToggleDisabled = studentInfoToggleDisabled
         self.onClose = onClose
+        self.onSaveCourseExport = onSaveCourseExport
         _currentFileURL = State(initialValue: fileURL)
     }
 
@@ -84,6 +89,24 @@ struct SingleListDocumentEditorView: View {
     }
 
     var body: some View {
+        editorBody.fileExporter(
+            isPresented: $showingCourseExporter,
+            document: courseExport,
+            contentType: .png,
+            defaultFilename: sanitizedExportFilename()
+        ) { result in
+            switch result {
+            case .success:
+                onSaveCourseExport?()
+                statusMessage = "课反已导出"
+            case .failure(let error):
+                statusMessage = "导出失败：\(error.localizedDescription)"
+            }
+            courseExport = nil
+        }
+    }
+
+    private var editorBody: some View {
         ZStack {
             SingleListVisualStyle.pageBackground
 
@@ -640,6 +663,12 @@ struct SingleListDocumentEditorView: View {
     }
 
     private func performImageExport() {
+        if onSaveCourseExport != nil {
+            guard let data = makeExportImageData() else { return }
+            courseExport = CourseReflectionImage(data: data)
+            showingCourseExporter = true
+            return
+        }
         #if os(macOS)
         guard let exportURL = makeExportImageFile() else { return }
         guard let anchorView = NSApp.keyWindow?.contentView ?? NSApp.mainWindow?.contentView else {
@@ -1133,3 +1162,22 @@ private final class SingleListAutoContinueTextView: NSTextView {
     }
 }
 #endif
+
+
+private struct CourseReflectionImage: FileDocument {
+    static var readableContentTypes: [UTType] { [.png] }
+    let data: Data
+
+    init(data: Data) { self.data = data }
+
+    init(configuration: ReadConfiguration) throws {
+        guard let data = configuration.file.regularFileContents else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        self.data = data
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
+    }
+}
