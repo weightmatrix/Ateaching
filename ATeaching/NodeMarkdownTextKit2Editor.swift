@@ -46,7 +46,7 @@ struct NodeMarkdownTextKit2Editor: View {
     let navigationRequestToken: Int
     let activeMatchLocationInRow: Int?
     let editingRowIndex: Int?
-    let searchQuery: String
+    let searchQuery: NodeMarkdownEditorSearch
     let rowMetadata: [NodeMarkdownTextKitRowMetadata]
     let externalTextSyncToken: Int
     let quickInputSettings: MarkdownQuickInputSettings
@@ -128,7 +128,7 @@ struct NodeMarkdownTextKit2Representable: NSViewRepresentable {
     let navigationRequestToken: Int
     let activeMatchLocationInRow: Int?
     let editingRowIndex: Int?
-    let searchQuery: String
+    let searchQuery: NodeMarkdownEditorSearch
     let rowMetadata: [NodeMarkdownTextKitRowMetadata]
     let externalTextSyncToken: Int
     let quickInputSettings: MarkdownQuickInputSettings

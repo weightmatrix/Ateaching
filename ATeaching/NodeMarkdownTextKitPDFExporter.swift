@@ -423,7 +423,7 @@ private final class Renderer {
             layout: rowLayout,
             documentStyle: documentStyle,
             baseDirectoryURL: baseDirectoryURL,
-            searchQuery: "",
+            searchQuery: NodeMarkdownEditorSearch(),
             activeRowIndex: nil,
             activeMatchLocationInRow: nil,
             editingRowIndex: nil,

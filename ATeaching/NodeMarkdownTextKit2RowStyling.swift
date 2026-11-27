@@ -16,7 +16,7 @@ extension NodeMarkdownTextKit2TextView {
         layout: NodeMarkdownTextKit2RowLayout,
         documentStyle: NodeMarkdownDocumentStyle,
         baseDirectoryURL: URL?,
-        searchQuery: String,
+        searchQuery: NodeMarkdownEditorSearch,
         activeRowIndex: Int?,
         activeMatchLocationInRow: Int?,
         editingRowIndex: Int?,
@@ -216,7 +216,7 @@ extension NodeMarkdownTextKit2TextView {
         source nsText: NSString,
         layout: NodeMarkdownTextKit2RowLayout,
         textLength: Int,
-        searchQuery: String,
+        searchQuery: NodeMarkdownEditorSearch,
         activeRowIndex: Int?,
         activeMatchLocationInRow: Int?
     ) {

@@ -17,7 +17,7 @@ final class NodeMarkdownTextKit2Coordinator: NSObject, NSTextViewDelegate {
     var navigationRequestToken: Int
     var activeMatchLocationInRow: Int?
     var editingRowIndex: Int?
-    var searchQuery: String
+    var searchQuery: NodeMarkdownEditorSearch
     var rowMetadata: [NodeMarkdownTextKitRowMetadata]
     var quickInputSettings: MarkdownQuickInputSettings
     var rowCharacterRanges: LazyMapCollection<NodeMarkdownRowLayouts, NSRange> {
@@ -27,7 +27,7 @@ final class NodeMarkdownTextKit2Coordinator: NSObject, NSTextViewDelegate {
     var lastLayoutTextSnapshot = ""
     var lastLayoutDocumentStyleIdentity: NodeMarkdownDocumentStyleRecord?
     var lastLayoutRowMetadataSnapshot: [NodeMarkdownTextKitRowMetadata] = []
-    var lastAppliedSearchQuery = ""
+    var lastAppliedSearchQuery = NodeMarkdownEditorSearch()
     var lastAppliedActiveRowIndex: Int?
     var lastAppliedActiveMatchLocationInRow: Int?
     var lastAppliedEditingRowIndex: Int?
@@ -87,7 +87,7 @@ final class NodeMarkdownTextKit2Coordinator: NSObject, NSTextViewDelegate {
         navigationRequestToken: Int,
         activeMatchLocationInRow: Int?,
         editingRowIndex: Int?,
-        searchQuery: String,
+        searchQuery: NodeMarkdownEditorSearch,
         rowMetadata: [NodeMarkdownTextKitRowMetadata],
         externalTextSyncToken: Int,
         quickInputSettings: MarkdownQuickInputSettings,
@@ -119,7 +119,7 @@ final class NodeMarkdownTextKit2Coordinator: NSObject, NSTextViewDelegate {
         lastHandledNavigationRequestToken = navigationRequestToken
         self.activeMatchLocationInRow = activeMatchLocationInRow
         self.editingRowIndex = editingRowIndex
-        self.searchQuery = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.searchQuery = searchQuery
         self.rowMetadata = rowMetadata
         self.quickInputSettings = quickInputSettings
         lastExternalTextSyncToken = externalTextSyncToken

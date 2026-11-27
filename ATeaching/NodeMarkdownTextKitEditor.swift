@@ -46,7 +46,7 @@ struct NodeMarkdownTextKitEditor: View {
     let navigationRequestToken: Int
     let activeMatchLocationInRow: Int?
     let editingRowIndex: Int?
-    let searchQuery: String
+    let searchQuery: NodeMarkdownEditorSearch
     let rowMetadata: [NodeMarkdownTextKitRowMetadata]
     let externalTextSyncToken: Int
     let quickInputSettings: MarkdownQuickInputSettings
@@ -144,7 +144,7 @@ private struct NodeMarkdownTextKitRepresentable: NSViewRepresentable {
     let documentStyle: NodeMarkdownDocumentStyle
     let activeRowIndex: Int?
     let activeMatchLocationInRow: Int?
-    let searchQuery: String
+    let searchQuery: NodeMarkdownEditorSearch
     let rowMetadata: [NodeMarkdownTextKitRowMetadata]
     let externalTextSyncToken: Int
     let quickInputSettings: MarkdownQuickInputSettings
@@ -599,7 +599,7 @@ private struct NodeMarkdownTextKitRepresentable: NSViewRepresentable {
         private var documentStyleIdentity: NodeMarkdownDocumentStyleRecord
         private var activeRowIndex: Int?
         private var activeMatchLocationInRow: Int?
-        private var searchQuery: String
+        private var searchQuery: NodeMarkdownEditorSearch
         private var rowMetadata: [NodeMarkdownTextKitRowMetadata]
         private var quickInputSettings: MarkdownQuickInputSettings
         private var rowCharacterRanges: [NSRange] = []
@@ -874,7 +874,7 @@ private struct NodeMarkdownTextKitRepresentable: NSViewRepresentable {
             documentStyle: NodeMarkdownDocumentStyle,
             activeRowIndex: Int?,
             activeMatchLocationInRow: Int?,
-            searchQuery: String,
+            searchQuery: NodeMarkdownEditorSearch,
             rowMetadata: [NodeMarkdownTextKitRowMetadata],
             quickInputSettings: MarkdownQuickInputSettings,
             onTextChange: ((String) -> Void)?,
@@ -898,7 +898,7 @@ private struct NodeMarkdownTextKitRepresentable: NSViewRepresentable {
             self.documentStyleIdentity = documentStyle.renderIdentity
             self.activeRowIndex = activeRowIndex
             self.activeMatchLocationInRow = activeMatchLocationInRow
-            self.searchQuery = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.searchQuery = searchQuery
             self.rowMetadata = rowMetadata
             self.quickInputSettings = quickInputSettings
             self.onTextChange = onTextChange
@@ -1134,10 +1134,9 @@ private struct NodeMarkdownTextKitRepresentable: NSViewRepresentable {
             scrollToActiveRowIfNeeded(in: textView)
         }
 
-        func updateSearchQuery(_ value: String, in textView: NSTextView) {
-            let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard searchQuery != normalized else { return }
-            searchQuery = normalized
+        func updateSearchQuery(_ value: NodeMarkdownEditorSearch, in textView: NSTextView) {
+            guard searchQuery != value else { return }
+            searchQuery = value
             searchRevision &+= 1
             refreshSearchHighlights(in: textView)
         }
@@ -1624,7 +1623,7 @@ private struct NodeMarkdownTextKitRepresentable: NSViewRepresentable {
             rowIndex: Int,
             line: LineLayout
         ) {
-            guard !searchQuery.isEmpty, line.range.length > 0 else { return }
+            guard searchQuery.scope.includes(line.level), !searchQuery.text.isEmpty, line.range.length > 0 else { return }
             let prefixLength = min((line.prefix as NSString).length, line.range.length)
             let searchStart = line.range.location + prefixLength
             let searchRange = NSRange(
@@ -1633,7 +1632,7 @@ private struct NodeMarkdownTextKitRepresentable: NSViewRepresentable {
             )
             var remaining = searchRange
             while remaining.length > 0 {
-                let match = source.range(of: searchQuery, options: [.caseInsensitive], range: remaining)
+                let match = source.range(of: searchQuery.text, options: [.caseInsensitive], range: remaining)
                 guard match.location != NSNotFound, match.length > 0 else { break }
                 let matchLocationInRow = match.location - searchStart
                 let isCurrentMatch = rowIndex == activeRowIndex

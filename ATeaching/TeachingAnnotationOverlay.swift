@@ -194,6 +194,54 @@ private struct AnnotationCanvasRepresentable: NSViewRepresentable {
 
 #if os(macOS)
 
+@MainActor
+final class TeachingInkMouseSampling {
+    private static var activeCount = 0
+    private static var previousCoalescing = true
+    private var isActive = false
+
+    func begin() {
+        guard !isActive else { return }
+        if Self.activeCount == 0 {
+            Self.previousCoalescing = NSEvent.isMouseCoalescingEnabled
+            NSEvent.isMouseCoalescingEnabled = false
+        }
+        Self.activeCount += 1
+        isActive = true
+    }
+
+    func end() {
+        guard isActive else { return }
+        isActive = false
+        Self.activeCount -= 1
+        if Self.activeCount == 0 {
+            NSEvent.isMouseCoalescingEnabled = Self.previousCoalescing
+        }
+    }
+}
+
+func teachingSmoothedInkPath(_ points: [CGPoint]) -> CGPath {
+    let path = CGMutablePath()
+    guard let first = points.first else { return path }
+    if points.count == 1 || (points.count == 2 && points[1] == first) {
+        path.addEllipse(in: CGRect(x: first.x - 0.5, y: first.y - 0.5, width: 1, height: 1))
+        return path
+    }
+    path.move(to: first)
+    for i in 1..<points.count {
+        let previous = points[max(0, i - 2)]
+        let start = points[i - 1]
+        let end = points[i]
+        let next = points[min(i + 1, points.count - 1)]
+        path.addCurve(
+            to: end,
+            control1: CGPoint(x: start.x + (end.x - previous.x) / 6, y: start.y + (end.y - previous.y) / 6),
+            control2: CGPoint(x: end.x - (next.x - start.x) / 6, y: end.y - (next.y - start.y) / 6)
+        )
+    }
+    return path
+}
+
 // MARK: - 批注覆盖画布 - 覆盖在编辑器上方，拦截鼠标（屏蔽点击编辑）、转发滚动（可滚动），批注跟随页面
 final class TeachingAnnotationCanvasView: NSView {
     weak var controller: TeachingAnnotationController?
@@ -202,6 +250,8 @@ final class TeachingAnnotationCanvasView: NSView {
 
     private var strokes: [TeachingAnnotationStroke] = []
     private var activeStrokeIndex: Int?
+    private var finishedPaths: [(path: CGPath, bounds: CGRect)] = []
+    private let mouseSampling = TeachingInkMouseSampling()
     private weak var scrollView: NSScrollView?
     private weak var observedClipView: NSClipView?
 
@@ -332,49 +382,30 @@ final class TeachingAnnotationCanvasView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
         let origin = scrollOrigin
-        NSColor(Self.strokeColor).setStroke()
-        for stroke in strokes {
-            drawStroke(stroke, origin: origin)
-        }
-    }
-
-    private func drawStroke(_ stroke: TeachingAnnotationStroke, origin: NSPoint) {
-        guard !stroke.points.isEmpty else { return }
-        let screenPoints = stroke.points.map { CGPoint(x: $0.x - origin.x, y: $0.y - origin.y) }
-        let path = NSBezierPath()
-        path.lineWidth = stroke.lineWidth
-        path.lineCapStyle = .round
-        path.lineJoinStyle = .round
-        if screenPoints.count == 1 {
-            path.appendArc(
-                withCenter: screenPoints[0],
-                radius: max(stroke.lineWidth / 2, 1),
-                startAngle: 0,
-                endAngle: 360
-            )
-        } else if screenPoints.count == 2 {
-            path.move(to: screenPoints[0])
-            path.line(to: screenPoints[1])
-        } else {
-            path.move(to: screenPoints[0])
-            let lastIndex = screenPoints.count - 1
-            for index in 1..<lastIndex {
-                let point = screenPoints[index]
-                let nextPoint = screenPoints[index + 1]
-                let midpoint = CGPoint(
-                    x: (point.x + nextPoint.x) * 0.5,
-                    y: (point.y + nextPoint.y) * 0.5
-                )
-                path.curve(
-                    to: midpoint,
-                    controlPoint1: point,
-                    controlPoint2: point
-                )
+        let documentDirtyRect = dirtyRect.offsetBy(dx: origin.x, dy: origin.y)
+        context.saveGState()
+        context.translateBy(x: -origin.x, y: -origin.y)
+        context.setStrokeColor(NSColor(Self.strokeColor).cgColor)
+        context.setLineCap(.round)
+        context.setLineJoin(.round)
+        for (index, stroke) in strokes.enumerated() {
+            let path: CGPath
+            let pathBounds: CGRect
+            if index < finishedPaths.count {
+                (path, pathBounds) = finishedPaths[index]
+            } else {
+                path = teachingSmoothedInkPath(stroke.points)
+                pathBounds = path.boundingBox
             }
-            path.line(to: screenPoints[lastIndex])
+            let padding = stroke.lineWidth / 2 + 1
+            guard pathBounds.insetBy(dx: -padding, dy: -padding).intersects(documentDirtyRect) else { continue }
+            context.setLineWidth(stroke.lineWidth)
+            context.addPath(path)
+            context.strokePath()
         }
-        path.stroke()
+        context.restoreGState()
     }
 
     private var scrollOrigin: NSPoint {
@@ -390,9 +421,11 @@ final class TeachingAnnotationCanvasView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         ensureScrollViewAttached()
+        finishStroke()
         let screenPoint = convert(event.locationInWindow, from: nil)
         switch tool {
         case .pen:
+            mouseSampling.begin()
             beginStroke(at: screenPoint)
         case .eraser:
             activeStrokeIndex = nil
@@ -401,24 +434,52 @@ final class TeachingAnnotationCanvasView: NSView {
     }
 
     override func mouseDragged(with event: NSEvent) {
-        ensureScrollViewAttached()
         let screenPoint = convert(event.locationInWindow, from: nil)
         switch tool {
         case .pen:
-            guard let activeStrokeIndex, strokes.indices.contains(activeStrokeIndex) else { return }
-            strokes[activeStrokeIndex].points.append(documentPoint(for: screenPoint))
-            setNeedsDisplay(bounds)
+            appendStrokePoint(at: screenPoint)
         case .eraser:
             eraseStroke(at: screenPoint)
         }
     }
 
     override func mouseUp(with event: NSEvent) {
-        ensureScrollViewAttached()
         if activeStrokeIndex != nil {
-            activeStrokeIndex = nil
-            controller?.handleStrokesDidChange(strokes.count)
+            appendStrokePoint(at: convert(event.locationInWindow, from: nil))
+            finishStroke()
         }
+        mouseSampling.end()
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil {
+            mouseSampling.end()
+            finishStroke()
+        }
+        super.viewWillMove(toWindow: newWindow)
+    }
+
+    private func finishStroke() {
+        guard let index = activeStrokeIndex else { return }
+        let path = teachingSmoothedInkPath(strokes[index].points)
+        finishedPaths.append((path, path.boundingBox))
+        activeStrokeIndex = nil
+    }
+
+    private func appendStrokePoint(at screenPoint: CGPoint) {
+        guard let index = activeStrokeIndex else { return }
+        let point = documentPoint(for: screenPoint)
+        let points = strokes[index].points
+        guard points.last != point else { return }
+        let updatedTail = Array(points.suffix(3)) + [point]
+        let oldTailBounds = teachingSmoothedInkPath(Array(points.suffix(3))).boundingBox
+        let newTailBounds = teachingSmoothedInkPath(updatedTail).boundingBox
+        let padding = strokes[index].lineWidth / 2 + 2
+        let origin = scrollOrigin
+        strokes[index].points.append(point)
+        setNeedsDisplay(oldTailBounds.union(newTailBounds)
+            .insetBy(dx: -padding, dy: -padding)
+            .offsetBy(dx: -origin.x, dy: -origin.y))
     }
 
     private func beginStroke(at screenPoint: CGPoint) {
@@ -429,7 +490,9 @@ final class TeachingAnnotationCanvasView: NSView {
         )
         strokes.append(stroke)
         activeStrokeIndex = strokes.count - 1
-        setNeedsDisplay(bounds)
+        let padding = Self.strokeLineWidth + 2
+        setNeedsDisplay(CGRect(x: screenPoint.x, y: screenPoint.y, width: 1, height: 1)
+            .insetBy(dx: -padding, dy: -padding))
         controller?.handleStrokesDidChange(strokes.count)
     }
 
@@ -444,13 +507,18 @@ final class TeachingAnnotationCanvasView: NSView {
         }
         guard let hitIndex else { return }
         strokes.remove(at: hitIndex)
-        setNeedsDisplay(bounds)
+        let erased = finishedPaths.remove(at: hitIndex)
+        let padding = Self.strokeLineWidth + 2
+        setNeedsDisplay(erased.bounds.insetBy(dx: -padding, dy: -padding)
+            .offsetBy(dx: -origin.x, dy: -origin.y))
         controller?.handleStrokesDidChange(strokes.count)
     }
 
     func removeAllStrokes() {
         guard !strokes.isEmpty else { return }
         strokes.removeAll()
+        finishedPaths.removeAll()
+        mouseSampling.end()
         activeStrokeIndex = nil
         setNeedsDisplay(bounds)
         controller?.handleStrokesDidChange(0)

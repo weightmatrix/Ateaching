@@ -12,7 +12,7 @@ extension NodeMarkdownTextKit2TextView {
         rowLayouts: NodeMarkdownRowLayouts,
         documentStyle: NodeMarkdownDocumentStyle,
         baseDirectoryURL: URL?,
-        searchQuery: String,
+        searchQuery: NodeMarkdownEditorSearch,
         activeRowIndex: Int?,
         activeMatchLocationInRow: Int?,
         editingRowIndex: Int?
@@ -85,7 +85,7 @@ extension NodeMarkdownTextKit2TextView {
         rowLayouts: NodeMarkdownRowLayouts,
         documentStyle: NodeMarkdownDocumentStyle,
         baseDirectoryURL: URL?,
-        searchQuery: String,
+        searchQuery: NodeMarkdownEditorSearch,
         activeRowIndex: Int?,
         activeMatchLocationInRow: Int?,
         editingRowIndex: Int?

@@ -4,8 +4,45 @@ import SwiftUI
 import AppKit
 import WebKit
 
+@MainActor
+final class NodeMarkdownDrawingBoardWindow: NSObject, NSWindowDelegate {
+    private let window: NSWindow
+    private let onClose: (URL?) -> Void
+    private var result: URL?
+
+    init(onClose: @escaping (URL?) -> Void) {
+        self.onClose = onClose
+        window = NSWindow(
+            contentRect: NSApp.keyWindow?.screen?.visibleFrame ?? CGRect(x: 0, y: 0, width: 980, height: 620),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        super.init()
+        window.title = "画图"
+        window.isReleasedWhenClosed = false
+        window.collectionBehavior = [.fullScreenPrimary]
+        window.delegate = self
+        window.contentViewController = NSHostingController(rootView: NodeMarkdownDrawingBoardSheet(
+            onComplete: { [weak self] url in
+                guard let self else { return }
+                result = url
+                window.close()
+            }
+        ))
+    }
+
+    func present() {
+        window.makeKeyAndOrderFront(nil)
+        window.toggleFullScreen(nil)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        onClose(result)
+    }
+}
+
 struct NodeMarkdownDrawingBoardSheet: View {
-    @Environment(\.dismiss) private var dismiss
     @FocusState private var focusedTextID: UUID?
 
     @State private var freehandStrokes: [FreehandStroke] = []
@@ -17,12 +54,11 @@ struct NodeMarkdownDrawingBoardSheet: View {
     @State private var redoStack: [DrawingBoardSnapshot] = []
     @State private var copiedShape: ShapeElement?
 
+    @State private var lockedShapeIDs: Set<UUID> = []
     @State private var selectedShapeID: UUID?
     @State private var selectedTextID: UUID?
 
     @State private var diagnosticSession = UUID().uuidString
-    @State private var diagnosticLastDrag: TimeInterval = 0
-    @State private var diagnosticLastSample: TimeInterval = 0
 
     @State private var activeTool: DrawingTool = .selection
     @State private var activeShapeTool: ShapeTool = .line
@@ -35,6 +71,7 @@ struct NodeMarkdownDrawingBoardSheet: View {
     @State private var canvasSize: CGSize = CGSize(width: 900, height: 520)
     @State private var activeHandleDrag: ShapeHandleDrag?
     @State private var canvasResizeStart: CGSize?
+    @State private var didSizeCanvas = false
     @State private var eraserDragHasSnapshot = false
     @State private var showsEraserSettings = false
     @State private var showsTextSettings = false
@@ -65,6 +102,11 @@ struct NodeMarkdownDrawingBoardSheet: View {
                     .padding(12)
                 }
                 .frame(width: proxy.size.width, height: proxy.size.height)
+                .onAppear {
+                    guard !didSizeCanvas else { return }
+                    canvasSize = CGSize(width: max(320, proxy.size.width - 24), height: max(220, proxy.size.height - 24))
+                    didSizeCanvas = true
+                }
             }
             .background(Color.clear)
         }
@@ -178,9 +220,12 @@ struct NodeMarkdownDrawingBoardSheet: View {
             }
             .appGlassButtonStyle()
             Spacer()
+            Button("取消") {
+                onComplete(nil)
+            }
+            .appGlassButtonStyle()
             Button("完成") {
                 onComplete(exportDrawingToTemporaryPNG())
-                dismiss()
             }
             .appGlassButtonStyle(.prominent)
         }
@@ -285,7 +330,7 @@ struct NodeMarkdownDrawingBoardSheet: View {
 
     private var selectionToolButton: some View {
         Button {
-            activeTool = .selection
+            selectTool(.selection)
         } label: {
             Label("选择", systemImage: "arrow.up.left")
                 .labelStyle(.iconOnly)
@@ -321,7 +366,7 @@ struct NodeMarkdownDrawingBoardSheet: View {
 
     private var penToolButton: some View {
         Button {
-            activeTool = .pen
+            selectTool(.pen)
         } label: {
             Label("画笔", systemImage: "pencil.tip")
                 .labelStyle(.iconOnly)
@@ -332,7 +377,7 @@ struct NodeMarkdownDrawingBoardSheet: View {
 
     private func toolButton(_ tool: DrawingTool, title: String, systemImage: String) -> some View {
         Button {
-            activeTool = tool
+            selectTool(tool)
         } label: {
             Label(title, systemImage: systemImage)
                 .labelStyle(.iconOnly)
@@ -344,7 +389,7 @@ struct NodeMarkdownDrawingBoardSheet: View {
     private var eraserCombinedButton: some View {
         HStack(spacing: 1) {
             Button {
-                activeTool = .eraser
+                selectTool(.eraser)
             } label: {
                 Label("橡皮", systemImage: "eraser")
                     .labelStyle(.iconOnly)
@@ -378,7 +423,7 @@ struct NodeMarkdownDrawingBoardSheet: View {
     private var textCombinedButton: some View {
         HStack(spacing: 1) {
             Button {
-                activeTool = .text
+                selectTool(.text)
             } label: {
                 Label("文本框", systemImage: "textformat")
                     .labelStyle(.iconOnly)
@@ -441,6 +486,9 @@ struct NodeMarkdownDrawingBoardSheet: View {
             drawingCanvas
             textLayer
             selectionLayer
+            if activeTool == .pen || activeTool == .eraser {
+                DrawingInkInputView(onPoint: updateInkDrag, onEnd: finishInkDrag)
+            }
         }
         .background(Color.clear)
         .overlay(
@@ -448,10 +496,7 @@ struct NodeMarkdownDrawingBoardSheet: View {
                 .stroke(Color.primary.opacity(0.18), lineWidth: 1)
         )
         .contentShape(Rectangle())
-        .gesture(activeGesture)
-        .onTapGesture { point in
-            handleTap(point)
-        }
+        .gesture(activeGesture, including: activeTool == .pen || activeTool == .eraser ? .none : .all)
         .contextMenu {
             if selectedShape != nil {
                 Button("复制") {
@@ -491,53 +536,82 @@ struct NodeMarkdownDrawingBoardSheet: View {
     }
 
     private var drawingCanvas: some View {
-        Canvas { context, _ in
-            for stroke in freehandStrokes {
-                stroke.render(in: &context)
+        ZStack {
+            Canvas { context, _ in
+                for layer in 0...eraserStrokes.count {
+                    for stroke in freehandStrokes where stroke.eraserLayer == layer {
+                        stroke.render(in: &context)
+                    }
+                    for element in shapeElements where element.eraserLayer == layer {
+                        element.render(in: &context)
+                    }
+                    if layer < eraserStrokes.count {
+                        eraserStrokes[layer].render(in: &context)
+                    }
+                }
+                if case let .eraser(stroke) = activeDraft {
+                    stroke.render(in: &context)
+                }
             }
-            for element in shapeElements {
-                element.render(in: &context)
-            }
-            if let activeDraft {
-                activeDraft.render(in: &context)
-            }
-            for eraserStroke in eraserStrokes {
-                eraserStroke.render(in: &context)
-            }
-            if case let .eraser(eraserStroke) = activeDraft {
-                eraserStroke.render(in: &context)
+            if case let .freehand(stroke) = activeDraft {
+                DrawingFreehandPreview(stroke: stroke)
+            } else if let activeDraft, !isPixelErasing {
+                Canvas { context, _ in activeDraft.render(in: &context) }
             }
         }
+        .allowsHitTesting(false)
     }
 
     private var textLayer: some View {
         ZStack {
             ForEach(textElements) { text in
-                if selectedTextID == text.id, text.formulaSource == nil {
-                    TextField("文本", text: textBinding(for: text.id))
-                        .textFieldStyle(.plain)
-                        .font(.custom(text.fontName, size: text.fontSize))
-                        .foregroundStyle(text.color)
-                        .padding(3)
-                        .frame(width: max(60, text.rect.width), height: max(28, text.rect.height), alignment: .topLeading)
-                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
-                        .position(x: text.rect.midX, y: text.rect.midY)
-                        .focused($focusedTextID, equals: text.id)
-                } else if let formula = text.formulaSource {
-                    DrawingFormulaPreview(source: formula)
-                        .frame(width: max(30, text.rect.width), height: max(22, text.rect.height))
-                        .position(x: text.rect.midX, y: text.rect.midY)
-                        .allowsHitTesting(false)
-                } else {
-                    Text(text.text)
-                        .font(.custom(text.fontName, size: text.fontSize))
-                        .foregroundStyle(text.color)
-                        .frame(width: max(30, text.rect.width), height: max(22, text.rect.height), alignment: .topLeading)
-                        .position(x: text.rect.midX, y: text.rect.midY)
-                        .allowsHitTesting(false)
+                Group {
+                    if selectedTextID == text.id, text.formulaSource == nil {
+                        TextField("文本", text: textBinding(for: text.id))
+                            .textFieldStyle(.plain)
+                            .font(.custom(text.fontName, size: text.fontSize))
+                            .foregroundStyle(text.color)
+                            .padding(3)
+                            .frame(width: max(60, text.rect.width), height: max(28, text.rect.height), alignment: .topLeading)
+                            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                            .position(x: text.rect.midX, y: text.rect.midY)
+                            .focused($focusedTextID, equals: text.id)
+                    } else if let formula = text.formulaSource {
+                        DrawingFormulaPreview(source: formula)
+                            .frame(width: max(30, text.rect.width), height: max(22, text.rect.height))
+                            .position(x: text.rect.midX, y: text.rect.midY)
+                            .allowsHitTesting(false)
+                    } else {
+                        Text(text.text)
+                            .font(.custom(text.fontName, size: text.fontSize))
+                            .foregroundStyle(text.color)
+                            .frame(width: max(30, text.rect.width), height: max(22, text.rect.height), alignment: .topLeading)
+                            .position(x: text.rect.midX, y: text.rect.midY)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .mask {
+                    if text.eraserLayer < eraserStrokes.count || isPixelErasing {
+                        Canvas { context, size in
+                            context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.white))
+                            for eraser in eraserStrokes.dropFirst(text.eraserLayer) {
+                                eraser.render(in: &context)
+                            }
+                            if case let .eraser(eraser) = activeDraft {
+                                eraser.render(in: &context)
+                            }
+                        }
+                    } else {
+                        Rectangle()
+                    }
                 }
             }
         }
+    }
+
+    private var isPixelErasing: Bool {
+        if case .eraser = activeDraft { return true }
+        return false
     }
 
     private var selectionLayer: some View {
@@ -572,7 +646,7 @@ struct NodeMarkdownDrawingBoardSheet: View {
 
     private var selectedShape: ShapeElement? {
         guard let selectedShapeID else { return nil }
-        return shapeElements.first(where: { $0.id == selectedShapeID })
+        return shapeElements.first(where: { $0.id == selectedShapeID && !lockedShapeIDs.contains($0.id) })
     }
 
     private var selectedText: TextElement? {
@@ -590,9 +664,18 @@ struct NodeMarkdownDrawingBoardSheet: View {
         }
     }
 
+    private func selectTool(_ tool: DrawingTool, shapeTool: ShapeTool? = nil) {
+        let changesDrawingTool = activeTool != tool || (shapeTool != nil && shapeTool != activeShapeTool)
+        if changesDrawingTool {
+            lockedShapeIDs.formUnion(shapeElements.map(\.id))
+            selectedShapeID = nil
+        }
+        activeTool = tool
+        if let shapeTool { activeShapeTool = shapeTool }
+    }
+
     private func selectShapeTool(_ shapeTool: ShapeTool) {
-        activeShapeTool = shapeTool
-        activeTool = .shape
+        selectTool(.shape, shapeTool: shapeTool)
     }
 
     private func textBinding(for id: UUID) -> Binding<String> {
@@ -619,7 +702,8 @@ struct NodeMarkdownDrawingBoardSheet: View {
             text: "",
             color: strokeColor,
             fontSize: textFontSize,
-            fontName: textFontName
+            fontName: textFontName,
+            eraserLayer: eraserStrokes.count
         )
         textElements.append(text)
         selectedTextID = id
@@ -639,7 +723,7 @@ struct NodeMarkdownDrawingBoardSheet: View {
             focusedTextID = text.id
             return
         }
-        if let shape = shapeElements.last(where: { $0.boundingRect.insetBy(dx: -8, dy: -8).contains(point) }) {
+        if let shape = shapeElements.last(where: { !lockedShapeIDs.contains($0.id) && $0.boundingRect.insetBy(dx: -8, dy: -8).contains(point) }) {
             selectedShapeID = shape.id
             selectedTextID = nil
             focusedTextID = nil
@@ -655,25 +739,14 @@ struct NodeMarkdownDrawingBoardSheet: View {
     }
 
     private func handleDragChanged(_ value: DragGesture.Value) {
-        let started = ProcessInfo.processInfo.systemUptime
-        let gap = diagnosticLastDrag == 0 ? 0 : started - diagnosticLastDrag
-        diagnosticLastDrag = started
-        if started - diagnosticLastSample >= 1 {
-            diagnosticLastSample = started
-            recordDrawingDiagnostic("dragSample gapMs=\(Int(gap * 1000))")
-        }
-        defer {
-            let elapsed = ProcessInfo.processInfo.systemUptime - started
-            if elapsed >= 0.05 { recordDrawingDiagnostic("slowDrag durationMs=\(Int(elapsed * 1000))") }
-        }
         let point = value.location
         switch activeTool {
         case .selection:
-            updateSelectionDrag(point: point, startPoint: value.startLocation)
-        case .pen:
-            updatePenDrag(point: point, startPoint: value.startLocation)
-        case .eraser:
-            updateEraserDrag(point: point, startPoint: value.startLocation)
+            if activeHandleDrag != nil || point.distance(to: value.startLocation) >= 3 {
+                updateSelectionDrag(point: point, startPoint: value.startLocation)
+            }
+        case .pen, .eraser:
+            break
         case .shape:
             updateShapeDrag(point: point, startPoint: value.startLocation)
         case .text:
@@ -682,23 +755,20 @@ struct NodeMarkdownDrawingBoardSheet: View {
     }
 
     private func handleDragEnded(_ value: DragGesture.Value) {
-        recordDrawingDiagnostic("dragEnded")
-        diagnosticLastDrag = 0
         switch activeTool {
         case .selection:
+            if activeHandleDrag == nil { handleTap(value.location) }
+        case .pen, .eraser:
             break
-        case .pen:
-            commitPenDraft()
-        case .eraser:
-            commitEraserDraft()
         case .shape:
             commitShapeDraft()
         case .text:
             if value.startLocation.distance(to: value.location) < 3 {
                 activeDraft = nil
-                return
+                handleTap(value.location)
+            } else {
+                commitTextDraft()
             }
-            commitTextDraft()
         }
         activeHandleDrag = nil
     }
@@ -716,25 +786,43 @@ struct NodeMarkdownDrawingBoardSheet: View {
         }
     }
 
+    private func updateInkDrag(_ point: CGPoint, startPoint: CGPoint) {
+        if activeTool == .pen {
+            updatePenDrag(point: point, startPoint: startPoint)
+        } else if activeTool == .eraser {
+            updateEraserDrag(point: point, startPoint: startPoint)
+        }
+    }
+
+    private func finishInkDrag() {
+        if activeTool == .pen {
+            commitPenDraft()
+        } else if activeTool == .eraser {
+            commitEraserDraft()
+        }
+    }
+
     private func updatePenDrag(point: CGPoint, startPoint: CGPoint) {
-        selectedShapeID = nil
-        selectedTextID = nil
-        if case var .freehand(stroke) = activeDraft {
-            stroke.points.append(point)
-            activeDraft = .freehand(stroke)
+        if case let .freehand(stroke) = activeDraft {
+            stroke.append(point)
             return
         }
-        activeDraft = .freehand(FreehandStroke(points: [startPoint, point], color: strokeColor, width: lineWidth))
+        selectedShapeID = nil
+        selectedTextID = nil
+        focusedTextID = nil
+        activeDraft = .freehand(FreehandStroke(points: [startPoint, point], color: strokeColor, width: lineWidth, eraserLayer: eraserStrokes.count))
     }
 
     private func commitPenDraft() {
         if case let .freehand(stroke) = activeDraft, stroke.points.count > 1 {
             recordUndoSnapshot()
-            if standardizesFreehand, let shape = standardShape(from: stroke) {
+            if standardizesFreehand, var shape = standardShape(from: stroke) {
+                shape.eraserLayer = stroke.eraserLayer
                 shapeElements.append(shape)
                 selectedShapeID = shape.id
                 selectedTextID = nil
             } else {
+                stroke.finish()
                 freehandStrokes.append(stroke)
             }
         }
@@ -762,7 +850,8 @@ struct NodeMarkdownDrawingBoardSheet: View {
             third: defaultThirdPoint(for: activeShapeTool, start: startPoint, end: point),
             color: strokeColor,
             width: lineWidth,
-            dashed: dashedShapeMode
+            dashed: dashedShapeMode,
+            eraserLayer: eraserStrokes.count
         )
         if isSnapEnabled {
             shape = DrawingSnapEngine.snap(shape: shape, to: shapeElements, excluding: nil, movingHandle: .end)
@@ -796,7 +885,8 @@ struct NodeMarkdownDrawingBoardSheet: View {
                 text: textInput,
                 color: strokeColor,
                 fontSize: textFontSize,
-                fontName: textFontName
+                fontName: textFontName,
+                eraserLayer: eraserStrokes.count
             )
         )
     }
@@ -818,6 +908,7 @@ struct NodeMarkdownDrawingBoardSheet: View {
             eraseWholeElements(at: point)
         case .pixel:
             if case var .eraser(stroke) = activeDraft {
+                guard stroke.points.last != point else { return }
                 stroke.points.append(point)
                 activeDraft = .eraser(stroke)
                 return
@@ -827,8 +918,9 @@ struct NodeMarkdownDrawingBoardSheet: View {
     }
 
     private func commitEraserDraft() {
-        if case let .eraser(stroke) = activeDraft, stroke.points.count > 1 {
+        if case var .eraser(stroke) = activeDraft, stroke.points.count > 1 {
             recordUndoSnapshot()
+            stroke.finish()
             eraserStrokes.append(stroke)
         }
         eraserDragHasSnapshot = false
@@ -858,7 +950,7 @@ struct NodeMarkdownDrawingBoardSheet: View {
 
     private func resolveShapeInteraction(at point: CGPoint) -> ShapeHandleDrag? {
         guard let selectedShape else {
-            if let hitShape = shapeElements.last(where: { $0.boundingRect.insetBy(dx: -12, dy: -12).contains(point) }) {
+            if let hitShape = shapeElements.last(where: { !lockedShapeIDs.contains($0.id) && $0.boundingRect.insetBy(dx: -12, dy: -12).contains(point) }) {
                 return .move(shapeID: hitShape.id, startPoint: point, originStart: hitShape.start, originEnd: hitShape.end, originThird: hitShape.third)
             }
             return nil
@@ -947,7 +1039,7 @@ struct NodeMarkdownDrawingBoardSheet: View {
 
     private func deleteSelectedDrawingElement() {
         if let selectedShapeID,
-           shapeElements.contains(where: { $0.id == selectedShapeID }) {
+           shapeElements.contains(where: { $0.id == selectedShapeID && !lockedShapeIDs.contains($0.id) }) {
             recordUndoSnapshot()
             shapeElements.removeAll { $0.id == selectedShapeID }
             self.selectedShapeID = nil
@@ -989,7 +1081,8 @@ struct NodeMarkdownDrawingBoardSheet: View {
             third: shape.third.map { CGPoint(x: $0.x + offset.width, y: $0.y + offset.height) },
             color: shape.color,
             width: shape.width,
-            dashed: shape.dashed
+            dashed: shape.dashed,
+            eraserLayer: eraserStrokes.count
         )
     }
 
@@ -1061,7 +1154,7 @@ struct NodeMarkdownDrawingBoardSheet: View {
         eraserStrokes = snapshot.eraserStrokes
         shapeElements = snapshot.shapeElements
         textElements = snapshot.textElements
-        selectedShapeID = snapshot.selectedShapeID
+        selectedShapeID = snapshot.selectedShapeID.flatMap { lockedShapeIDs.contains($0) ? nil : $0 }
         selectedTextID = snapshot.selectedTextID
         activeDraft = nil
         activeHandleDrag = nil
@@ -1169,10 +1262,14 @@ struct NodeMarkdownDrawingBoardSheet: View {
         cgContext.translateBy(x: outputSize.width, y: outputSize.height)
         cgContext.rotate(by: .pi)
         cgContext.translateBy(x: -bounds.minX, y: -bounds.minY)
-        for stroke in freehandStrokes { stroke.renderExport(in: cgContext) }
-        for element in shapeElements { element.renderExport(in: cgContext) }
-        for text in textElements { text.renderExport(in: cgContext) }
-        for eraserStroke in eraserStrokes { eraserStroke.renderExport(in: cgContext) }
+        for layer in 0...eraserStrokes.count {
+            for stroke in freehandStrokes where stroke.eraserLayer == layer { stroke.renderExport(in: cgContext) }
+            for element in shapeElements where element.eraserLayer == layer { element.renderExport(in: cgContext) }
+            for text in textElements where text.eraserLayer == layer { text.renderExport(in: cgContext) }
+            if layer < eraserStrokes.count {
+                eraserStrokes[layer].renderExport(in: cgContext)
+            }
+        }
         cgContext.restoreGState()
         NSGraphicsContext.current = previousContext
 
@@ -1339,6 +1436,55 @@ private struct DrawingBoardSnapshot {
     var selectedTextID: UUID?
 }
 
+private struct DrawingInkInputView: NSViewRepresentable {
+    var onPoint: (CGPoint, CGPoint) -> Void
+    var onEnd: () -> Void
+
+    func makeNSView(context: Context) -> InputView { InputView() }
+
+    func updateNSView(_ view: InputView, context: Context) {
+        view.onPoint = onPoint
+        view.onEnd = onEnd
+    }
+
+    final class InputView: NSView {
+        var onPoint: ((CGPoint, CGPoint) -> Void)?
+        var onEnd: (() -> Void)?
+        private var start: CGPoint?
+        private let mouseSampling = TeachingInkMouseSampling()
+
+        override var isFlipped: Bool { true }
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+        override func mouseDown(with event: NSEvent) {
+            let point = convert(event.locationInWindow, from: nil)
+            start = point
+            mouseSampling.begin()
+            onPoint?(point, point)
+        }
+
+        override func mouseDragged(with event: NSEvent) {
+            guard let start else { return }
+            onPoint?(convert(event.locationInWindow, from: nil), start)
+        }
+
+        override func mouseUp(with event: NSEvent) {
+            mouseDragged(with: event)
+            start = nil
+            mouseSampling.end()
+            onEnd?()
+        }
+
+        override func viewWillMove(toWindow newWindow: NSWindow?) {
+            if newWindow == nil {
+                start = nil
+                mouseSampling.end()
+            }
+            super.viewWillMove(toWindow: newWindow)
+        }
+    }
+}
+
 private struct DrawingKeyboardShortcutView: NSViewRepresentable {
     var enabled: Bool
     var onDelete: () -> Void
@@ -1417,10 +1563,43 @@ private struct DrawingKeyboardShortcutView: NSViewRepresentable {
     }
 }
 
-private struct FreehandStroke {
-    var points: [CGPoint]
-    var color: Color
-    var width: CGFloat
+private struct DrawingFreehandPreview: View {
+    let stroke: FreehandStroke
+
+    var body: some View {
+        let path = Path(stroke.path)
+        Canvas { context, _ in
+            context.stroke(path, with: .color(stroke.color), style: StrokeStyle(lineWidth: stroke.width, lineCap: .round, lineJoin: .round))
+        }
+    }
+}
+
+@Observable
+private final class FreehandStroke {
+    private(set) var points: [CGPoint]
+    let color: Color
+    let width: CGFloat
+    let eraserLayer: Int
+    private var committedPath: CGPath?
+
+    init(points: [CGPoint], color: Color, width: CGFloat, eraserLayer: Int) {
+        self.points = points
+        self.color = color
+        self.width = width
+        self.eraserLayer = eraserLayer
+    }
+
+    func append(_ point: CGPoint) {
+        guard points.last != point else { return }
+        points.append(point)
+    }
+
+    func finish() {
+        committedPath = teachingSmoothedInkPath(points)
+    }
+
+    var path: CGPath { committedPath ?? teachingSmoothedInkPath(points) }
+
     var boundingRect: CGRect? {
         guard let first = points.first else { return nil }
         var minX = first.x, minY = first.y, maxX = first.x, maxY = first.y
@@ -1435,8 +1614,7 @@ private struct FreehandStroke {
     }
     func render(in context: inout GraphicsContext) {
         guard points.count > 1 else { return }
-        var path = Path(); path.addLines(points)
-        context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round))
+        context.stroke(Path(path), with: .color(color), style: StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round))
     }
     func renderExport(in context: CGContext) {
         guard points.count > 1 else { return }
@@ -1444,9 +1622,8 @@ private struct FreehandStroke {
         context.setStrokeColor(NSColor(color).cgColor)
         context.setLineWidth(width)
         context.setLineCap(.round)
-        context.beginPath()
-        context.move(to: points[0])
-        for point in points.dropFirst() { context.addLine(to: point) }
+        context.setLineJoin(.round)
+        context.addPath(path)
         context.strokePath()
         context.restoreGState()
     }
@@ -1455,13 +1632,23 @@ private struct FreehandStroke {
 private struct EraserStroke {
     var points: [CGPoint]
     var width: CGFloat
+    private var committedPath: CGPath? = nil
+
+    init(points: [CGPoint], width: CGFloat) {
+        self.points = points
+        self.width = width
+    }
+
+    mutating func finish() {
+        committedPath = teachingSmoothedInkPath(points)
+    }
+
+    private var path: CGPath { committedPath ?? teachingSmoothedInkPath(points) }
 
     func render(in context: inout GraphicsContext) {
         guard points.count > 1 else { return }
         context.blendMode = .destinationOut
-        var path = Path()
-        path.addLines(points)
-        context.stroke(path, with: .color(.black), style: StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round))
+        context.stroke(Path(path), with: .color(.black), style: StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round))
         context.blendMode = .normal
     }
 
@@ -1473,9 +1660,7 @@ private struct EraserStroke {
         context.setLineWidth(width)
         context.setLineCap(.round)
         context.setLineJoin(.round)
-        context.beginPath()
-        context.move(to: points[0])
-        for point in points.dropFirst() { context.addLine(to: point) }
+        context.addPath(path)
         context.strokePath()
         context.restoreGState()
     }
@@ -1490,6 +1675,7 @@ struct ShapeElement {
     var color: Color
     var width: CGFloat
     var dashed: Bool
+    var eraserLayer = 0
 
     var isValid: Bool { start.distance(to: end) > 2 }
     var isRotatableBox: Bool {
@@ -1764,6 +1950,7 @@ private struct TextElement: Identifiable {
     var color: Color
     var fontSize: CGFloat
     var fontName: String
+    var eraserLayer: Int
     var formulaSource: String? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count >= 4, trimmed.hasPrefix("$$"), trimmed.hasSuffix("$$") else { return nil }

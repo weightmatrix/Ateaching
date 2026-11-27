@@ -14,7 +14,7 @@ struct NodeMarkdownProseMirrorRepresentable: NSViewRepresentable {
     let navigationRequestToken: Int
     let activeMatchLocationInRow: Int?
     let editingRowIndex: Int?
-    let searchQuery: String
+    let searchQuery: NodeMarkdownEditorSearch
     let rowMetadata: [NodeMarkdownTextKitRowMetadata]
     let externalTextSyncToken: Int
     let quickInputSettings: MarkdownQuickInputSettings
@@ -2717,7 +2717,7 @@ private struct VisualState: Equatable {
     let activeRow: Int?
     let match: Int?
     let editingRow: Int?
-    let query: String
+    let query: NodeMarkdownEditorSearch
 
     init(owner: NodeMarkdownProseMirrorRepresentable) {
         styleIdentity = owner.documentStyle.renderIdentity

@@ -104,7 +104,7 @@ final class NodeMarkdownExactLayoutEngine {
             rowLayouts: [contentLayout],
             documentStyle: documentStyle,
             baseDirectoryURL: baseDirectoryURL,
-            searchQuery: "",
+            searchQuery: NodeMarkdownEditorSearch(),
             activeRowIndex: nil,
             activeMatchLocationInRow: nil,
             editingRowIndex: nil

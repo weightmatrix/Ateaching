@@ -88,6 +88,7 @@ struct NodeMarkdownEditorView: View {
     @State private var showExportActionDialog = false
     @State private var tocExpandMode: NodeMarkdownTOCExpandMode = .l3
     @State private var preferredSchemeOverride: NodeMarkdownPreferredScheme?
+    @AppStorage("teachingNotebookBodySearchScope") private var notebookBodySearchScope = NodeMarkdownSearchScope.l3
     @State private var searchText = ""
     @State private var committedSearchText = ""
     @State private var showSearchPopover = false
@@ -111,8 +112,9 @@ struct NodeMarkdownEditorView: View {
     @State private var textKit2FocusLocation: NodeMarkdownTextFocusLocation?
     @State private var bottomEditorText = ""
     @State private var isUpdatingBottomEditorText = false
-    @State private var showDrawingBoardSheet = false
-    @State private var drawingBoardTargetRowIndex: Int?
+    #if os(macOS)
+    @State private var drawingBoardWindow: NodeMarkdownDrawingBoardWindow?
+    #endif
     @State private var showLessonChecklistSheet = false
     @State private var lessonCompletionFiles: [URL] = []
     @State private var courseChecklistPickingTarget: TeachingLessonChecklistPickingTarget?
@@ -394,21 +396,6 @@ struct NodeMarkdownEditorView: View {
             NodeMarkdownScaledPDFExportSheet(multiplier: $scaledPDFMultiplier) { multiplier in
                 exportScaledPDF(multiplier: multiplier)
             }
-        }
-        .sheet(isPresented: $showDrawingBoardSheet) {
-            #if os(macOS)
-            if phase150FeatureEnabled {
-                NodeMarkdownDrawingBoardSheet(
-                    onComplete: { drawingURL in
-                        guard let drawingURL else { return }
-                        insertDrawingAsset(drawingURL: drawingURL)
-                    }
-                )
-            }
-            #else
-            Text("iOS 暂不支持画图板")
-                .padding()
-            #endif
         }
         .sheet(isPresented: $showLessonChecklistSheet) {
             TeachingLessonChecklistPickerView(
@@ -857,7 +844,7 @@ struct NodeMarkdownEditorView: View {
             navigationRequestToken: textKit2NavigationRequestToken,
             activeMatchLocationInRow: activeSearchMatchLocationInRow,
             editingRowIndex: activeEditorRowIndex,
-            searchQuery: searchQuery,
+            searchQuery: editorSearch,
             rowMetadata: textKitDraftRowMetadata,
             externalTextSyncToken: externalTextSyncToken,
             quickInputSettings: settingsCenter.quickInputSettings,
@@ -935,7 +922,7 @@ struct NodeMarkdownEditorView: View {
             navigationRequestToken: textKit2NavigationRequestToken,
             activeMatchLocationInRow: activeSearchMatchLocationInRow,
             editingRowIndex: activeEditorRowIndex,
-            searchQuery: searchQuery,
+            searchQuery: editorSearch,
             rowMetadata: textKitDraftRowMetadata,
             externalTextSyncToken: externalTextSyncToken,
             quickInputSettings: settingsCenter.quickInputSettings,
@@ -2049,9 +2036,9 @@ struct NodeMarkdownEditorView: View {
         textKitParseGeneration &+= 1
     }
 
-    private var headings: [NodeMarkdownHeading] {
+    private func headings(includingBody: Bool) -> [NodeMarkdownHeading] {
         document.nodes.enumerated().compactMap { index, node in
-            guard (1...6).contains(node.level) else { return nil }
+            guard includingBody || (1...6).contains(node.level) else { return nil }
             let title = node.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !title.isEmpty else { return nil }
             return NodeMarkdownHeading(nodeID: node.id, level: node.level, title: title, rowIndex: index)
@@ -2075,9 +2062,14 @@ struct NodeMarkdownEditorView: View {
         }
     }
 
-    private var searchQuery: String {
-        committedSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    private var editorSearch: NodeMarkdownEditorSearch {
+        NodeMarkdownEditorSearch(
+            text: committedSearchText,
+            scope: isTeachingNotebookFile ? notebookBodySearchScope : .all
+        )
     }
+
+    private var searchQuery: String { editorSearch.text }
 
     private var activeSearchMatchLocationInRow: Int? {
         guard let activeSearchResultIndex,
@@ -2864,6 +2856,10 @@ struct NodeMarkdownEditorView: View {
                     .onSubmit {
                         performSearch()
                     }
+                if isTeachingNotebookFile {
+                    NodeMarkdownSearchScopePicker(scope: $notebookBodySearchScope)
+                        .onChange(of: notebookBodySearchScope) { _, _ in rebuildSearchResults() }
+                }
                 Text("共 \(searchResults.count) 项")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -2929,7 +2925,8 @@ struct NodeMarkdownEditorView: View {
         .help("TOC")
         .popover(isPresented: $showTOCPopover, arrowEdge: .bottom) {
             NodeMarkdownTOCPanelView(
-                headings: headings,
+                headings: headings(includingBody: isTeachingNotebookFile),
+                usesNotebookSearchScope: isTeachingNotebookFile,
                 expandMode: $tocExpandMode,
                 allowsReordering: !isReadOnlyRendered
                     && (activeClassSession?.kind == .teaching || isLessonPlanEditor),
@@ -2997,20 +2994,6 @@ struct NodeMarkdownEditorView: View {
         }
         .appGlassButtonStyle()
         .help("清理空节点")
-    }
-
-    private var drawingBoardButton: some View {
-        Button {
-            #if os(macOS)
-            showDrawingBoardSheet = true
-            #else
-            statusMessage = "iOS 暂不支持画图板"
-            #endif
-        } label: {
-            Image(systemName: "pencil.and.scribble")
-        }
-        .appGlassButtonStyle()
-        .help("画图")
     }
 
     private var effectiveIsDarkMode: Bool {
@@ -3086,7 +3069,11 @@ struct NodeMarkdownEditorView: View {
             return (previous.rowIndex, previous.matchLocationInRow)
         }()
 
-        searchResults = nodeMarkdownBuildSearchResults(in: document.nodes, query: query)
+        searchResults = nodeMarkdownBuildSearchResults(
+            in: document.nodes,
+            query: query,
+            scope: editorSearch.scope
+        )
         guard !searchResults.isEmpty else {
             activeSearchResultIndex = nil
             activeSearchRowIndex = nil
@@ -3825,26 +3812,31 @@ struct NodeMarkdownEditorView: View {
 
     private func openDrawingBoardAtRow(_ rowIndex: Int) {
         #if os(macOS)
-        guard document.nodes.indices.contains(rowIndex) else { return }
+        guard phase150FeatureEnabled, drawingBoardWindow == nil,
+              document.nodes.indices.contains(rowIndex) else { return }
         guard !isRowInNewPackage(rowIndex) else {
             statusMessage = "新包不允许画图"
             return
         }
-        drawingBoardTargetRowIndex = rowIndex
-        showDrawingBoardSheet = true
+        let nodeID = document.nodes[rowIndex].id
+        let board = NodeMarkdownDrawingBoardWindow { drawingURL in
+            if let drawingURL {
+                insertDrawingAsset(drawingURL: drawingURL, targetNodeID: nodeID)
+            }
+            drawingBoardWindow = nil
+        }
+        drawingBoardWindow = board
+        board.present()
         #else
         statusMessage = "iOS 暂不支持画图板"
         #endif
     }
 
-    private func insertDrawingAsset(drawingURL: URL) {
+    private func insertDrawingAsset(drawingURL: URL, targetNodeID: UUID) {
         #if os(macOS)
-        defer {
-            drawingBoardTargetRowIndex = nil
-            try? FileManager.default.removeItem(at: drawingURL)
-        }
+        defer { try? FileManager.default.removeItem(at: drawingURL) }
         commitPendingDraftBeforeSyncIfNeeded()
-        guard let rowIndex = drawingBoardTargetRowIndex, document.nodes.indices.contains(rowIndex) else {
+        guard let rowIndex = document.nodes.firstIndex(where: { $0.id == targetNodeID }) else {
             statusMessage = "未定位到画图插入行"
             return
         }
@@ -4780,10 +4772,52 @@ private struct NodeMarkdownSearchResult: Identifiable, Hashable {
     var id: String { "\(rowIndex)-\(matchLocationInRow)-\(matchLength)" }
 }
 
-private func nodeMarkdownBuildSearchResults(in nodes: [NodeMarkdownNode], query: String) -> [NodeMarkdownSearchResult] {
+struct NodeMarkdownEditorSearch: Hashable {
+    let text: String
+    let scope: NodeMarkdownSearchScope
+
+    init(text: String = "", scope: NodeMarkdownSearchScope = .all) {
+        self.text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.scope = scope
+    }
+}
+
+enum NodeMarkdownSearchScope: String, CaseIterable, Identifiable {
+    case l1 = "L1"
+    case l3 = "L3"
+    case l6 = "L6"
+    case all = "全部"
+
+    var id: Self { self }
+
+    func includes(_ level: Int) -> Bool {
+        switch self {
+        case .l1: return level == 1
+        case .l3: return (1...3).contains(level)
+        case .l6: return (1...6).contains(level)
+        case .all: return true
+        }
+    }
+}
+
+private struct NodeMarkdownSearchScopePicker: View {
+    @Binding var scope: NodeMarkdownSearchScope
+
+    var body: some View {
+        Picker("搜索范围", selection: $scope) {
+            ForEach(NodeMarkdownSearchScope.allCases) { scope in
+                Text(scope.rawValue).tag(scope)
+            }
+        }
+        .pickerStyle(.segmented)
+    }
+}
+
+private func nodeMarkdownBuildSearchResults(in nodes: [NodeMarkdownNode], query: String, scope: NodeMarkdownSearchScope) -> [NodeMarkdownSearchResult] {
     let normalized = query.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !normalized.isEmpty else { return [] }
     return nodes.enumerated().compactMap { index, node -> NodeMarkdownSearchResult? in
+        guard scope.includes(node.level) else { return nil }
         let text = node.text
         guard !text.isEmpty else { return nil }
         let nsText = text as NSString
@@ -4802,6 +4836,8 @@ private func nodeMarkdownBuildSearchResults(in nodes: [NodeMarkdownNode], query:
 
 private struct NodeMarkdownTOCPanelView: View {
     let headings: [NodeMarkdownHeading]
+    let usesNotebookSearchScope: Bool
+    @AppStorage("teachingNotebookTOCSearchScope") private var notebookTOCSearchScope = NodeMarkdownSearchScope.l3
     @Binding var expandMode: NodeMarkdownTOCExpandMode
     let allowsReordering: Bool
     let onMove: (UUID, UUID) -> Bool
@@ -4826,8 +4862,11 @@ private struct NodeMarkdownTOCPanelView: View {
                 .pickerStyle(.segmented)
                 .frame(width: 104)
             }
-            if headings.isEmpty {
-                Text("暂无目录")
+            if usesNotebookSearchScope {
+                NodeMarkdownSearchScopePicker(scope: $notebookTOCSearchScope)
+            }
+            if displayHeadings.isEmpty {
+                Text(searchQuery.isEmpty ? "暂无目录" : "无匹配项")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
@@ -4880,7 +4919,8 @@ private struct NodeMarkdownTOCPanelView: View {
 
     private var displayHeadings: [NodeMarkdownHeading] {
         if !searchQuery.isEmpty {
-            return headings.filter { $0.title.localizedCaseInsensitiveContains(searchQuery) }
+            let scope = usesNotebookSearchScope ? notebookTOCSearchScope : .all
+            return headings.filter { scope.includes($0.level) && $0.title.localizedCaseInsensitiveContains(searchQuery) }
         }
         switch expandMode {
         case .l3:
@@ -4915,7 +4955,7 @@ private struct NodeMarkdownTOCPanelView: View {
         guard headings.indices.contains(index + 1) else { return false }
         for item in headings[(index + 1)...] {
             if item.level == 1 { return false }
-            return true
+            if item.level <= 6 { return true }
         }
         return false
     }

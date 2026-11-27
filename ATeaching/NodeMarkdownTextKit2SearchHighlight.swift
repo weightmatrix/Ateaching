@@ -10,12 +10,11 @@ extension NodeMarkdownTextKit2TextView {
         source nsText: NSString,
         layout: NodeMarkdownTextKit2RowLayout,
         textLength: Int,
-        searchQuery: String,
+        searchQuery: NodeMarkdownEditorSearch,
         activeRowIndex: Int?,
         activeMatchLocationInRow: Int?
     ) {
-        let normalizedSearchQuery = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalizedSearchQuery.isEmpty else { return }
+        guard searchQuery.scope.includes(layout.level), !searchQuery.text.isEmpty else { return }
         guard let searchableRange = layout.contentRange.exact(toLength: textLength) else {
             NodeMarkdownTextKit2Diagnostics.log("跳过搜索高亮：行范围与真实正文不一致。")
             return
@@ -25,7 +24,7 @@ extension NodeMarkdownTextKit2TextView {
         var remaining = searchableRange
         while remaining.length > 0 {
             let match = nsText.range(
-                of: normalizedSearchQuery,
+                of: searchQuery.text,
                 options: [.caseInsensitive],
                 range: remaining
             )

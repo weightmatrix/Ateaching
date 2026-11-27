@@ -13,7 +13,7 @@ extension NodeMarkdownTextKit2Coordinator {
         navigationRequestToken: Int,
         activeMatchLocationInRow: Int?,
         editingRowIndex: Int?,
-        searchQuery: String,
+        searchQuery: NodeMarkdownEditorSearch,
         rowMetadata: [NodeMarkdownTextKitRowMetadata],
         externalTextSyncToken: Int,
         quickInputSettings: MarkdownQuickInputSettings,
@@ -51,7 +51,7 @@ extension NodeMarkdownTextKit2Coordinator {
         self.activeRowIndex = activeRowIndex
         self.navigationRequestToken = navigationRequestToken
         self.activeMatchLocationInRow = activeMatchLocationInRow
-        self.searchQuery = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.searchQuery = searchQuery
         if externalText == lastPublishedLocalText {
             lastAcknowledgedLocalRevision = localEditRevision
             lastPublishedLocalText = nil
