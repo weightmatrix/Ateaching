@@ -116,17 +116,16 @@ enum TeachingDocumentExportService {
     #endif
 
     #if os(macOS)
-    @MainActor
-    private final class SharingObserver: NSObject, NSSharingServicePickerDelegate, NSSharingServiceDelegate {
-        private var completion: (() -> Void)?
+    private nonisolated final class SharingObserver: NSObject, NSSharingServicePickerDelegate, NSSharingServiceDelegate {
+        @MainActor private var completion: (() -> Void)?
 
-        init(_ completion: @escaping () -> Void) { self.completion = completion }
+        @MainActor init(_ completion: @escaping () -> Void) { self.completion = completion }
 
         nonisolated func sharingServicePicker(
             _ sharingServicePicker: NSSharingServicePicker, delegateFor sharingService: NSSharingService
         ) -> (any NSSharingServiceDelegate)? { self }
 
-        func sharingService(_ sharingService: NSSharingService, didShareItems items: [Any]) {
+        @MainActor func sharingService(_ sharingService: NSSharingService, didShareItems items: [Any]) {
             completion?()
             completion = nil
         }
