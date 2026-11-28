@@ -367,15 +367,12 @@ struct TeachingHomeView: View {
                                         .foregroundStyle(student.displayColor)
                                         .frame(width: 46, height: 46)
                                         .background(student.displayColor.opacity(0.13), in: Circle())
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(student.name)
-                                            .font(.system(size: 15, weight: .semibold))
-                                            .foregroundStyle(.primary)
-                                            .lineLimit(1)
-                                        Text("进入课堂")
-                                            .font(.system(size: 12))
-                                            .foregroundStyle(.secondary)
-                                    }
+                                    Text(student.name)
+                                        .font(.system(size: 15, weight: .semibold))
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(3)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                        .layoutPriority(1)
                                     Spacer(minLength: 8)
                                     if latestScheduleCourse(for: student) != nil {
                                         Color.clear.frame(width: 30, height: 30)
@@ -395,6 +392,8 @@ struct TeachingHomeView: View {
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
+                            .accessibilityLabel(student.name)
+                            .help(student.name)
                             .overlay(alignment: .trailing) {
                                 if let course = latestScheduleCourse(for: student),
                                    let roster = scheduleRoster {
