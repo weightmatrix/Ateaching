@@ -361,19 +361,20 @@ struct TeachingHomeView: View {
                                 selectedCourseInitialMode = needsInitialize ? .initialize : .teaching
                                 selectedCourseStudent = student
                             } label: {
-                                HStack(spacing: 14) {
+                                HStack(spacing: 8) {
                                     Image(systemName: student.iconName)
                                         .font(.system(size: 21, weight: .semibold))
                                         .foregroundStyle(student.displayColor)
                                         .frame(width: 46, height: 46)
                                         .background(student.displayColor.opacity(0.13), in: Circle())
+                                        .padding(.trailing, 6)
                                     Text(student.name)
                                         .font(.system(size: 15, weight: .semibold))
                                         .foregroundStyle(.primary)
                                         .lineLimit(3)
                                         .fixedSize(horizontal: false, vertical: true)
                                         .layoutPriority(1)
-                                    Spacer(minLength: 8)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
                                     if latestScheduleCourse(for: student) != nil {
                                         Color.clear.frame(width: 30, height: 30)
                                     }
@@ -402,8 +403,9 @@ struct TeachingHomeView: View {
                                     Button {
                                         openScheduleReflection(student: student, course: course, key: key)
                                     } label: {
-                                        Image(systemName: done ? "checkmark.square" : "square")
+                                        TeachingReflectionBrushMark(isComplete: done)
                                             .frame(width: 30, height: 30)
+                                            .contentShape(Rectangle())
                                     }
                                     .buttonStyle(.plain)
                                     .padding(.trailing, 14)
@@ -914,6 +916,38 @@ struct TeachingHomeView: View {
         } catch {
             return false
         }
+    }
+}
+
+private struct TeachingReflectionBrushMark: View {
+    let isComplete: Bool
+
+    var body: some View {
+        Canvas { context, _ in
+            let box = Path { path in
+                path.move(to: CGPoint(x: 5, y: 6))
+                path.addQuadCurve(to: CGPoint(x: 24, y: 5), control: CGPoint(x: 14, y: 4))
+                path.addQuadCurve(to: CGPoint(x: 25, y: 24), control: CGPoint(x: 26, y: 14))
+                path.addQuadCurve(to: CGPoint(x: 6, y: 25), control: CGPoint(x: 15, y: 26))
+                path.addQuadCurve(to: CGPoint(x: 5, y: 6), control: CGPoint(x: 4, y: 16))
+                path.closeSubpath()
+            }
+            context.stroke(box, with: .color(.primary), style: StrokeStyle(lineWidth: 3, lineJoin: .round))
+
+            if isComplete {
+                let check = Path { path in
+                    path.move(to: CGPoint(x: 7, y: 14))
+                    path.addQuadCurve(to: CGPoint(x: 13, y: 17), control: CGPoint(x: 9, y: 12))
+                    path.addQuadCurve(to: CGPoint(x: 29, y: 2), control: CGPoint(x: 21, y: 7))
+                    path.addQuadCurve(to: CGPoint(x: 15, y: 22), control: CGPoint(x: 19, y: 14))
+                    path.addQuadCurve(to: CGPoint(x: 11, y: 23), control: CGPoint(x: 13, y: 25))
+                    path.addQuadCurve(to: CGPoint(x: 7, y: 14), control: CGPoint(x: 8, y: 18))
+                    path.closeSubpath()
+                }
+                context.fill(check, with: .color(.primary))
+            }
+        }
+        .accessibilityHidden(true)
     }
 }
 
