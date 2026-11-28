@@ -13,6 +13,7 @@ struct TeachingDocumentExportDescriptor {
     let contentType: UTType
     var suggestedFileNamePrefix: String = ""
     var suggestedFileNameSuffix: String = ""
+    var suggestedFileName: String? = nil
 }
 
 struct TeachingDocumentExportFile {
@@ -24,12 +25,14 @@ enum TeachingDocumentExportService {
     #if os(macOS)
     private static var activeSharingPicker: NSSharingServicePicker?
     private static var activeSharedFileURL: URL?
+    @MainActor private static var sharingObserver: SharingObserver?
     #endif
 
     @MainActor
     static func exportToWeChat(
         sourceFileURL: URL,
         descriptor: TeachingDocumentExportDescriptor,
+        onCompleted: (() -> Void)? = nil,
         dataProvider: () throws -> Data
     ) throws {
         let exportURL = try makeTemporaryFile(
@@ -37,11 +40,11 @@ enum TeachingDocumentExportService {
             descriptor: descriptor,
             dataProvider: dataProvider
         )
-        try presentSystemShareSheet(for: exportURL)
+        try presentSystemShareSheet(for: exportURL, onCompleted: onCompleted)
     }
 
     @MainActor
-    private static func presentSystemShareSheet(for exportURL: URL) throws {
+    private static func presentSystemShareSheet(for exportURL: URL, onCompleted: (() -> Void)?) throws {
         #if os(macOS)
         guard let anchorView = systemShareAnchorView() else {
             throw NSError(
@@ -53,6 +56,11 @@ enum TeachingDocumentExportService {
         activeSharedFileURL = exportURL
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
             let picker = NSSharingServicePicker(items: [exportURL])
+            if let onCompleted {
+                let observer = SharingObserver(onCompleted)
+                sharingObserver = observer
+                picker.delegate = observer
+            }
             activeSharingPicker = picker
             let anchorRect = systemShareAnchorRect(in: anchorView)
             picker.show(relativeTo: anchorRect, of: anchorView, preferredEdge: .maxY)
@@ -65,6 +73,11 @@ enum TeachingDocumentExportService {
             throw CocoaError(.featureUnsupported)
         }
         let controller = UIActivityViewController(activityItems: [exportURL], applicationActivities: nil)
+        controller.completionWithItemsHandler = { _, completed, _, error in
+            if completed && error == nil {
+                Task { @MainActor in onCompleted?() }
+            }
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
             let presenter = topViewController(from: rootViewController)
             if let popover = controller.popoverPresentationController {
@@ -103,6 +116,22 @@ enum TeachingDocumentExportService {
     #endif
 
     #if os(macOS)
+    @MainActor
+    private final class SharingObserver: NSObject, NSSharingServicePickerDelegate, NSSharingServiceDelegate {
+        private var completion: (() -> Void)?
+
+        init(_ completion: @escaping () -> Void) { self.completion = completion }
+
+        nonisolated func sharingServicePicker(
+            _ sharingServicePicker: NSSharingServicePicker, delegateFor sharingService: NSSharingService
+        ) -> (any NSSharingServiceDelegate)? { self }
+
+        func sharingService(_ sharingService: NSSharingService, didShareItems items: [Any]) {
+            completion?()
+            completion = nil
+        }
+    }
+
     @MainActor
     private static func systemShareAnchorView() -> NSView? {
         let candidateWindows = [NSApp.keyWindow, NSApp.mainWindow] + NSApp.orderedWindows.map(Optional.some)
@@ -203,10 +232,11 @@ enum TeachingDocumentExportService {
     ) throws -> URL {
         let temporaryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(
-                descriptor.suggestedFileNamePrefix
-                    + sourceFileURL.deletingPathExtension().lastPathComponent
-                    + descriptor.suggestedFileNameSuffix
-                    + "-导出.\(descriptor.fileExtension)"
+                descriptor.suggestedFileName.map { "\($0).\(descriptor.fileExtension)" }
+                    ?? (descriptor.suggestedFileNamePrefix
+                        + sourceFileURL.deletingPathExtension().lastPathComponent
+                        + descriptor.suggestedFileNameSuffix
+                        + "-导出.\(descriptor.fileExtension)")
             )
         let data = try dataProvider()
         try data.write(to: temporaryURL, options: .atomic)

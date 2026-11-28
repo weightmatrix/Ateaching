@@ -1688,6 +1688,12 @@ nonisolated enum TeachingCourseWorkflowService {
         return studentFolder.appendingPathComponent("上课信息_\(student.name)_\(dateToken).CSV", isDirectory: false)
     }
 
+    static func expectedClassInfoFileURL(student: TeachingStudentItem, on date: Date) throws -> URL {
+        try studentFolderURL(for: student).appendingPathComponent(
+            "上课信息_\(student.name)_\(classInfoDateToken(for: date)).CSV", isDirectory: false
+        )
+    }
+
     static func lessonCompletionChecklistFiles(student: TeachingStudentItem) throws -> [URL] {
         let effective = try resolveEffectiveSettings(student: student)
         let lessonFolderIDs = try selectedLessonPlanFolders(effectiveSettings: effective)

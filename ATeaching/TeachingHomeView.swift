@@ -83,6 +83,11 @@ struct TeachingHomeView: View {
         .onReceive(NotificationCenter.default.publisher(for: .teachingScheduleConnectionChanged)) { _ in
             Task { await syncScheduleRoster() }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .teachingReflectionImageExported)) { event in
+            if let url = event.object as? URL, let requestedAt = event.userInfo?["requestedAt"] as? Date {
+                markSharedScheduleReflection(url, requestedAt: requestedAt)
+            }
+        }
         .onChange(of: students) { _, _ in
             guard !isApplyingStudentSnapshot else { return }
             saveStudentsToSettings()
@@ -487,11 +492,26 @@ struct TeachingHomeView: View {
         exportedScheduleCourses = keys.sorted().joined(separator: ",")
     }
 
-    private func openScheduleReflection(student: TeachingStudentItem, course: TeachingScheduleRoster.Course, key: String) {
+    private func scheduleDate(_ value: String) -> Date? {
         let formatter = ISO8601DateFormatter()
-        let ordinary = formatter.date(from: course.start)
+        if let date = formatter.date(from: value) { return date }
         formatter.formatOptions.insert(.withFractionalSeconds)
-        guard let date = ordinary ?? formatter.date(from: course.start) else {
+        return formatter.date(from: value)
+    }
+
+    private func markSharedScheduleReflection(_ url: URL, requestedAt: Date) {
+        guard let roster = scheduleRoster,
+              let student = students.first(where: { $0.name == url.deletingLastPathComponent().lastPathComponent }),
+              let course = latestScheduleCourse(for: student),
+              let date = scheduleDate(course.start),
+              let ended = scheduleDate(course.end), ended <= requestedAt,
+              let expected = try? TeachingCourseWorkflowService.expectedClassInfoFileURL(student: student, on: date),
+              url.standardizedFileURL == expected.standardizedFileURL else { return }
+        markScheduleExport(scheduleExportKey(teacher: roster.teacherID, course: course.id))
+    }
+
+    private func openScheduleReflection(student: TeachingStudentItem, course: TeachingScheduleRoster.Course, key: String) {
+        guard let date = scheduleDate(course.start) else {
             statusMessage = "排课课程时间无法读取。"
             return
         }

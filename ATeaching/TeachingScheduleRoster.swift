@@ -1,6 +1,7 @@
 import SwiftUI
 
 extension Notification.Name {
+    static let teachingReflectionImageExported = Notification.Name("ATeaching.reflectionImageExported")
     static let teachingScheduleConnectionChanged = Notification.Name("ATeaching.scheduleConnectionChanged")
 }
 
@@ -23,10 +24,12 @@ struct TeachingScheduleRoster: Decodable {
     struct Course: Decodable {
         let id: UUID
         let start: String
+        let end: String
 
         enum CodingKeys: String, CodingKey {
             case id = "uuid"
             case start = "start_time"
+            case end = "end_time"
         }
     }
 

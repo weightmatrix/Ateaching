@@ -47,10 +47,6 @@ struct SingleListDocumentEditorView: View {
     @State private var activeSearchMatchIndex = 0
     @State private var showTOCPopover = false
     @State private var activeEditingRowID: String?
-    #if os(macOS)
-    @State private var activeSharingPicker: NSSharingServicePicker?
-    @State private var pendingExportFileURL: URL?
-    #endif
 
     init(
         fileURL: URL,
@@ -669,55 +665,37 @@ struct SingleListDocumentEditorView: View {
             showingCourseExporter = true
             return
         }
-        #if os(macOS)
-        guard let exportURL = makeExportImageFile() else { return }
-        guard let anchorView = NSApp.keyWindow?.contentView ?? NSApp.mainWindow?.contentView else {
-            statusMessage = "导出失败：无法打开系统导出菜单。"
-            return
-        }
-
-        pendingExportFileURL = exportURL
-        let picker = NSSharingServicePicker(items: [exportURL])
-        activeSharingPicker = picker
-        picker.show(relativeTo: anchorView.bounds, of: anchorView, preferredEdge: .maxY)
-        statusMessage = "已打开系统导出菜单"
-        #else
         guard let data = makeExportImageData() else { return }
+        let exportedURL = currentFileURL
+        let requestedAt = Date()
+        #if os(macOS)
+        let suggestedName = sanitizedExportFilename()
+        #else
+        let suggestedName: String? = nil
+        #endif
         do {
             try TeachingDocumentExportService.exportToWeChat(
-                sourceFileURL: currentFileURL,
+                sourceFileURL: exportedURL,
                 descriptor: TeachingDocumentExportDescriptor(
                     displayName: "PNG图片",
                     fileExtension: "png",
-                    contentType: .png
+                    contentType: .png,
+                    suggestedFileName: suggestedName
                 ),
+                onCompleted: {
+                    NotificationCenter.default.post(
+                        name: .teachingReflectionImageExported,
+                        object: exportedURL,
+                        userInfo: ["requestedAt": requestedAt]
+                    )
+                },
                 dataProvider: { data }
             )
             statusMessage = "已打开系统导出菜单"
         } catch {
             statusMessage = "导出失败：\(error.localizedDescription)"
         }
-        #endif
     }
-
-    #if os(macOS)
-    private func makeExportImageFile() -> URL? {
-        guard let data = makeExportImageData() else { return nil }
-
-        do {
-            let filename = "\(sanitizedExportFilename()).png"
-            let directoryURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("ATeachingExports", isDirectory: true)
-            try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
-            let exportURL = directoryURL.appendingPathComponent(filename)
-            try data.write(to: exportURL, options: .atomic)
-            return exportURL
-        } catch {
-            statusMessage = error.localizedDescription
-            return nil
-        }
-    }
-    #endif
 
     private func makeExportImageData() -> Data? {
         let exportView = SingleListExportSnapshotView(
